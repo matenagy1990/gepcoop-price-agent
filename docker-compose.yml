@@ -1,0 +1,10 @@
+services:
+  price-agent:
+    build: .
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      - ./assets:/app/assets
+    restart: unless-stopped

@@ -1,0 +1,1237 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gép-Coop — Árlekérdező</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Oswald:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --blue:  #009fe6;
+    --navy:  #161B63;
+    --navy2: #1F4977;
+    --green: #5CB811;
+    --amber: #E79C02;
+    --red:   #FE1A00;
+    --white: #FFFFFF;
+    --bg:    #F4F7FB;
+    --border:#DDE3ED;
+    --text:  #1A1F36;
+    --muted: #6B7A99;
+    --r:     20px;
+    --sh:    0 2px 16px rgba(22,27,99,.08);
+    --shmd:  0 4px 32px rgba(22,27,99,.12);
+  }
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;font-size:15px;line-height:1.5}
+  .mono{font-family:'JetBrains Mono',monospace}
+  .hidden{display:none!important}
+
+  /* ── LOGIN ── */
+  #login-page{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:radial-gradient(ellipse 80% 60% at 50% -10%,rgba(0,159,230,.12) 0%,transparent 60%),radial-gradient(ellipse 60% 40% at 90% 100%,rgba(22,27,99,.06) 0%,transparent 50%),var(--bg)}
+  .login-card{background:var(--white);border-radius:var(--r);box-shadow:var(--shmd);width:100%;max-width:420px;overflow:hidden}
+  .login-hdr{background:linear-gradient(135deg,var(--navy) 0%,var(--navy2) 100%);padding:36px 36px 28px;position:relative;overflow:hidden}
+  .login-hdr::before{content:'';position:absolute;right:-40px;top:-40px;width:160px;height:160px;border-radius:50%;background:rgba(0,159,230,.15)}
+  .login-hdr::after{content:'';position:absolute;right:20px;top:30px;width:80px;height:80px;border-radius:50%;background:rgba(255,255,255,.05)}
+  .login-logo{font-family:'Oswald',sans-serif;font-weight:700;font-size:28px;color:#fff;letter-spacing:2px;position:relative;z-index:1}
+  .login-logo span{color:var(--blue)}
+  .login-sub{font-size:13px;color:rgba(255,255,255,.65);margin-top:6px;position:relative;z-index:1}
+  .login-body{padding:32px 36px 36px}
+  .login-body h2{font-family:'Oswald',sans-serif;font-size:20px;font-weight:600;color:var(--navy);margin-bottom:24px}
+  .field{margin-bottom:16px}
+  .field label{display:block;font-size:12px;font-weight:600;color:var(--muted);letter-spacing:.8px;text-transform:uppercase;margin-bottom:6px}
+  .field input{width:100%;padding:11px 14px;border:1.5px solid var(--border);border-radius:10px;font-family:'Inter',sans-serif;font-size:14px;color:var(--text);background:var(--white);outline:none;transition:border-color .2s,box-shadow .2s}
+  .field input:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(0,159,230,.12)}
+  .pw-wrap{position:relative}
+  .pw-wrap input{padding-right:44px}
+  .btn-eye{position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;padding:4px;color:var(--muted);display:flex;align-items:center;transition:color .2s}
+  .btn-eye:hover{color:var(--navy)}
+  .btn-primary{width:100%;padding:13px;background:linear-gradient(135deg,var(--blue) 0%,#0082c8 100%);color:#fff;border:none;border-radius:10px;font-family:'Oswald',sans-serif;font-size:16px;font-weight:600;letter-spacing:1px;cursor:pointer;transition:opacity .2s,transform .1s,box-shadow .2s;margin-top:8px;box-shadow:0 4px 12px rgba(0,159,230,.3)}
+  .btn-primary:hover:not(:disabled){opacity:.92;transform:translateY(-1px);box-shadow:0 6px 20px rgba(0,159,230,.35)}
+  .btn-primary:disabled{opacity:.6;cursor:not-allowed}
+  .err-msg{background:rgba(254,26,0,.07);border:1px solid rgba(254,26,0,.2);border-radius:8px;padding:10px 14px;font-size:13px;color:var(--red);margin-top:12px}
+
+  /* ── APP ── */
+  #app-page{min-height:100vh;display:flex;flex-direction:column}
+  .app-hdr{background:var(--white);border-bottom:3px solid var(--blue);padding:0 24px;height:64px;display:flex;align-items:center;justify-content:space-between;box-shadow:0 2px 8px rgba(22,27,99,.06);position:sticky;top:0;z-index:100}
+  .hdr-brand{display:flex;align-items:center;gap:12px}
+  .hdr-logo{font-family:'Oswald',sans-serif;font-weight:700;font-size:22px;color:var(--navy);letter-spacing:2px}
+  .hdr-logo span{color:var(--blue)}
+  .hdr-sep{width:1px;height:20px;background:var(--border)}
+  .hdr-sub{font-size:13px;color:var(--muted);font-weight:500}
+  .hdr-right{display:flex;align-items:center;gap:12px}
+  .user-chip{font-size:13px;color:var(--navy2);font-weight:600;background:rgba(31,73,119,.08);padding:5px 12px;border-radius:20px}
+  .btn-logout{background:none;border:1.5px solid var(--border);border-radius:8px;padding:6px 14px;font-family:'Inter',sans-serif;font-size:13px;font-weight:500;color:var(--muted);cursor:pointer;transition:all .2s}
+  .btn-logout:hover{border-color:var(--red);color:var(--red)}
+
+  /* ── MAIN ── */
+  .app-main{flex:1;max-width:1000px;width:100%;margin:0 auto;padding:36px 24px}
+
+  /* ── QUERY CARD ── */
+  .query-card{background:var(--white);border-radius:var(--r);box-shadow:var(--sh);padding:28px 32px;margin-bottom:24px}
+  .query-card h2{font-family:'Oswald',sans-serif;font-size:16px;font-weight:600;color:var(--navy);margin-bottom:18px;letter-spacing:1px}
+  .query-row{display:flex;gap:12px;align-items:stretch}
+  .query-input{flex:1;padding:13px 16px;border:1.5px solid var(--border);border-radius:12px;font-family:'JetBrains Mono',monospace;font-size:15px;color:var(--text);background:var(--bg);outline:none;transition:border-color .2s,box-shadow .2s,background .2s;letter-spacing:.5px}
+  .query-input::placeholder{color:var(--muted);opacity:.7;font-family:'Inter',sans-serif;letter-spacing:0}
+  .query-input:focus{border-color:var(--blue);background:var(--white);box-shadow:0 0 0 3px rgba(0,159,230,.12)}
+  .query-input:disabled{opacity:.6;cursor:not-allowed}
+  .btn-query{padding:13px 28px;background:linear-gradient(135deg,var(--navy) 0%,var(--navy2) 100%);color:#fff;border:none;border-radius:12px;font-family:'Oswald',sans-serif;font-size:16px;font-weight:600;letter-spacing:1px;cursor:pointer;transition:opacity .2s,transform .1s,box-shadow .2s;box-shadow:0 4px 12px rgba(22,27,99,.25);white-space:nowrap;display:flex;align-items:center;gap:8px;min-width:130px;justify-content:center}
+  .btn-query:hover:not(:disabled){opacity:.9;transform:translateY(-1px);box-shadow:0 6px 20px rgba(22,27,99,.3)}
+  .btn-query:disabled{opacity:.6;cursor:not-allowed;transform:none}
+  .spinner{width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* ── PIPELINE ── */
+  .pipeline-card{background:var(--white);border-radius:var(--r);box-shadow:var(--sh);padding:24px 32px;margin-bottom:24px;animation:slideDown .3s ease}
+  @keyframes slideDown{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
+  .pipeline-card h3{font-family:'Oswald',sans-serif;font-size:14px;font-weight:600;color:var(--navy);margin-bottom:20px;letter-spacing:1px}
+
+  /* shared mapping step */
+  .pipe-mapping{display:flex;align-items:center;gap:10px;margin-bottom:20px}
+  .pipe-icon-sm{width:36px;height:36px;border-radius:50%;background:var(--bg);border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:16px;transition:all .3s;flex-shrink:0}
+  .pipe-icon-sm.active{background:rgba(0,159,230,.1);border-color:var(--blue);box-shadow:0 0 0 4px rgba(0,159,230,.12);animation:pulse 1.5s ease-in-out infinite}
+  .pipe-icon-sm.done{background:rgba(92,184,17,.1);border-color:var(--green)}
+  .pipe-icon-sm.error{background:rgba(254,26,0,.08);border-color:var(--red)}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 4px rgba(0,159,230,.12)}50%{box-shadow:0 0 0 9px rgba(0,159,230,.05)}}
+  .pipe-map-label{font-size:12px;font-weight:600;color:var(--muted);transition:color .3s}
+  .pipe-icon-sm.active~.pipe-map-label,.pipe-map-label.active{color:var(--blue)}
+  .pipe-icon-sm.done~.pipe-map-label,.pipe-map-label.done{color:var(--green)}
+  .pipe-icon-sm.error~.pipe-map-label,.pipe-map-label.error{color:var(--red)}
+
+  /* per-supplier rows */
+  .pipe-suppliers{display:flex;flex-direction:column;gap:14px}
+  .pipe-sup-row{display:flex;align-items:center;gap:0;background:var(--bg);border-radius:12px;padding:10px 16px}
+  .pipe-sup-name{font-size:11px;font-weight:700;color:var(--navy2);letter-spacing:.8px;text-transform:uppercase;width:80px;flex-shrink:0}
+  .pipe-steps{display:flex;flex:1;align-items:center}
+  .pipe-step{flex:1;display:flex;flex-direction:column;align-items:center;position:relative}
+  .pipe-step:not(:last-child)::after{content:'';position:absolute;top:18px;left:calc(50% + 18px);right:calc(-50% + 18px);height:2px;background:var(--border);transition:background .4s;z-index:0}
+  .pipe-step.done:not(:last-child)::after{background:var(--green)}
+  .pipe-step.active:not(:last-child)::after{background:var(--blue)}
+  .pipe-step-icon{width:36px;height:36px;border-radius:50%;background:var(--white);border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:15px;position:relative;z-index:1;transition:all .3s}
+  .pipe-step.active .pipe-step-icon{background:rgba(0,159,230,.1);border-color:var(--blue);box-shadow:0 0 0 3px rgba(0,159,230,.12);animation:pulse 1.5s ease-in-out infinite}
+  .pipe-step.done .pipe-step-icon{background:rgba(92,184,17,.1);border-color:var(--green)}
+  .pipe-step.error .pipe-step-icon{background:rgba(254,26,0,.08);border-color:var(--red)}
+  .pipe-step-lbl{font-size:10px;font-weight:600;color:var(--muted);margin-top:5px;transition:color .3s}
+  .pipe-step.active .pipe-step-lbl{color:var(--blue)}
+  .pipe-step.done .pipe-step-lbl{color:var(--green)}
+  .pipe-step.error .pipe-step-lbl{color:var(--red)}
+  .progress-msg{margin-top:16px;padding:9px 14px;background:var(--bg);border-radius:8px;font-size:13px;color:var(--muted);border-left:3px solid var(--blue)}
+
+  /* ── ERROR BANNER ── */
+  .err-banner{background:rgba(254,26,0,.06);border:1px solid rgba(254,26,0,.2);border-radius:12px;padding:16px 20px;margin-bottom:24px;font-size:14px;color:var(--red);display:flex;align-items:flex-start;gap:10px;animation:slideDown .3s ease}
+
+  /* ── RECOMMENDATION ── */
+  .reco-card{border-radius:var(--r);overflow:hidden;margin-bottom:24px;box-shadow:var(--shmd);animation:slideDown .4s ease}
+  .reco-card.winner-csavarda{border-top:4px solid var(--blue)}
+  .reco-card.winner-irontrade{border-top:4px solid var(--navy)}
+  .reco-card.winner-koelner{border-top:4px solid #E84C0B}
+  .reco-card.winner-mekrs{border-top:4px solid #8B5CF6}
+  .reco-card.winner-none{border-top:4px solid var(--amber)}
+  .reco-hdr{padding:18px 24px;display:flex;align-items:center;gap:14px}
+  .reco-card.winner-csavarda .reco-hdr{background:linear-gradient(135deg,rgba(0,159,230,.08) 0%,rgba(0,159,230,.02) 100%)}
+  .reco-card.winner-irontrade .reco-hdr{background:linear-gradient(135deg,rgba(22,27,99,.06) 0%,rgba(31,73,119,.02) 100%)}
+  .reco-card.winner-koelner .reco-hdr{background:linear-gradient(135deg,rgba(232,76,11,.07) 0%,rgba(232,76,11,.02) 100%)}
+  .reco-card.winner-mekrs .reco-hdr{background:linear-gradient(135deg,rgba(139,92,246,.07) 0%,rgba(139,92,246,.02) 100%)}
+  .reco-card.winner-none .reco-hdr{background:rgba(231,156,2,.06)}
+  .reco-icon{font-size:28px;flex-shrink:0}
+  .reco-body{flex:1}
+  .reco-title{font-family:'Oswald',sans-serif;font-size:13px;font-weight:600;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:4px}
+  .reco-winner{font-family:'Oswald',sans-serif;font-size:22px;font-weight:700;color:var(--navy);line-height:1.1}
+  .reco-card.winner-csavarda .reco-winner{color:var(--blue)}
+  .reco-card.winner-irontrade .reco-winner{color:var(--navy)}
+  .reco-card.winner-koelner .reco-winner{color:#E84C0B}
+  .reco-card.winner-mekrs .reco-winner{color:#8B5CF6}
+  .reco-reason{font-size:13px;color:var(--muted);margin-top:4px;line-height:1.5}
+  .reco-savings{display:flex;gap:12px;padding:14px 24px 18px;flex-wrap:wrap;background:var(--white)}
+  .reco-stat{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:10px 16px;display:flex;flex-direction:column;gap:2px}
+  .reco-stat-label{font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.7px}
+  .reco-stat-value{font-family:'Oswald',sans-serif;font-size:18px;font-weight:600;color:var(--navy)}
+  .reco-stat-value.green{color:var(--green)}
+
+  /* ── RESULTS GRID ── */
+  .results-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;margin-bottom:0}
+  .sup-card{background:var(--white);border-radius:var(--r);box-shadow:var(--sh);overflow:hidden;animation:slideDown .4s ease}
+  .sup-card.is-winner{box-shadow:0 4px 24px rgba(0,159,230,.18);border:2px solid var(--blue)}
+  .sup-card.is-loser{opacity:.85}
+  .sup-card-hdr{padding:16px 22px;display:flex;align-items:center;justify-content:space-between}
+  .sup-card.is-winner .sup-card-hdr{background:linear-gradient(135deg,var(--navy) 0%,var(--navy2) 100%)}
+  .sup-card.is-loser .sup-card-hdr{background:linear-gradient(135deg,#4a5568 0%,#2d3748 100%)}
+  .sup-name{font-family:'Oswald',sans-serif;font-size:17px;font-weight:700;color:#fff;letter-spacing:1px}
+  .sup-badge{font-size:11px;font-weight:700;letter-spacing:.5px;padding:3px 10px;border-radius:12px;font-family:'Oswald',sans-serif}
+  .badge-winner{background:var(--blue);color:#fff}
+  .badge-loser{background:rgba(255,255,255,.15);color:rgba(255,255,255,.7)}
+  .badge-error{background:rgba(254,26,0,.15);color:var(--red)}
+  .sup-body{padding:20px 22px}
+  .sup-err{color:var(--red);font-size:13px;background:rgba(254,26,0,.06);border:1px solid rgba(254,26,0,.15);border-radius:8px;padding:12px 14px}
+
+  /* metric blocks in supplier card */
+  .sup-metric{margin-bottom:16px}
+  .sup-metric-label{font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:5px}
+  .sup-price-big{font-family:'Oswald',sans-serif;font-size:30px;font-weight:600;color:var(--blue);line-height:1}
+  .sup-card.is-loser .sup-price-big{color:var(--navy2)}
+  .sup-price-unit{font-family:'Inter',sans-serif;font-size:13px;font-weight:500;color:var(--muted);margin-left:3px}
+  .sup-price-orig{font-size:12px;color:var(--muted);margin-top:4px}
+  .sup-part{font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--navy);word-break:break-all}
+
+  /* stock */
+  .stock-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+  .stock-loc{font-size:12px;color:var(--muted);font-weight:500}
+  .stock-chip{font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:500;padding:2px 10px;border-radius:7px}
+  .chip-green{background:rgba(92,184,17,.12);color:#3a7a09}
+  .chip-amber{background:rgba(231,156,2,.12);color:#9b6800}
+  .chip-red{background:rgba(254,26,0,.08);color:#c01400}
+
+  .sup-divider{height:1px;background:var(--border);margin:14px 0}
+  .sup-ts{font-size:11px;color:var(--muted);text-align:right}
+
+  /* ── NOTES ── */
+  .notes-wrap{background:var(--white);border-radius:var(--r);box-shadow:var(--sh);overflow:hidden;margin-top:20px;animation:slideDown .5s ease}
+  .notes-toggle{background:none;border:none;border-bottom:1.5px solid var(--border);width:100%;padding:14px 22px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;font-family:'Inter',sans-serif;font-size:14px;font-weight:600;color:var(--navy2);transition:all .2s}
+  .notes-toggle:hover{background:var(--bg);color:var(--blue)}
+  .notes-arrow{font-size:10px;transition:transform .25s}
+  .notes-arrow.open{transform:rotate(180deg)}
+  .notes-body{overflow:hidden;max-height:0;transition:max-height .35s ease}
+  .notes-body.open{max-height:600px}
+  .notes-text{padding:16px 22px;font-size:13px;line-height:1.7;color:var(--text);background:var(--bg);white-space:pre-wrap}
+
+  /* ── ADMIN BUTTON ── */
+  .btn-admin{background:none;border:1.5px solid rgba(22,27,99,.2);border-radius:8px;padding:6px 14px;font-family:'Inter',sans-serif;font-size:13px;font-weight:500;color:var(--navy2);cursor:pointer;transition:all .2s;display:flex;align-items:center;gap:6px}
+  .btn-admin:hover{border-color:var(--navy);color:var(--navy);background:rgba(22,27,99,.05)}
+
+  /* ── ADMIN OVERLAY ── */
+  #adm-overlay{position:fixed;inset:0;background:rgba(22,27,99,.55);backdrop-filter:blur(3px);z-index:500;display:flex;align-items:flex-start;justify-content:center;padding:32px 24px;overflow-y:auto}
+  .adm-card{background:var(--white);border-radius:var(--r);box-shadow:0 8px 48px rgba(22,27,99,.22);width:100%;max-width:980px}
+  .adm-hdr{background:linear-gradient(135deg,var(--navy) 0%,var(--navy2) 100%);padding:18px 28px;display:flex;align-items:center;justify-content:space-between;border-radius:var(--r) var(--r) 0 0}
+  .adm-hdr-title{font-family:'Oswald',sans-serif;font-size:17px;font-weight:700;color:#fff;letter-spacing:2px}
+  .adm-hdr-right{display:flex;align-items:center;gap:14px}
+  .adm-hdr-user{font-size:12px;color:rgba(255,255,255,.7);background:rgba(255,255,255,.1);padding:3px 10px;border-radius:12px}
+  .adm-btn-close{background:rgba(255,255,255,.12);border:none;border-radius:8px;color:#fff;width:32px;height:32px;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .2s}
+  .adm-btn-close:hover{background:rgba(255,255,255,.25)}
+  .adm-btn-logout{background:none;border:1.5px solid rgba(255,255,255,.3);border-radius:8px;color:rgba(255,255,255,.8);font-family:'Inter',sans-serif;font-size:12px;padding:4px 12px;cursor:pointer;transition:all .2s}
+  .adm-btn-logout:hover{border-color:#fff;color:#fff}
+
+  .adm-body{padding:32px 36px}
+  .adm-login-wrap{max-width:380px;margin:0 auto}
+  .adm-login-wrap h2{font-family:'Oswald',sans-serif;font-size:20px;font-weight:600;color:var(--navy);margin-bottom:22px}
+
+  .adm-section{margin-bottom:32px}
+  .adm-section-title{font-family:'Oswald',sans-serif;font-size:13px;font-weight:600;color:var(--navy);letter-spacing:1px;text-transform:uppercase;margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid var(--border)}
+  .adm-hint{font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.6}
+  .adm-hint code{font-family:'JetBrains Mono',monospace;background:var(--bg);padding:1px 6px;border-radius:4px;font-size:11px;color:var(--navy2)}
+  .adm-upload-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  .adm-file-label{flex:1;min-width:200px;padding:10px 14px;border:1.5px dashed var(--border);border-radius:10px;font-size:13px;color:var(--muted);cursor:pointer;transition:border-color .2s;display:flex;align-items:center;gap:8px}
+  .adm-file-label:hover{border-color:var(--blue);color:var(--navy)}
+  .adm-file-label span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #adm-file{display:none}
+  .btn-upload{padding:10px 24px;background:linear-gradient(135deg,var(--blue) 0%,#0082c8 100%);color:#fff;border:none;border-radius:10px;font-family:'Oswald',sans-serif;font-size:15px;font-weight:600;letter-spacing:1px;cursor:pointer;transition:opacity .2s;box-shadow:0 3px 10px rgba(0,159,230,.3)}
+  .btn-upload:hover:not(:disabled){opacity:.9}
+  .btn-upload:disabled{opacity:.5;cursor:not-allowed}
+  .adm-msg{padding:11px 16px;border-radius:10px;font-size:13px;margin-top:12px}
+  .adm-msg.ok{background:rgba(92,184,17,.1);border:1px solid rgba(92,184,17,.3);color:#3a7a09}
+  .adm-msg.err{background:rgba(254,26,0,.07);border:1px solid rgba(254,26,0,.2);color:var(--red)}
+
+  .adm-table-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:12px}
+  .adm-table{width:100%;border-collapse:collapse;min-width:500px}
+  .adm-table th{background:var(--navy);color:#fff;padding:10px 16px;text-align:left;font-family:'Oswald',sans-serif;font-size:11px;letter-spacing:.8px;text-transform:uppercase;white-space:nowrap}
+  .adm-table th:first-child{border-radius:12px 0 0 0}
+  .adm-table th:last-child{border-radius:0 12px 0 0}
+  .adm-table td{padding:9px 16px;border-bottom:1px solid var(--border);font-family:'JetBrains Mono',monospace;font-size:13px;white-space:nowrap}
+  .adm-table tr:last-child td{border-bottom:none}
+  .adm-table tr:hover td{background:rgba(0,159,230,.04)}
+  .adm-empty{text-align:center;padding:32px;color:var(--muted);font-size:14px}
+
+  /* ── SUPPLIER ROWS ── */
+  .adm-supplier-row{background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:16px 20px;margin-bottom:12px}
+  .adm-supplier-row:last-child{margin-bottom:0}
+  .adm-sup-header{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+  .adm-sup-name{font-family:'Oswald',sans-serif;font-size:13px;font-weight:700;color:var(--navy);letter-spacing:1px;text-transform:uppercase;background:var(--navy);color:#fff;padding:2px 10px;border-radius:6px}
+  .adm-sup-url{font-size:12px;color:var(--blue);text-decoration:none;font-weight:500}
+  .adm-sup-url:hover{text-decoration:underline}
+  .adm-sup-fields{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap}
+  .adm-sup-fields .field{flex:1;min-width:200px;margin-bottom:0}
+
+  /* ── DELETE MAPPING BUTTON ── */
+  .btn-delete-map{padding:5px 14px;background:none;border:1.5px solid rgba(254,26,0,.35);border-radius:8px;font-family:'Inter',sans-serif;font-size:12px;font-weight:600;color:var(--red);cursor:pointer;transition:all .2s;display:flex;align-items:center;gap:5px}
+  .btn-delete-map:hover{background:rgba(254,26,0,.07);border-color:var(--red)}
+  .btn-delete-map:disabled{opacity:.4;cursor:not-allowed}
+
+  /* ── RESPONSIVE ── */
+  @media(max-width:680px){
+    .app-main{padding:20px 16px}
+    .query-card,.pipeline-card{padding:20px}
+    .results-grid{grid-template-columns:1fr}
+    .sup-price-big{font-size:24px}
+    .query-row{flex-direction:column}
+    .btn-query{width:100%;justify-content:center}
+    .hdr-sub,.hdr-sep{display:none}
+    .reco-savings{flex-direction:column}
+  }
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-page">
+  <div class="login-card">
+    <div class="login-hdr">
+      <div class="login-logo">GÉP<span>-COOP</span></div>
+      <div class="login-sub">Beszerző Platform</div>
+    </div>
+    <div class="login-body">
+      <h2>Bejelentkezés</h2>
+      <div class="field">
+        <label>Felhasználónév</label>
+        <input type="text" id="login-user" placeholder="Felhasználónév" autocomplete="username">
+      </div>
+      <div class="field">
+        <label>Jelszó</label>
+        <div class="pw-wrap">
+          <input type="password" id="login-pass" placeholder="Jelszó" autocomplete="current-password">
+          <button type="button" class="btn-eye" id="btn-eye" title="Show / hide password">
+            <svg id="icon-eye" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg id="icon-eye-off" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+          </button>
+        </div>
+      </div>
+      <button class="btn-primary" id="btn-login"><span id="login-btn-txt">Bejelentkezés</span></button>
+      <div id="login-err" class="err-msg hidden"></div>
+    </div>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="app-page" class="hidden">
+  <header class="app-hdr">
+    <div class="hdr-brand">
+      <div class="hdr-logo">GÉP<span>-COOP</span></div>
+      <div class="hdr-sep"></div>
+      <div class="hdr-sub">Beszállítói Árlekérdező</div>
+    </div>
+    <div class="hdr-right">
+      <div class="user-chip" id="user-display"></div>
+      <button class="btn-admin" id="btn-admin">⚙ Admin</button>
+      <button class="btn-logout" id="btn-logout">Kijelentkezés</button>
+    </div>
+  </header>
+
+  <main class="app-main">
+
+    <!-- Query -->
+    <div class="query-card">
+      <h2>ÁR &amp; KÉSZLET ÖSSZEHASONLÍTÁS</h2>
+      <div class="query-row">
+        <input type="text" class="query-input" id="part-input"
+               list="parts-datalist"
+               placeholder="Adja meg a belső cikkszámot…" autocomplete="off" spellcheck="false">
+        <datalist id="parts-datalist"></datalist>
+        <button class="btn-query" id="btn-query">
+          <span id="query-btn-inner">ÖSSZEHASONLÍTÁS</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Pipeline -->
+    <div class="pipeline-card hidden" id="pipeline-card">
+      <h3>FELDOLGOZÁS</h3>
+
+      <!-- Mapping row -->
+      <div class="pipe-mapping">
+        <div class="pipe-icon-sm" id="pipe-map-icon">🗂️</div>
+        <div>
+          <div class="pipe-map-label" id="pipe-map-label">Leképezés</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:1px" id="pipe-map-sub">Beszállítói cikkszámok keresése</div>
+        </div>
+      </div>
+
+      <!-- Per-supplier browser rows (injected dynamically) -->
+      <div class="pipe-suppliers" id="pipe-suppliers"></div>
+
+      <div class="progress-msg" id="progress-msg">Indítás…</div>
+    </div>
+
+    <!-- Error -->
+    <div class="err-banner hidden" id="err-banner">
+      <div style="font-size:18px;flex-shrink:0;margin-top:1px">⚠️</div>
+      <div id="err-text"></div>
+    </div>
+
+    <!-- Recommendation (shown above results) -->
+    <div id="reco-card" class="reco-card hidden"></div>
+
+    <!-- Two supplier result cards -->
+    <div class="results-grid hidden" id="results-grid"></div>
+
+  </main>
+</div>
+
+<!-- ══ ADMIN OVERLAY ══════════════════════════════════════════════ -->
+<div id="adm-overlay" class="hidden">
+  <div class="adm-card">
+
+    <div class="adm-hdr">
+      <div class="adm-hdr-title">⚙ ADMIN PANEL</div>
+      <div class="adm-hdr-right">
+        <div class="adm-hdr-user hidden" id="adm-logged-as"></div>
+        <button class="adm-btn-logout hidden" id="adm-btn-logout">Kijelentkezés</button>
+        <button class="adm-btn-close" id="adm-close" title="Bezárás">✕</button>
+      </div>
+    </div>
+
+    <!-- Login state -->
+    <div id="adm-login" class="adm-body">
+      <div class="adm-login-wrap">
+        <h2>Admin bejelentkezés</h2>
+        <div class="field">
+          <label>Felhasználónév</label>
+          <input type="text" id="adm-user" placeholder="admin" autocomplete="off" readonly
+                 onfocus="this.removeAttribute('readonly')">
+        </div>
+        <div class="field">
+          <label>Jelszó</label>
+          <div class="pw-wrap">
+            <input type="password" id="adm-pass" autocomplete="off" readonly
+                   onfocus="this.removeAttribute('readonly')">
+            <button type="button" class="btn-eye" id="adm-btn-eye" title="Jelszó megjelenítése">
+              <svg id="adm-icon-eye" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              <svg id="adm-icon-eye-off" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+            </button>
+          </div>
+        </div>
+        <button class="btn-primary" id="adm-btn-login">Bejelentkezés</button>
+        <div id="adm-login-err" class="err-msg hidden"></div>
+      </div>
+    </div>
+
+    <!-- Main state (shown after login) -->
+    <div id="adm-main" class="adm-body hidden">
+
+      <!-- User management section -->
+      <div class="adm-section">
+        <div class="adm-section-title">Felhasználókezelés</div>
+        <p class="adm-hint">A bejelentkezési felhasználónév és jelszó módosítása. Mentés után azonnal érvényes.</p>
+        <div style="max-width:400px;display:flex;flex-direction:column;gap:12px">
+          <div class="field" style="margin-bottom:0">
+            <label>Felhasználónév</label>
+            <input type="text" id="adm-new-user" autocomplete="off" readonly
+                   onfocus="this.removeAttribute('readonly')" placeholder="pl. gepcoop">
+          </div>
+          <div class="field" style="margin-bottom:0">
+            <label>Jelszó</label>
+            <div class="pw-wrap">
+              <input type="password" id="adm-new-pass" autocomplete="off" readonly
+                     onfocus="this.removeAttribute('readonly')" placeholder="Új jelszó">
+              <button type="button" class="btn-eye" id="adm-new-btn-eye" title="Jelszó megjelenítése">
+                <svg id="adm-new-icon-eye" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                <svg id="adm-new-icon-eye-off" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+              </button>
+            </div>
+          </div>
+          <div>
+            <button class="btn-upload" id="adm-save-user">Mentés</button>
+          </div>
+          <div id="adm-user-msg" class="hidden"></div>
+        </div>
+      </div>
+
+      <!-- Supplier credentials section -->
+      <div class="adm-section">
+        <div class="adm-section-title">Beszállítói belépési adatok</div>
+        <p class="adm-hint">A beszállítói webshopokba való bejelentkezéshez használt hitelesítő adatok. Mentés után azonnal érvényes.</p>
+        <div id="adm-suppliers-wrap"></div>
+      </div>
+
+      <!-- Upload section -->
+      <div class="adm-section">
+        <div class="adm-section-title">Mapping CSV feltöltése</div>
+        <p class="adm-hint">
+          Kötelező oszlop: <code>gepcoop_part_no</code> &nbsp;|&nbsp;
+          Opcionális: <code>csavarda_part_no</code>, <code>irontrade_part_no</code>,
+          <code>koelner_part_no</code>, <code>mekrs_part_no</code>
+        </p>
+        <div class="adm-upload-row">
+          <label class="adm-file-label" for="adm-file">
+            📂 <span id="adm-file-name">Válasszon CSV fájlt…</span>
+          </label>
+          <input type="file" id="adm-file" accept=".csv">
+          <button class="btn-upload" id="adm-btn-upload" disabled>Feltöltés</button>
+        </div>
+        <div id="adm-upload-msg" class="hidden"></div>
+      </div>
+
+      <!-- Current mapping table -->
+      <div class="adm-section">
+        <div class="adm-section-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+          <span>Jelenlegi mapping &mdash; <span id="adm-row-count">…</span></span>
+          <button class="btn-delete-map" id="adm-btn-delete-map">🗑 Törlés</button>
+        </div>
+        <div id="adm-delete-msg" class="hidden" style="margin-bottom:10px"></div>
+        <div class="adm-table-wrap">
+          <table class="adm-table">
+            <thead id="adm-thead"></thead>
+            <tbody id="adm-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+/* ══ STATE ══════════════════════════════════════════════════════ */
+let authToken = sessionStorage.getItem('gc_token');
+let username  = sessionStorage.getItem('gc_user');
+
+// pipeline state per supplier: {csavarda: [s0,s1,s2,s3], irontrade: [...]}
+const BROWSER_STEPS = [
+  {icon:'🌐', label:'Kapcsolódás'},
+  {icon:'🔑', label:'Bejelentkezés'},
+  {icon:'🔍', label:'Keresés'},
+  {icon:'📊', label:'Kiolvasás'},
+];
+let supPipeState = {}; // supplier_id → array of 4 step states
+
+// ── Autocomplete (native datalist) ──────────────────────────────
+let allParts = [];
+
+async function loadParts() {
+  try {
+    const res = await fetch('/parts', { headers: { 'Authorization': `Bearer ${authToken}` } });
+    if (!res.ok) return;
+    allParts = (await res.json()).parts || [];
+    fillDatalist('');
+  } catch(e) {}
+}
+
+function fillDatalist(q) {
+  const up = q.toUpperCase();
+  const matches = up
+    ? allParts.filter(p => p.toUpperCase().includes(up))
+    : allParts;
+  document.getElementById('parts-datalist').innerHTML =
+    matches.slice(0, 20).map(p => `<option value="${p}">`).join('');
+}
+
+/* ══ BOOT ═══════════════════════════════════════════════════════ */
+if (authToken) showApp();
+
+/* ══ LOGIN ══════════════════════════════════════════════════════ */
+document.getElementById('login-pass').addEventListener('keydown', e => { if (e.key==='Enter') doLogin(); });
+document.getElementById('btn-login').addEventListener('click', doLogin);
+document.getElementById('btn-eye').addEventListener('click', () => {
+  const inp = document.getElementById('login-pass');
+  const on  = document.getElementById('icon-eye');
+  const off = document.getElementById('icon-eye-off');
+  const show = inp.type === 'password';
+  inp.type = show ? 'text' : 'password';
+  on.style.display  = show ? 'none' : '';
+  off.style.display = show ? '' : 'none';
+});
+
+async function doLogin() {
+  const user = document.getElementById('login-user').value.trim();
+  const pass = document.getElementById('login-pass').value;
+  const errEl = document.getElementById('login-err');
+  const btn   = document.getElementById('btn-login');
+  const txt   = document.getElementById('login-btn-txt');
+  if (!user || !pass) { showLoginErr('Kérjük töltse ki a mezőket.'); return; }
+  btn.disabled = true; txt.textContent = 'Bejelentkezés…'; errEl.classList.add('hidden');
+  try {
+    const res = await fetch('/login', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({username:user, password:pass}),
+    });
+    if (!res.ok) { const d=await res.json().catch(()=>({})); throw new Error(d.detail||'Hibás felhasználónév vagy jelszó.'); }
+    const data = await res.json();
+    authToken = data.token; username = data.username;
+    sessionStorage.setItem('gc_token', authToken);
+    sessionStorage.setItem('gc_user', username);
+    showApp();
+  } catch(err) { showLoginErr(err.message); }
+  finally { btn.disabled=false; txt.textContent='Bejelentkezés'; }
+}
+function showLoginErr(msg){ const el=document.getElementById('login-err'); el.textContent=msg; el.classList.remove('hidden'); }
+
+/* ══ APP ════════════════════════════════════════════════════════ */
+function showApp(){
+  document.getElementById('login-page').classList.add('hidden');
+  document.getElementById('app-page').classList.remove('hidden');
+  document.getElementById('user-display').textContent = username || 'User';
+  loadParts();
+  setTimeout(() => document.getElementById('part-input').focus(), 50);
+}
+document.getElementById('btn-logout').addEventListener('click', () => {
+  sessionStorage.removeItem('gc_token'); sessionStorage.removeItem('gc_user');
+  authToken=null; username=null;
+  document.getElementById('app-page').classList.add('hidden');
+  document.getElementById('login-page').classList.remove('hidden');
+  document.getElementById('login-user').value='';
+  document.getElementById('login-pass').value='';
+  resetUI();
+});
+const partInput = document.getElementById('part-input');
+
+partInput.addEventListener('input', () => fillDatalist(partInput.value.trim()));
+partInput.addEventListener('keydown', e => { if (e.key === 'Enter') doQuery(); });
+
+document.getElementById('btn-query').addEventListener('click', doQuery);
+
+/* ══ PIPELINE HELPERS ══════════════════════════════════════════ */
+function setMapStep(state) {
+  const icon = document.getElementById('pipe-map-icon');
+  const lbl  = document.getElementById('pipe-map-label');
+  icon.className = `pipe-icon-sm ${state}`;
+  lbl.className  = `pipe-map-label ${state}`;
+}
+
+function initSupplierPipelines(supplierIds) {
+  const container = document.getElementById('pipe-suppliers');
+  container.innerHTML = '';
+  supPipeState = {};
+  for (const sid of supplierIds) {
+    supPipeState[sid] = ['pending','pending','pending','pending'];
+    const row = document.createElement('div');
+    row.className = 'pipe-sup-row';
+    row.id = `pipe-row-${sid}`;
+    row.innerHTML = `
+      <div class="pipe-sup-name">${sid}</div>
+      <div class="pipe-steps" id="pipe-steps-${sid}">
+        ${BROWSER_STEPS.map((s,i) => `
+          <div class="pipe-step pending" id="pipe-${sid}-${i}">
+            <div class="pipe-step-icon">${s.icon}</div>
+            <div class="pipe-step-lbl">${s.label}</div>
+          </div>`).join('')}
+      </div>`;
+    container.appendChild(row);
+  }
+}
+
+function setSupStep(sid, idx, state) {
+  if (!supPipeState[sid]) return;
+  supPipeState[sid][idx] = state;
+  const el = document.getElementById(`pipe-${sid}-${idx}`);
+  if (el) el.className = `pipe-step ${state}`;
+}
+
+function setSupStepRange(sid, from, to, state) {
+  for (let i=from; i<=to; i++) setSupStep(sid, i, state);
+}
+
+function allSupDone(sid) { setSupStepRange(sid, 0, 3, 'done'); }
+
+/* ══ QUERY ══════════════════════════════════════════════════════ */
+async function doQuery() {
+  const partNo = document.getElementById('part-input').value.trim();
+  if (!partNo) return;
+  resetUI();
+  setQueryBusy(true);
+  document.getElementById('pipeline-card').classList.remove('hidden');
+
+  try {
+    const url = `/query/stream?internal_part_no=${encodeURIComponent(partNo)}`;
+    const response = await fetch(url, { headers:{'Authorization':`Bearer ${authToken}`} });
+    if (response.status===401) { sessionStorage.removeItem('gc_token'); location.reload(); return; }
+    if (!response.ok) throw new Error(`Szerver hiba: ${response.status}`);
+
+    const reader=response.body.getReader(), decoder=new TextDecoder();
+    let buffer='';
+    while (true) {
+      const {value,done}=await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value,{stream:true});
+      const events=buffer.split('\n\n');
+      buffer=events.pop();
+      for (const raw of events) { if (raw.trim()) parseSSE(raw); }
+    }
+  } catch(err) { showError(err.message); }
+  finally { setQueryBusy(false); }
+}
+
+function parseSSE(raw) {
+  let type='message', dataStr='';
+  for (const line of raw.split('\n')) {
+    if (line.startsWith('event:')) type=line.slice(6).trim();
+    else if (line.startsWith('data:')) dataStr=line.slice(5).trim();
+  }
+  if (!dataStr) return;
+  let data; try { data=JSON.parse(dataStr); } catch { return; }
+  if (type==='progress') handleProgress(data);
+  else if (type==='result') handleResult(data);
+  else if (type==='error') handleError(data);
+}
+
+function handleProgress(ev) {
+  const {step, status, msg, supplier} = ev;
+  document.getElementById('progress-msg').textContent = msg || '';
+
+  if (step === 'mapping') {
+    if (status==='running') setMapStep('active');
+    else if (status==='done') {
+      setMapStep('done');
+      // Extract supplier names from message "Found N supplier(s): csavarda, irontrade"
+      const match = (msg||'').match(/:\s*(.+)$/);
+      if (match) {
+        const ids = match[1].split(',').map(s=>s.trim()).filter(Boolean);
+        initSupplierPipelines(ids);
+        // Activate Connect step for all suppliers
+        for (const sid of ids) setSupStep(sid, 0, 'active');
+      }
+    }
+    else if (status==='error') setMapStep('error');
+    return;
+  }
+
+  if (step==='browser' && supplier) {
+    const m=(msg||'').toLowerCase();
+    if (status==='running') {
+      if (m.includes('opening') || m.includes('connect')) {
+        setSupStep(supplier,0,'active');
+      } else if (m.includes('login') || m.includes('logging') || m.includes('authenticat')) {
+        setSupStep(supplier,0,'done'); setSupStep(supplier,1,'active');
+      } else if (m.includes('search') || m.includes('searching')) {
+        setSupStep(supplier,1,'done'); setSupStep(supplier,2,'active');
+      } else if (m.includes('reading') || m.includes('extract')) {
+        setSupStep(supplier,2,'done'); setSupStep(supplier,3,'active');
+      }
+    } else if (status==='done') {
+      allSupDone(supplier);
+    } else if (status==='error') {
+      // Mark current active step as error
+      const steps = supPipeState[supplier] || [];
+      for (let i=steps.length-1;i>=0;i--) {
+        if (steps[i]==='active') { setSupStep(supplier,i,'error'); break; }
+      }
+    }
+  }
+}
+
+function handleResult(data) {
+  // Mark all done
+  setMapStep('done');
+  for (const sid of Object.keys(data.suppliers||{})) allSupDone(sid);
+  document.getElementById('progress-msg').textContent = 'Kész — eredmények betöltve.';
+  renderResults(data);
+}
+
+function handleError(data) { showError(data.message || 'Váratlan hiba történt.'); }
+
+/* ══ RENDER RESULTS ════════════════════════════════════════════ */
+function renderResults(data) {
+  const {internal_part_no, suppliers={}, recommendation={}} = data;
+  const winner = recommendation.winner;
+
+  // ── Recommendation card ──────────────────────────────────────
+  const recoCard = document.getElementById('reco-card');
+  const winnerClass = winner ? `winner-${winner}` : 'winner-none';
+  const recoIcon = winner ? '🏆' : '⚠️';
+  const winnerLabel = winner ? winner.charAt(0).toUpperCase()+winner.slice(1) : 'N/A';
+
+  let statsHtml = '';
+  if (recommendation.prices && Object.keys(recommendation.prices).length > 1) {
+    const sids = Object.keys(recommendation.prices);
+    for (const sid of sids) {
+      const p = recommendation.prices[sid];
+      statsHtml += `
+        <div class="reco-stat">
+          <div class="reco-stat-label">${sid.toUpperCase()} Ár</div>
+          <div class="reco-stat-value ${sid===winner?'green':''}">${fmtNum(p,4)} HUF/db</div>
+        </div>`;
+    }
+    if (recommendation.price_diff > 0) {
+      statsHtml += `
+        <div class="reco-stat">
+          <div class="reco-stat-label">Megtakarítás darabonként</div>
+          <div class="reco-stat-value green">−${fmtNum(recommendation.price_diff,4)} HUF</div>
+        </div>
+        <div class="reco-stat">
+          <div class="reco-stat-label">Olcsóbb</div>
+          <div class="reco-stat-value green">${recommendation.savings_pct}%</div>
+        </div>`;
+    }
+  }
+
+  recoCard.className = `reco-card ${winnerClass}`;
+  recoCard.innerHTML = `
+    <div class="reco-hdr">
+      <div class="reco-icon">${recoIcon}</div>
+      <div class="reco-body">
+        <div class="reco-title">Vásárlási javaslat</div>
+        <div class="reco-winner">Rendelés innen: ${winnerLabel}</div>
+        <div class="reco-reason">${recommendation.reason||''}</div>
+      </div>
+    </div>
+    ${statsHtml ? `<div class="reco-savings">${statsHtml}</div>` : ''}`;
+  recoCard.classList.remove('hidden');
+
+  // ── Supplier result cards ────────────────────────────────────
+  const grid = document.getElementById('results-grid');
+  grid.innerHTML = '';
+
+  const supIds = Object.keys(suppliers);
+  // Winner first
+  supIds.sort((a,b) => (a===winner?-1:1));
+
+  for (const sid of supIds) {
+    const r = suppliers[sid];
+    const isWinner = sid === winner;
+    const hasError = 'error' in r;
+
+    const card = document.createElement('div');
+    card.className = `sup-card ${isWinner?'is-winner':'is-loser'}`;
+
+    let bodyHtml = '';
+    if (hasError) {
+      bodyHtml = `<div class="sup-err">⚠️ ${r.error}</div>`;
+    } else {
+      const cur = r.currency || 'HUF';
+      let ppdb, priceUnit, rawStr, czkNote;
+
+      if (cur === 'CZK' && r.price_per_db_huf != null) {
+        // Show HUF-converted price as primary; CZK source price as secondary
+        ppdb      = fmtNum(r.price_per_db_huf, 4);
+        priceUnit = 'HUF';
+        czkNote   = `≈ ${fmtNum(r.price_per_db, 4)} CZK/db (1 CZK = ${r.czk_huf_rate} HUF, ECB)`;
+        rawStr    = r.price_raw != null && r.price_unit_qty != null
+          ? `Eredeti: ${fmtNum(r.price_raw, 2)} CZK / ${fmtInt(r.price_unit_qty)} db`
+          : '';
+      } else {
+        ppdb      = typeof r.price_per_db === 'number' ? fmtNum(r.price_per_db, 4) : '—';
+        priceUnit = cur;
+        czkNote   = '';
+        rawStr    = r.price_raw != null && r.price_unit_qty != null
+          ? `Eredeti: ${fmtNum(r.price_raw, 2)} ${cur} / ${fmtInt(r.price_unit_qty)} db`
+          : '';
+      }
+
+      bodyHtml = `
+        <div class="sup-metric">
+          <div class="sup-metric-label">Egységár</div>
+          <div>
+            <span class="sup-price-big">${ppdb}</span>
+            <span class="sup-price-unit">${priceUnit}/db</span>
+          </div>
+          ${czkNote ? `<div class="sup-price-orig" style="color:var(--muted)">${czkNote}</div>` : ''}
+          ${rawStr ? `<div class="sup-price-orig">${rawStr}</div>` : ''}
+        </div>
+        <div class="sup-metric">
+          <div class="sup-metric-label">Készlet</div>
+          ${renderStock(r.stock)}
+        </div>
+        <div class="sup-divider"></div>
+        <div class="sup-metric">
+          <div class="sup-metric-label">Beszállítói cikkszám</div>
+          <div class="sup-part">${r.supplier_part_no||'—'}</div>
+        </div>
+        ${r.queried_at ? `<div class="sup-ts">🕐 ${fmtTs(r.queried_at)}</div>` : ''}`;
+    }
+
+    card.innerHTML = `
+      <div class="sup-card-hdr">
+        <div class="sup-name">${sid.toUpperCase()}</div>
+        <div class="sup-badge ${isWinner?'badge-winner':hasError?'badge-error':'badge-loser'}">
+          ${isWinner?'LEGJOBB ÁR':hasError?'HIBA':'ALTERNATÍVA'}
+        </div>
+      </div>
+      <div class="sup-body">${bodyHtml}</div>`;
+    grid.appendChild(card);
+  }
+
+  grid.classList.remove('hidden');
+}
+
+function renderStock(stock) {
+  if (stock==null) return '<span style="color:var(--muted);font-size:13px">N/A</span>';
+  if (typeof stock==='object') {
+    return Object.entries(stock).map(([loc,qty]) =>
+      `<div class="stock-row">
+        <span class="stock-loc">${capitalize(loc)}</span>
+        <span class="stock-chip ${chipClass(qty)}">${fmtInt(qty)} db</span>
+      </div>`).join('');
+  }
+  // String stock (e.g. "Raktáron" / "X" from koelner — no exact count available)
+  if (typeof stock==='string') {
+    const inStock = stock.toLowerCase().includes('raktár') || stock.toLowerCase().includes('stock');
+    return `<span class="stock-chip ${inStock?'chip-green':'chip-red'}" style="font-size:14px">
+      ${inStock?'✓ Raktáron':'✗ Nincs készleten'}
+    </span>`;
+  }
+  const qty=Number(stock);
+  return `<span class="stock-chip ${chipClass(qty)}" style="font-size:16px;font-family:'Oswald',sans-serif">
+    ${fmtInt(qty)}<span style="font-size:12px;margin-left:3px;font-family:'Inter',sans-serif">db</span>
+  </span>`;
+}
+
+function chipClass(q){return q>1000?'chip-green':q>=100?'chip-amber':'chip-red'}
+function fmtNum(n,dec){
+  if(n==null||isNaN(Number(n)))return '—';
+  const parts=Number(n).toFixed(dec).split('.');
+  parts[0]=parts[0].replace(/\B(?=(\d{3})+(?!\d))/g,'\u00A0');
+  return parts.join('.');
+}
+function fmtInt(n){
+  const v=Math.round(Number(n||0));
+  return v.toString().replace(/\B(?=(\d{3})+(?!\d))/g,'\u00A0');
+}
+function fmtTs(iso){const d=new Date(iso);return `${d.toLocaleDateString('hu-HU')} ${d.toLocaleTimeString('hu-HU',{hour:'2-digit',minute:'2-digit'})}`}
+function capitalize(s){return String(s).charAt(0).toUpperCase()+String(s).slice(1)}
+
+/* ══ HELPERS ════════════════════════════════════════════════════ */
+function showError(msg){
+  const b=document.getElementById('err-banner');
+  document.getElementById('err-text').textContent=msg;
+  b.classList.remove('hidden');
+}
+function setQueryBusy(busy){
+  document.getElementById('part-input').disabled=busy;
+  document.getElementById('btn-query').disabled=busy;
+  document.getElementById('query-btn-inner').innerHTML=busy?'<div class="spinner"></div>':'ÖSSZEHASONLÍTÁS';
+}
+function resetUI(){
+  supPipeState={};
+  setMapStep('pending');
+  document.getElementById('pipe-suppliers').innerHTML='';
+  document.getElementById('pipeline-card').classList.add('hidden');
+  document.getElementById('err-banner').classList.add('hidden');
+  document.getElementById('reco-card').classList.add('hidden');
+  document.getElementById('results-grid').classList.add('hidden');
+  document.getElementById('progress-msg').textContent='Indítás…';
+}
+
+/* ══ ADMIN ══════════════════════════════════════════════════════ */
+let adminToken = null;
+
+// ── open / close overlay ─────────────────────────────────────────
+function openAdminOverlay() {
+  document.getElementById('adm-overlay').classList.remove('hidden');
+  document.getElementById('adm-login').classList.add('hidden');
+  document.getElementById('adm-main').classList.remove('hidden');
+  admLoadMapping();
+  admLoadUsers();
+  admLoadSuppliers();
+}
+
+document.getElementById('btn-admin').addEventListener('click', openAdminOverlay);
+
+// Admin password show/hide toggle
+document.getElementById('adm-btn-eye').addEventListener('click', () => {
+  const inp = document.getElementById('adm-pass');
+  const on  = document.getElementById('adm-icon-eye');
+  const off = document.getElementById('adm-icon-eye-off');
+  const show = inp.type === 'password';
+  inp.type = show ? 'text' : 'password';
+  on.style.display  = show ? 'none' : '';
+  off.style.display = show ? '' : 'none';
+});
+document.getElementById('adm-close').addEventListener('click', admClose);
+document.getElementById('adm-overlay').addEventListener('click', e => {
+  if (e.target === document.getElementById('adm-overlay')) admClose();
+});
+function admClose() {
+  document.getElementById('adm-overlay').classList.add('hidden');
+}
+
+// ── login ────────────────────────────────────────────────────────
+document.getElementById('adm-pass').addEventListener('keydown', e => { if (e.key === 'Enter') admDoLogin(); });
+document.getElementById('adm-btn-login').addEventListener('click', admDoLogin);
+
+async function admDoLogin() {
+  const user = document.getElementById('adm-user').value.trim();
+  const pass = document.getElementById('adm-pass').value;
+  const errEl = document.getElementById('adm-login-err');
+  const btn   = document.getElementById('adm-btn-login');
+  errEl.classList.add('hidden');
+  if (!user || !pass) { admShowErr('Kérjük töltse ki a mezőket.'); return; }
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    const res = await fetch('/admin/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: user, password: pass }),
+    });
+    if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.detail || 'Hibás belépési adatok.'); }
+    const d = await res.json();
+    adminToken = d.token;
+    document.getElementById('adm-logged-as').textContent = d.username;
+    document.getElementById('adm-logged-as').classList.remove('hidden');
+    document.getElementById('adm-btn-logout').classList.remove('hidden');
+    document.getElementById('adm-login').classList.add('hidden');
+    document.getElementById('adm-main').classList.remove('hidden');
+    admLoadMapping();
+    admLoadUsers();
+    admLoadSuppliers();
+  } catch(err) { admShowErr(err.message); }
+  finally { btn.disabled = false; btn.textContent = 'Bejelentkezés'; }
+}
+function admShowErr(msg) {
+  const el = document.getElementById('adm-login-err');
+  el.textContent = msg; el.classList.remove('hidden');
+}
+
+// ── admin logout ─────────────────────────────────────────────────
+document.getElementById('adm-btn-logout').addEventListener('click', () => {
+  adminToken = null;
+  document.getElementById('adm-logged-as').classList.add('hidden');
+  document.getElementById('adm-btn-logout').classList.add('hidden');
+  document.getElementById('adm-main').classList.add('hidden');
+  document.getElementById('adm-login').classList.remove('hidden');
+  const _u = document.getElementById('adm-user');
+  const _p = document.getElementById('adm-pass');
+  _u.value = ''; _p.value = '';
+  _u.setAttribute('readonly',''); _p.setAttribute('readonly','');
+  _p.type = 'password';
+  document.getElementById('adm-icon-eye').style.display = '';
+  document.getElementById('adm-icon-eye-off').style.display = 'none';
+  document.getElementById('adm-login-err').classList.add('hidden');
+});
+
+// ── load and render current mapping ─────────────────────────────
+async function admLoadMapping() {
+  try {
+    const res = await fetch('/admin/mapping');
+    if (!res.ok) return;
+    const d = await res.json();
+    admRenderTable(d.columns, d.rows);
+  } catch(e) {}
+}
+
+function admRenderTable(columns, rows) {
+  const count = document.getElementById('adm-row-count');
+  const thead = document.getElementById('adm-thead');
+  const tbody = document.getElementById('adm-tbody');
+
+  count.textContent = `${rows.length} cikkszám`;
+
+  if (!columns.length) {
+    thead.innerHTML = '';
+    tbody.innerHTML = `<tr><td colspan="1" class="adm-empty">Nincs feltöltött mapping.</td></tr>`;
+    return;
+  }
+
+  thead.innerHTML = '<tr>' + columns.map(c => `<th>${c}</th>`).join('') + '</tr>';
+  tbody.innerHTML = rows.map(row =>
+    '<tr>' + columns.map(c => `<td>${row[c] ?? ''}</td>`).join('') + '</tr>'
+  ).join('');
+}
+
+// ── file picker ──────────────────────────────────────────────────
+document.getElementById('adm-file').addEventListener('change', e => {
+  const f = e.target.files[0];
+  document.getElementById('adm-file-name').textContent = f ? f.name : 'Válasszon CSV fájlt…';
+  document.getElementById('adm-btn-upload').disabled = !f;
+});
+
+// ── upload ───────────────────────────────────────────────────────
+document.getElementById('adm-btn-upload').addEventListener('click', async () => {
+  const fileInput = document.getElementById('adm-file');
+  const msgEl     = document.getElementById('adm-upload-msg');
+  const btn       = document.getElementById('adm-btn-upload');
+  if (!fileInput.files[0]) return;
+
+  btn.disabled = true; btn.textContent = 'Feltöltés…';
+  msgEl.className = 'hidden';
+
+  const form = new FormData();
+  form.append('file', fileInput.files[0]);
+
+  try {
+    const res = await fetch('/admin/upload-mapping', {
+      method: 'POST',
+      body: form,
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || 'Feltöltés sikertelen.');
+
+    msgEl.className = 'adm-msg ok';
+    msgEl.textContent = `✓ ${d.filename} sikeresen feltöltve — ${d.rows.length} sor, ${d.columns.length} oszlop.`;
+    admRenderTable(d.columns, d.rows);
+    // Refresh the main-app datalist so new part numbers appear immediately
+    await loadParts();
+  } catch(err) {
+    msgEl.className = 'adm-msg err';
+    msgEl.textContent = `⚠ ${err.message}`;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Feltöltés';
+    msgEl.classList.remove('hidden');
+  }
+});
+
+// ── supplier credentials ──────────────────────────────────────────
+const EYE_ON  = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+const EYE_OFF = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+
+function escAttr(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+async function admLoadSuppliers() {
+  try {
+    const res = await fetch('/admin/suppliers');
+    if (!res.ok) return;
+    const d = await res.json();
+    admRenderSuppliers(d.suppliers);
+  } catch(e) {}
+}
+
+function admRenderSuppliers(suppliers) {
+  const wrap = document.getElementById('adm-suppliers-wrap');
+  wrap.innerHTML = suppliers.map(s => `
+    <div class="adm-supplier-row">
+      <div class="adm-sup-header">
+        <span class="adm-sup-name">${s.id}</span>
+        <a href="${escAttr(s.url)}" target="_blank" class="adm-sup-url">${escAttr(s.url)} ↗</a>
+      </div>
+      <div class="adm-sup-fields">
+        <div class="field">
+          <label>Felhasználónév</label>
+          <input type="text" id="sup-user-${s.id}" value="${escAttr(s.username)}"
+                 autocomplete="off" readonly onfocus="this.removeAttribute('readonly')">
+        </div>
+        <div class="field">
+          <label>Jelszó</label>
+          <div class="pw-wrap">
+            <input type="password" id="sup-pass-${s.id}" value="${escAttr(s.password)}"
+                   autocomplete="off" readonly onfocus="this.removeAttribute('readonly')">
+            <button type="button" class="btn-eye" id="sup-eye-btn-${s.id}"
+                    onclick="admToggleSupPw('${s.id}')" title="Jelszó megjelenítése">
+              <span id="sup-eye-${s.id}">${EYE_ON}</span>
+            </button>
+          </div>
+        </div>
+        <div style="display:flex;align-items:flex-end;padding-bottom:1px">
+          <button class="btn-upload" id="sup-btn-${s.id}"
+                  onclick="admSaveSupplier('${s.id}')">Mentés</button>
+        </div>
+      </div>
+      <div id="sup-msg-${s.id}" class="hidden"></div>
+    </div>`).join('');
+}
+
+function admToggleSupPw(sid) {
+  const inp  = document.getElementById(`sup-pass-${sid}`);
+  const icon = document.getElementById(`sup-eye-${sid}`);
+  const show = inp.type === 'password';
+  inp.type   = show ? 'text' : 'password';
+  icon.innerHTML = show ? EYE_OFF : EYE_ON;
+}
+
+async function admSaveSupplier(sid) {
+  const username = document.getElementById(`sup-user-${sid}`).value.trim();
+  const password = document.getElementById(`sup-pass-${sid}`).value;
+  const msgEl    = document.getElementById(`sup-msg-${sid}`);
+  const btn      = document.getElementById(`sup-btn-${sid}`);
+
+  msgEl.className = 'hidden';
+  if (!username || !password) {
+    msgEl.className = 'adm-msg err';
+    msgEl.textContent = '⚠ Felhasználónév és jelszó megadása kötelező.';
+    msgEl.classList.remove('hidden');
+    return;
+  }
+  btn.disabled = true; btn.textContent = 'Mentés…';
+  try {
+    const res = await fetch('/admin/update-supplier', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ supplier_id: sid, username, password }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || 'Mentés sikertelen.');
+    msgEl.className = 'adm-msg ok';
+    msgEl.textContent = `✓ ${sid} belépési adatok frissítve.`;
+    msgEl.classList.remove('hidden');
+  } catch(err) {
+    msgEl.className = 'adm-msg err';
+    msgEl.textContent = `⚠ ${err.message}`;
+    msgEl.classList.remove('hidden');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Mentés';
+  }
+}
+
+// ── delete mapping ────────────────────────────────────────────────
+document.getElementById('adm-btn-delete-map').addEventListener('click', async () => {
+  const msgEl = document.getElementById('adm-delete-msg');
+  msgEl.className = 'hidden';
+  if (!confirm('Biztosan törli az összes mapping sort?\nA fejléc megmarad, az összes cikkszám törlődik.')) return;
+
+  const btn = document.getElementById('adm-btn-delete-map');
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    const res = await fetch('/admin/mapping', {
+      method: 'DELETE',
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || 'Törlés sikertelen.');
+    admRenderTable(d.columns, []);
+    await loadParts();
+    msgEl.className = 'adm-msg ok';
+    msgEl.textContent = '✓ Mapping törölve — töltse fel az új CSV fájlt.';
+  } catch(err) {
+    msgEl.className = 'adm-msg err';
+    msgEl.textContent = `⚠ ${err.message}`;
+  } finally {
+    btn.disabled = false; btn.textContent = '🗑 Törlés';
+    msgEl.classList.remove('hidden');
+  }
+});
+
+// ── user management ───────────────────────────────────────────────
+async function admLoadUsers() {
+  try {
+    const res = await fetch('/admin/users');
+    if (!res.ok) return;
+    const d = await res.json();
+    if (d.users && d.users[0]) {
+      document.getElementById('adm-new-user').value = d.users[0].username;
+    }
+  } catch(e) {}
+}
+
+document.getElementById('adm-new-btn-eye').addEventListener('click', () => {
+  const inp = document.getElementById('adm-new-pass');
+  const on  = document.getElementById('adm-new-icon-eye');
+  const off = document.getElementById('adm-new-icon-eye-off');
+  const show = inp.type === 'password';
+  inp.type = show ? 'text' : 'password';
+  on.style.display  = show ? 'none' : '';
+  off.style.display = show ? '' : 'none';
+});
+
+document.getElementById('adm-save-user').addEventListener('click', async () => {
+  const username = document.getElementById('adm-new-user').value.trim();
+  const password = document.getElementById('adm-new-pass').value;
+  const msgEl    = document.getElementById('adm-user-msg');
+  const btn      = document.getElementById('adm-save-user');
+
+  msgEl.className = 'hidden';
+  if (!username || !password) {
+    msgEl.className = 'adm-msg err';
+    msgEl.textContent = '⚠ Felhasználónév és jelszó megadása kötelező.';
+    msgEl.classList.remove('hidden');
+    return;
+  }
+
+  btn.disabled = true; btn.textContent = 'Mentés…';
+  try {
+    const res = await fetch('/admin/update-user', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || 'Mentés sikertelen.');
+    msgEl.className = 'adm-msg ok';
+    msgEl.textContent = `✓ Bejelentkezési adatok frissítve: felhasználónév = "${d.username}"`;
+    document.getElementById('adm-new-pass').value = '';
+  } catch(err) {
+    msgEl.className = 'adm-msg err';
+    msgEl.textContent = `⚠ ${err.message}`;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Mentés';
+    msgEl.classList.remove('hidden');
+  }
+});
+</script>
+</body>
+</html>

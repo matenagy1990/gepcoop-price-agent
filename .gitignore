@@ -1,0 +1,21 @@
+.env
+assets/users.json
+assets/suppliers.json
+__pycache__/
+*.pyc
+*.pyo
+.playwright/
+
+# Playwright session & debug artifacts
+.playwright-mcp/
+assets/.koelner_session.json
+
+# macOS metadata
+.DS_Store
+**/.DS_Store
+
+# Supplier reference CSV (contains usernames)
+assets/user.csv
+
+# Claude local permission config
+.claude/
