@@ -1,0 +1,16 @@
+.env
+.git
+.gitignore
+.claude
+.playwright-mcp
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+.DS_Store
+**/.DS_Store
+assets/users.json
+assets/suppliers.json
+assets/.koelner_session.json
+assets/user.csv
+ui/app.py
