@@ -18,7 +18,14 @@ _fx_cache: dict = {}
 _FX_TTL = 3600
 
 MAPPING_FILE = Path(__file__).parent.parent / "assets" / "mapping.csv"
-USER_FILE    = Path(__file__).parent.parent / "assets" / "user.csv"
+
+# Supplier URLs — read from .env, same source as main.py
+_SUPPLIER_URLS: dict[str, str] = {
+    "csavarda":  os.environ.get("SUPPLIER_A_URL", "https://csavarda.hu/"),
+    "irontrade": os.environ.get("SUPPLIER_B_URL", "https://irontrade.hu/"),
+    "koelner":   os.environ.get("SUPPLIER_C_URL", "https://webshop.koelner.hu/"),
+    "mekrs":     os.environ.get("SUPPLIER_D_URL", "https://eshop.mekrs.cz/en"),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -76,40 +83,6 @@ def parse_stock_string(s: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# user.csv helpers  — read supplier metadata (URL, credentials)
-# ---------------------------------------------------------------------------
-
-def _read_user_csv() -> dict[str, dict]:
-    """
-    Parse assets/user.csv into {supplier_id: {field: value}}.
-
-    CSV layout (transposed):
-      field,       csavarda,               irontrade,          koelner,  mekrs
-      weboldal,    https://csavarda.hu/,   https://irontrade.hu/, ...
-      felhasznalonev, gepcoop@gepcoop.hu,  ...
-      jelszo,      Din1990_gepcoop,        ...
-    """
-    result: dict[str, dict] = {}
-    with open(USER_FILE, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            field = row["field"].strip().lower()
-            for supplier, value in row.items():
-                if supplier == "field":
-                    continue
-                sid = supplier.strip().lower()
-                if sid not in result:
-                    result[sid] = {}
-                result[sid][field] = value.strip()
-    return result
-
-
-def get_supplier_info() -> dict[str, dict]:
-    """Return supplier metadata keyed by supplier_id."""
-    return _read_user_csv()
-
-
-# ---------------------------------------------------------------------------
 # Tool 1: lookup_mapping_all  — returns every supplier for a part number
 #         lookup_mapping       — returns first supplier (backward compat)
 #
@@ -150,7 +123,6 @@ def lookup_mapping_all(internal_part_no: str) -> list[dict]:
     Skips any supplier column that is empty.
     """
     search = internal_part_no.strip().upper()
-    supplier_info = get_supplier_info()
 
     with open(MAPPING_FILE, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -167,7 +139,7 @@ def lookup_mapping_all(internal_part_no: str) -> list[dict]:
                 if not val:
                     continue
                 supplier_id = col[: -len("_part_no")]          # e.g. "csavarda"
-                url = supplier_info.get(supplier_id, {}).get("weboldal", "")
+                url = _SUPPLIER_URLS.get(supplier_id, "")
                 results.append({
                     "supplier_id":      supplier_id,
                     "supplier_part_no": val,
