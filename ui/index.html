@@ -525,6 +525,18 @@ function fillDatalist(q) {
     matches.slice(0, 20).map(p => `<option value="${p}">`).join('');
 }
 
+/* ══ DATALIST — desktop only ════════════════════════════════════ */
+function updateDatalistBinding() {
+  const input = document.getElementById('part-input');
+  if (window.innerWidth <= 680) {
+    input.removeAttribute('list');
+  } else {
+    input.setAttribute('list', 'parts-datalist');
+  }
+}
+updateDatalistBinding();
+window.addEventListener('resize', updateDatalistBinding);
+
 /* ══ BOOT ═══════════════════════════════════════════════════════ */
 if (authToken) showApp();
 
