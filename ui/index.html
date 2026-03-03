@@ -259,14 +259,30 @@
 
   /* ── RESPONSIVE ── */
   @media(max-width:680px){
+    /* General */
+    body{overflow-x:hidden}
     .app-main{padding:20px 16px}
     .query-card,.pipeline-card{padding:20px}
     .results-grid{grid-template-columns:1fr}
     .sup-price-big{font-size:24px}
     .query-row{flex-direction:column}
     .btn-query{width:100%;justify-content:center}
-    .hdr-sub,.hdr-sep{display:none}
     .reco-savings{flex-direction:column}
+
+    /* Header — prevent overflow */
+    .hdr-sub,.hdr-sep{display:none}
+    .app-hdr{padding:0 14px;gap:8px}
+    .hdr-right{gap:6px}
+    .user-chip{display:none}
+    .btn-admin{padding:5px 10px;font-size:12px}
+    .btn-logout{padding:5px 10px;font-size:12px}
+
+    /* Pipeline — prevent label overflow */
+    .pipe-sup-row{padding:8px 10px;overflow:hidden}
+    .pipe-sup-name{width:50px;font-size:10px}
+    .pipe-step-icon{width:28px;height:28px;font-size:13px}
+    .pipe-step-lbl{display:none}
+    .pipe-step:not(:last-child)::after{top:14px;left:calc(50% + 14px);right:calc(-50% + 14px)}
   }
 </style>
 </head>
