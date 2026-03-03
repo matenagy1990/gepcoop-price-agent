@@ -93,7 +93,8 @@ if not _admin_password:
 ADMIN_USERS = {"admin": _admin_password}
 admin_sessions: dict[str, str] = {}
 
-UI_FILE = Path(__file__).parent / "ui" / "index.html"
+UI_FILE   = Path(__file__).parent / "ui" / "index.html"
+LOGO_FILE = Path(__file__).parent / "assets" / "logo.png"
 
 
 def _get_username(authorization: str | None) -> str:
@@ -242,6 +243,11 @@ class UpdateSupplierRequest(BaseModel):
 @app.get("/")
 def serve_ui():
     return FileResponse(UI_FILE, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/logo.png")
+def serve_logo():
+    return FileResponse(LOGO_FILE, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.post("/login")
