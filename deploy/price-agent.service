@@ -1,0 +1,17 @@
+[Unit]
+Description=Price Agent (Docker Compose)
+Documentation=https://github.com/matenagy1990/gepcoop-price-agent
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+WorkingDirectory=/opt/price_agent
+ExecStart=/usr/bin/docker compose up --remove-orphans
+ExecStop=/usr/bin/docker compose down
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

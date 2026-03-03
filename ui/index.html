@@ -384,11 +384,6 @@
       <div class="adm-login-wrap">
         <h2>Admin bejelentkezés</h2>
         <div class="field">
-          <label>Felhasználónév</label>
-          <input type="text" id="adm-user" placeholder="admin" autocomplete="off" readonly
-                 onfocus="this.removeAttribute('readonly')">
-        </div>
-        <div class="field">
           <label>Jelszó</label>
           <div class="pw-wrap">
             <input type="password" id="adm-pass" autocomplete="off" readonly
@@ -937,17 +932,16 @@ document.getElementById('adm-pass').addEventListener('keydown', e => { if (e.key
 document.getElementById('adm-btn-login').addEventListener('click', admDoLogin);
 
 async function admDoLogin() {
-  const user = document.getElementById('adm-user').value.trim();
   const pass = document.getElementById('adm-pass').value;
   const errEl = document.getElementById('adm-login-err');
   const btn   = document.getElementById('adm-btn-login');
   errEl.classList.add('hidden');
-  if (!user || !pass) { admShowErr('Kérjük töltse ki a mezőket.'); return; }
+  if (!pass) { admShowErr('Kérjük adja meg a jelszót.'); return; }
   btn.disabled = true; btn.textContent = '…';
   try {
     const res = await fetch('/admin/login', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: user, password: pass }),
+      body: JSON.stringify({ password: pass }),
     });
     if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.detail || 'Hibás belépési adatok.'); }
     const d = await res.json();
@@ -975,10 +969,9 @@ document.getElementById('adm-btn-logout').addEventListener('click', () => {
   document.getElementById('adm-btn-logout').classList.add('hidden');
   document.getElementById('adm-main').classList.add('hidden');
   document.getElementById('adm-login').classList.remove('hidden');
-  const _u = document.getElementById('adm-user');
   const _p = document.getElementById('adm-pass');
-  _u.value = ''; _p.value = '';
-  _u.setAttribute('readonly',''); _p.setAttribute('readonly','');
+  _p.value = '';
+  _p.setAttribute('readonly','');
   _p.type = 'password';
   document.getElementById('adm-icon-eye').style.display = '';
   document.getElementById('adm-icon-eye-off').style.display = 'none';

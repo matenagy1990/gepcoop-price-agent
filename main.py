@@ -22,22 +22,37 @@ log = logging.getLogger("main")
 app = FastAPI(title="Gép-Coop Price Agent", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+# ── .env helpers ──────────────────────────────────────────────────────
+ENV_FILE = Path(__file__).parent / ".env"
+
+def _update_env_file(updates: dict[str, str]) -> None:
+    """Update or append key=value pairs in the .env file, then reload os.environ."""
+    lines = ENV_FILE.read_text(encoding="utf-8").splitlines(keepends=True) if ENV_FILE.exists() else []
+    updated_keys: set[str] = set()
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key in updates:
+                new_lines.append(f"{key}={updates[key]}\n")
+                updated_keys.add(key)
+                continue
+        new_lines.append(line)
+    for key, val in updates.items():
+        if key not in updated_keys:
+            new_lines.append(f"{key}={val}\n")
+    ENV_FILE.write_text("".join(new_lines), encoding="utf-8")
+    for key, val in updates.items():
+        os.environ[key] = val
+
 # ── Auth ─────────────────────────────────────────────────────────────
-USERS_FILE = Path(__file__).parent / "assets" / "users.json"
+_app_username = os.environ.get("APP_USERNAME", "")
+_app_password = os.environ.get("APP_PASSWORD", "")
+if not _app_username or not _app_password:
+    raise RuntimeError("APP_USERNAME and APP_PASSWORD must be set in .env")
 
-def _load_users() -> dict:
-    try:
-        with open(USERS_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {"gepcoop": "Beszerzes2026!"}
-
-def _save_users(users: dict) -> None:
-    USERS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(USERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(users, f, ensure_ascii=False, indent=2)
-
-VALID_USERS: dict = _load_users()
+VALID_USERS: dict = {_app_username: _app_password}
 sessions: dict[str, str] = {}   # token → username
 
 # ── Supplier credentials ──────────────────────────────────────────
@@ -47,28 +62,17 @@ SUPPLIER_META = {
     "koelner":   {"url": "https://webshop.koelner.hu/",   "env": "SUPPLIER_C"},
     "mekrs":     {"url": "https://eshop.mekrs.cz/en",     "env": "SUPPLIER_D"},
 }
-SUPPLIERS_FILE = Path(__file__).parent / "assets" / "suppliers.json"
 
-def _load_suppliers() -> dict:
-    try:
-        with open(SUPPLIERS_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        # Bootstrap from .env (already loaded into os.environ by tools.py import)
-        result = {}
-        for sid, meta in SUPPLIER_META.items():
-            env = meta["env"]
-            result[sid] = {
-                "url":      os.environ.get(f"{env}_URL", meta["url"]),
-                "username": os.environ.get(f"{env}_USERNAME", ""),
-                "password": os.environ.get(f"{env}_PASSWORD", ""),
-            }
-        return result
-
-def _save_suppliers(suppliers: dict) -> None:
-    SUPPLIERS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(SUPPLIERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(suppliers, f, ensure_ascii=False, indent=2)
+def _load_supplier_creds_from_env() -> dict:
+    result = {}
+    for sid, meta in SUPPLIER_META.items():
+        env = meta["env"]
+        result[sid] = {
+            "url":      os.environ.get(f"{env}_URL", meta["url"]),
+            "username": os.environ.get(f"{env}_USERNAME", ""),
+            "password": os.environ.get(f"{env}_PASSWORD", ""),
+        }
+    return result
 
 def _apply_suppliers_to_env(suppliers: dict) -> None:
     """Push credentials into os.environ so browser scripts pick them up."""
@@ -79,11 +83,14 @@ def _apply_suppliers_to_env(suppliers: dict) -> None:
             os.environ[f"{env}_USERNAME"] = creds.get("username", "")
             os.environ[f"{env}_PASSWORD"] = creds.get("password", "")
 
-SUPPLIER_CREDS: dict = _load_suppliers()
-_apply_suppliers_to_env(SUPPLIER_CREDS)
+SUPPLIER_CREDS: dict = _load_supplier_creds_from_env()
 
 # Admin credentials
-ADMIN_USERS = {"admin": os.environ.get("ADMIN_PASSWORD", "Admin2026!")}
+_admin_password = os.environ.get("ADMIN_PASSWORD", "")
+if not _admin_password:
+    raise RuntimeError("ADMIN_PASSWORD must be set in .env")
+
+ADMIN_USERS = {"admin": _admin_password}
 admin_sessions: dict[str, str] = {}
 
 UI_FILE = Path(__file__).parent / "ui" / "index.html"
@@ -122,7 +129,7 @@ def compute_recommendation(supplier_results: dict) -> dict:
     if not available:
         return {
             "winner": None,
-            "reason": "No valid price data was retrieved from any supplier.",
+            "reason": "Egyik beszállítótól sem érkezett érvényes áradat.",
         }
 
     # Only HUF suppliers enter the price ranking
@@ -140,9 +147,9 @@ def compute_recommendation(supplier_results: dict) -> dict:
         return {
             "winner": sid,
             "reason": (
-                f"Only {sid.capitalize()} returned a price in HUF. "
-                f"Price: {r['price_per_db']:.4f} HUF/db — "
-                f"Stock: {stock_total:,} db."
+                f"Csak a(z) {sid.capitalize()} adott vissza HUF árat. "
+                f"Ár: {r['price_per_db']:.4f} HUF/db — "
+                f"Készlet: {stock_total:,} db."
             ),
             "single_supplier": True,
         }
@@ -163,8 +170,8 @@ def compute_recommendation(supplier_results: dict) -> dict:
     stock_note = ""
     if loser and loser_stock > winner_stock * 2:
         stock_note = (
-            f" Note: {loser.capitalize()} has significantly more stock "
-            f"({loser_stock:,} vs {winner_stock:,} db) — consider if availability matters."
+            f" Megjegyzés: a(z) {loser.capitalize()} lényegesen nagyobb készlettel rendelkezik "
+            f"({loser_stock:,} vs {winner_stock:,} db) — érdemes mérlegelni az elérhetőséget."
         )
 
     cross_note = ""
@@ -179,13 +186,13 @@ def compute_recommendation(supplier_results: dict) -> dict:
                     f" ≈ {huf:.4f} HUF/db (1 CZK = {czk_rate} HUF, ECB)"
                 )
             else:
-                parts.append(f"{sid.capitalize()} ({r.get('currency','?')} — not converted)")
-        cross_note = f" ({'; '.join(parts)} — shown for reference, not included in ranking.)"
+                parts.append(f"{sid.capitalize()} ({r.get('currency','?')} — nem konvertált)")
+        cross_note = f" ({'; '.join(parts)} — tájékoztató jellegű, nem szerepel a rangsorban.)"
 
     reason = (
-        f"Buy from {winner.capitalize()} — "
+        f"Vásárolj a(z) {winner.capitalize()}-tól — "
         f"{winner_price:.4f} HUF/db vs {loser_price:.4f} HUF/db "
-        f"({savings_pct:.1f}% cheaper, saves {price_diff:.4f} HUF per piece)."
+        f"({savings_pct:.1f}%-kal olcsóbb, darabonként {price_diff:.4f} HUF megtakarítás)."
         f"{stock_note}{cross_note}"
     )
 
@@ -216,6 +223,9 @@ def _total_stock(stock) -> int:
 # ── Models ────────────────────────────────────────────────────────────
 class LoginRequest(BaseModel):
     username: str
+    password: str
+
+class AdminLoginRequest(BaseModel):
     password: str
 
 class UpdateUserRequest(BaseModel):
@@ -350,12 +360,12 @@ def health():
 # ── Admin routes ──────────────────────────────────────────────────────
 
 @app.post("/admin/login")
-def admin_login(req: LoginRequest):
-    if ADMIN_USERS.get(req.username) != req.password:
-        raise HTTPException(status_code=401, detail="Hibás admin felhasználónév vagy jelszó.")
+def admin_login(req: AdminLoginRequest):
+    if ADMIN_USERS.get("admin") != req.password:
+        raise HTTPException(status_code=401, detail="Hibás admin jelszó.")
     token = secrets.token_hex(32)
-    admin_sessions[token] = req.username
-    return {"token": token, "username": req.username}
+    admin_sessions[token] = "admin"
+    return {"token": token, "username": "admin"}
 
 
 @app.get("/admin/mapping")
@@ -438,7 +448,11 @@ def admin_update_supplier(
         raise HTTPException(status_code=400, detail="Felhasználónév és jelszó megadása kötelező.")
     SUPPLIER_CREDS[req.supplier_id]["username"] = req.username.strip()
     SUPPLIER_CREDS[req.supplier_id]["password"] = req.password
-    _save_suppliers(SUPPLIER_CREDS)
+    env_prefix = SUPPLIER_META[req.supplier_id]["env"]
+    _update_env_file({
+        f"{env_prefix}_USERNAME": req.username.strip(),
+        f"{env_prefix}_PASSWORD": req.password,
+    })
     _apply_suppliers_to_env(SUPPLIER_CREDS)
     log.info(f"Beszállítói adatok frissítve: {req.supplier_id}, username={req.username.strip()}")
     return {"supplier_id": req.supplier_id, "username": req.username.strip()}
@@ -458,6 +472,7 @@ def admin_update_user(
         raise HTTPException(status_code=400, detail="Felhasználónév és jelszó megadása kötelező.")
     VALID_USERS.clear()
     VALID_USERS[username] = req.password
-    _save_users(VALID_USERS)
+    _update_env_file({"APP_USERNAME": username, "APP_PASSWORD": req.password})
+    sessions.clear()   # invalidate all active sessions — re-login required
     log.info(f"Felhasználói adatok frissítve: username={username}")
     return {"username": username}
