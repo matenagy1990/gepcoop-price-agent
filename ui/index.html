@@ -283,7 +283,7 @@
   /* ── SUPPLIER FILTER ── */
   .sup-filter-section{margin-top:14px;border-top:1px solid var(--border);padding-top:13px;display:flex;align-items:center;gap:12px;min-width:0}
   .sup-filter-label{font-family:'Oswald',sans-serif;font-size:10px;font-weight:600;letter-spacing:1.8px;text-transform:uppercase;color:var(--muted);flex-shrink:0;opacity:.65;line-height:1;padding-top:1px}
-  .sup-filter-track{flex:1;display:flex;gap:4px;overflow-x:auto;scrollbar-width:none;min-width:0;padding:2px 0;-webkit-mask-image:linear-gradient(to right,black calc(100% - 36px),transparent 100%);mask-image:linear-gradient(to right,black calc(100% - 36px),transparent 100%)}
+  .sup-filter-track{flex:1;display:flex;flex-wrap:wrap;gap:4px;min-width:0;padding:2px 0}
   .sup-filter-track::-webkit-scrollbar{display:none}
   .sup-chip{flex-shrink:0;height:30px;padding:0 13px;border:1.5px solid var(--border);border-radius:8px;font-family:'Inter',sans-serif;font-size:12px;font-weight:500;color:var(--muted);background:var(--white);cursor:pointer;transition:border-color .15s,background .15s,color .15s;white-space:nowrap;user-select:none}
   .sup-chip:hover:not(.chip-disabled){border-color:var(--blue);color:var(--blue)}
@@ -302,7 +302,6 @@
     .query-row{flex-direction:column}
     .btn-query{width:100%;justify-content:center}
     .sup-filter-label{display:none}
-    .sup-filter-track{border-radius:8px}
     .reco-savings{flex-direction:column}
 
     /* Header — prevent overflow */
