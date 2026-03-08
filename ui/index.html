@@ -257,6 +257,29 @@
   .btn-delete-map:hover{background:rgba(254,26,0,.07);border-color:var(--red)}
   .btn-delete-map:disabled{opacity:.4;cursor:not-allowed}
 
+  /* ── CONFIRM CARD ── */
+  .confirm-card{background:var(--white);border-radius:var(--r);box-shadow:var(--sh);overflow:hidden;margin-bottom:24px;animation:slideDown .3s ease;border-top:4px solid var(--blue)}
+  .confirm-hdr{padding:20px 28px 16px;border-bottom:1px solid var(--border)}
+  .confirm-pretitle{font-family:'Oswald',sans-serif;font-size:12px;font-weight:600;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:6px}
+  .confirm-part-no{font-family:'JetBrains Mono',monospace;font-size:22px;font-weight:500;color:var(--navy)}
+  .confirm-part-name{font-size:13px;color:var(--muted);margin-top:4px;line-height:1.4}
+  .conf-table-wrap{overflow-x:auto}
+  .confirm-table{width:100%;border-collapse:collapse}
+  .confirm-table th{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;padding:10px 20px;text-align:left;border-bottom:1px solid var(--border);background:var(--bg)}
+  .confirm-table td{padding:10px 20px;font-size:13px;border-bottom:1px solid var(--border)}
+  .confirm-table tr:last-child td{border-bottom:none}
+  .conf-sup-badge{font-family:'Oswald',sans-serif;font-weight:700;font-size:12px;color:#fff;background:var(--navy2);padding:2px 9px;border-radius:6px;letter-spacing:.5px;display:inline-block}
+  .conf-sup-badge.unavail{background:var(--border);color:var(--muted)}
+  .conf-part-no-cell{font-family:'JetBrains Mono',monospace;color:var(--blue);font-size:13px}
+  .conf-unavail-cell{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px}
+  .confirm-table tr.conf-row-unavail td{background:rgba(0,0,0,.018);color:var(--muted)}
+  .confirm-footer{padding:16px 28px;display:flex;align-items:center;gap:12px;border-top:1px solid var(--border);background:var(--bg)}
+  .confirm-note{font-size:12px;color:var(--muted);flex:1;line-height:1.5}
+  .btn-confirm{padding:11px 28px;background:linear-gradient(135deg,var(--green) 0%,#3a7a09 100%);color:#fff;border:none;border-radius:10px;font-family:'Oswald',sans-serif;font-size:15px;font-weight:600;letter-spacing:1px;cursor:pointer;box-shadow:0 4px 12px rgba(92,184,17,.3);transition:opacity .2s,transform .1s;white-space:nowrap}
+  .btn-confirm:hover{opacity:.9;transform:translateY(-1px)}
+  .btn-cancel-confirm{padding:10px 20px;background:none;border:1.5px solid var(--border);border-radius:10px;font-family:'Inter',sans-serif;font-size:13px;font-weight:500;color:var(--muted);cursor:pointer;transition:all .2s;white-space:nowrap}
+  .btn-cancel-confirm:hover{border-color:var(--red);color:var(--red)}
+
   /* ── RESPONSIVE ── */
   @media(max-width:680px){
     /* General */
@@ -348,6 +371,31 @@
       </div>
     </div>
 
+    <!-- Mapping Preview / Confirm -->
+    <div class="confirm-card hidden" id="confirm-card">
+      <div class="confirm-hdr">
+        <div class="confirm-pretitle">Cikkszám azonosítás &mdash; kérjük ellenőrizze</div>
+        <div class="confirm-part-no" id="conf-part-no"></div>
+        <div class="confirm-part-name" id="conf-part-name"></div>
+      </div>
+      <div class="conf-table-wrap">
+        <table class="confirm-table">
+          <thead>
+            <tr>
+              <th>Beszállító</th>
+              <th>Cikkszám a webshopban</th>
+            </tr>
+          </thead>
+          <tbody id="conf-tbody"></tbody>
+        </table>
+      </div>
+      <div class="confirm-footer">
+        <div class="confirm-note" id="conf-note"></div>
+        <button class="btn-cancel-confirm" id="btn-cancel-confirm">Mégsem</button>
+        <button class="btn-confirm" id="btn-confirm-search">&#128269; KERESÉS INDÍTÁSA</button>
+      </div>
+    </div>
+
     <!-- Pipeline -->
     <div class="pipeline-card hidden" id="pipeline-card">
       <h3>FELDOLGOZÁS</h3>
@@ -365,6 +413,10 @@
       <div class="pipe-suppliers" id="pipe-suppliers"></div>
 
       <div class="progress-msg" id="progress-msg">Indítás…</div>
+      <div id="runtime-line" class="hidden" style="margin-top:10px;padding:8px 14px;background:rgba(22,27,99,.05);border-radius:8px;font-size:13px;font-weight:600;color:var(--navy2);display:flex;align-items:center;gap:8px">
+        <span style="font-size:16px">&#9201;</span>
+        <span id="runtime-text"></span>
+      </div>
     </div>
 
     <!-- Error -->
@@ -494,6 +546,8 @@
 /* ══ STATE ══════════════════════════════════════════════════════ */
 let authToken = sessionStorage.getItem('gc_token');
 let username  = sessionStorage.getItem('gc_user');
+let _pendingPartNo = null;  // part number waiting for user confirmation
+let _searchStartTs  = null; // timestamp when scraping started
 
 // pipeline state per supplier: {csavarda: [s0,s1,s2,s3], irontrade: [...]}
 const BROWSER_STEPS = [
@@ -644,13 +698,68 @@ function setSupStepRange(sid, from, to, state) {
 
 function allSupDone(sid) { setSupStepRange(sid, 0, 3, 'done'); }
 
-/* ══ QUERY ══════════════════════════════════════════════════════ */
+/* ══ QUERY — Step 1: lookup mapping, show confirm card ══════════ */
 async function doQuery() {
   const partNo = document.getElementById('part-input').value.trim();
   if (!partNo) return;
   resetUI();
   setQueryBusy(true);
+
+  try {
+    const res = await fetch(`/query/lookup?internal_part_no=${encodeURIComponent(partNo)}`, {
+      headers: { 'Authorization': `Bearer ${authToken}` }
+    });
+    if (res.status === 401) { sessionStorage.removeItem('gc_token'); location.reload(); return; }
+    if (!res.ok) throw new Error(`Szerver hiba: ${res.status}`);
+    const data = await res.json();
+
+    if (!data.suppliers || data.suppliers.length === 0) {
+      showError(`A(z) '${partNo}' cikkszám nem található a mapping táblában, vagy egyetlen beszállítónál sem elérhető.`);
+      return;
+    }
+
+    _pendingPartNo = partNo;
+    showConfirmCard(data);
+  } catch(err) { showError(err.message); }
+  finally { setQueryBusy(false); }
+}
+
+function showConfirmCard(data) {
+  const { part_no, name, suppliers = [], unavailable = [] } = data;
+  document.getElementById('conf-part-no').textContent = part_no;
+  document.getElementById('conf-part-name').textContent = name || '';
+
+  const tbody = document.getElementById('conf-tbody');
+  const availRows = suppliers.map(s => `
+    <tr>
+      <td><span class="conf-sup-badge">${s.supplier_id.toUpperCase()}</span></td>
+      <td><span class="conf-part-no-cell">${s.supplier_part_no}</span></td>
+    </tr>`).join('');
+
+  const unavailRows = unavailable.map(s => `
+    <tr class="conf-row-unavail">
+      <td><span class="conf-sup-badge unavail">${s.supplier_id.toUpperCase()}</span></td>
+      <td><span class="conf-unavail-cell">&#8212; nem elérhető</span></td>
+    </tr>`).join('');
+
+  tbody.innerHTML = availRows + unavailRows;
+
+  const noteEl = document.getElementById('conf-note');
+  noteEl.textContent = unavailable.length > 0
+    ? `${suppliers.length} beszállítónál elérhető, ${unavailable.length} helyen nem.`
+    : 'Az összes beszállítónál elérhető ez a termék.';
+
+  document.getElementById('confirm-card').classList.remove('hidden');
+  setTimeout(() => document.getElementById('btn-confirm-search').focus(), 50);
+}
+
+/* ══ QUERY — Step 2: run scraping after user confirms ══════════ */
+async function startSearch(partNo) {
+  document.getElementById('confirm-card').classList.add('hidden');
   document.getElementById('pipeline-card').classList.remove('hidden');
+  document.getElementById('runtime-line').classList.add('hidden');
+  _searchStartTs = Date.now();
+  setQueryBusy(true);
 
   try {
     const url = `/query/stream?internal_part_no=${encodeURIComponent(partNo)}`;
@@ -671,6 +780,19 @@ async function doQuery() {
   } catch(err) { showError(err.message); }
   finally { setQueryBusy(false); }
 }
+
+document.getElementById('btn-confirm-search').addEventListener('click', () => {
+  if (_pendingPartNo) startSearch(_pendingPartNo);
+});
+
+document.getElementById('btn-cancel-confirm').addEventListener('click', () => {
+  _pendingPartNo = null;
+  document.getElementById('confirm-card').classList.add('hidden');
+  document.getElementById('part-input').disabled = false;
+  document.getElementById('btn-query').disabled = false;
+  document.getElementById('query-btn-inner').textContent = 'ÖSSZEHASONLÍTÁS';
+  document.getElementById('part-input').focus();
+});
 
 function parseSSE(raw) {
   let type='message', dataStr='';
@@ -735,6 +857,14 @@ function handleResult(data) {
   setMapStep('done');
   for (const sid of Object.keys(data.suppliers||{})) allSupDone(sid);
   document.getElementById('progress-msg').textContent = 'Kész — eredmények betöltve.';
+
+  // Show runtime inside pipeline card
+  if (_searchStartTs) {
+    const elapsed = ((Date.now() - _searchStartTs) / 1000).toFixed(1).replace('.', ',');
+    document.getElementById('runtime-text').textContent = `Keresés futási ideje: ${elapsed} mp`;
+    document.getElementById('runtime-line').classList.remove('hidden');
+  }
+
   renderResults(data);
 }
 
@@ -865,7 +995,7 @@ function renderResults(data) {
 }
 
 function renderStock(stock) {
-  if (stock==null) return '<span style="color:var(--muted);font-size:13px">N/A</span>';
+  if (stock==null) return '<span style="color:var(--muted);font-size:13px">Nincs információ</span>';
   if (typeof stock==='object') {
     return Object.entries(stock).map(([loc,qty]) =>
       `<div class="stock-row">
@@ -913,9 +1043,12 @@ function setQueryBusy(busy){
 }
 function resetUI(){
   supPipeState={};
+  _pendingPartNo = null;
   setMapStep('pending');
   document.getElementById('pipe-suppliers').innerHTML='';
+  document.getElementById('confirm-card').classList.add('hidden');
   document.getElementById('pipeline-card').classList.add('hidden');
+  document.getElementById('runtime-line').classList.add('hidden');
   document.getElementById('err-banner').classList.add('hidden');
   document.getElementById('reco-card').classList.add('hidden');
   document.getElementById('results-grid').classList.add('hidden');

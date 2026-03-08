@@ -9,6 +9,7 @@ __pycache__/
 # Playwright session & debug artifacts
 .playwright-mcp/
 assets/.koelner_session.json
+assets/sessions/
 
 # macOS metadata
 .DS_Store

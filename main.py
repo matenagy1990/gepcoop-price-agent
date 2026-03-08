@@ -57,10 +57,17 @@ sessions: dict[str, str] = {}   # token → username
 
 # ── Supplier credentials ──────────────────────────────────────────
 SUPPLIER_META = {
-    "csavarda":  {"url": "https://csavarda.hu/",         "env": "SUPPLIER_A"},
-    "irontrade": {"url": "https://irontrade.hu/",         "env": "SUPPLIER_B"},
-    "koelner":   {"url": "https://webshop.koelner.hu/",   "env": "SUPPLIER_C"},
-    "mekrs":     {"url": "https://eshop.mekrs.cz/en",     "env": "SUPPLIER_D"},
+    "csavarda":  {"url": "https://csavarda.hu/",                         "env": "SUPPLIER_A"},
+    "irontrade": {"url": "https://irontrade.hu/",                        "env": "SUPPLIER_B"},
+    "koelner":   {"url": "https://webshop.koelner.hu/",                  "env": "SUPPLIER_C"},
+    "mekrs":     {"url": "https://eshop.mekrs.cz/en",                   "env": "SUPPLIER_D"},
+    "fabory":    {"url": "https://www.fabory.com/hu",                    "env": "SUPPLIER_E"},
+    "reyher":    {"url": "https://rio.reyher.de",                        "env": "SUPPLIER_F"},
+    "hopefix":   {"url": "https://www.hopefix.cz/en",                   "env": "SUPPLIER_G"},
+    "fastbolt":  {"url": "https://fbonline.fastbolt.com",               "env": "SUPPLIER_H"},
+    "schaefer":  {"url": "https://shop.schaefer-peters.com/b2b/en/",    "env": "SUPPLIER_I"},
+    "kingb2b":   {"url": "https://kingb2b.it/PORTAL/",                  "env": "SUPPLIER_J"},
+    "wasishop":  {"url": "https://www.wasishop.de",                      "env": "SUPPLIER_K"},
 }
 
 def _load_supplier_creds_from_env() -> dict:
@@ -84,6 +91,20 @@ def _apply_suppliers_to_env(suppliers: dict) -> None:
             os.environ[f"{env}_PASSWORD"] = creds.get("password", "")
 
 SUPPLIER_CREDS: dict = _load_supplier_creds_from_env()
+
+
+def _lookup_part_name(part_no: str) -> str:
+    """Return the product name (Cikknév) for a given Gép-Coop part number."""
+    search = part_no.strip().upper()
+    try:
+        with open(MAPPING_FILE, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row.get("gepcoop_part_no", "").strip().upper() == search:
+                    return row.get("name", "").strip()
+    except FileNotFoundError:
+        pass
+    return ""
 
 # Admin credentials
 _admin_password = os.environ.get("ADMIN_PASSWORD", "")
@@ -257,6 +278,31 @@ def login(req: LoginRequest):
     token = secrets.token_hex(32)
     sessions[token] = req.username
     return {"token": token, "username": req.username}
+
+
+@app.get("/query/lookup")
+async def query_lookup(
+    internal_part_no: str,
+    authorization: str | None = Header(default=None),
+):
+    """
+    Step 1: Look up a Gép-Coop part number in the mapping table.
+    Returns the product name and all supplier part numbers — without scraping anything.
+    The frontend shows this to the user for confirmation before starting the actual search.
+    """
+    _get_username(authorization)
+    part = internal_part_no.strip()
+    suppliers = lookup_mapping_all(part)
+    name = _lookup_part_name(part)
+
+    found_ids = {s["supplier_id"] for s in suppliers}
+    unavailable = [
+        {"supplier_id": sid, "supplier_url": meta["url"]}
+        for sid, meta in SUPPLIER_META.items()
+        if sid not in found_ids
+    ]
+
+    return {"part_no": part, "name": name, "suppliers": suppliers, "unavailable": unavailable}
 
 
 @app.get("/query/stream")

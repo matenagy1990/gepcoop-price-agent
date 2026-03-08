@@ -111,7 +111,15 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             search_url = SEARCH_URL.format(part_no=supplier_part_no)
             await emit(f"Searching for part {supplier_part_no} on csavarda.hu…")
             log.info(f"Navigating to search URL: {search_url}")
-            await page.goto(search_url, wait_until="networkidle", timeout=20000)
+            await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
+            # Wait for search results to render (product links or zero-results text)
+            try:
+                await page.wait_for_selector(
+                    "a[href*='/pest/termek/'], text=0 találat",
+                    timeout=15000,
+                )
+            except PlaywrightTimeout:
+                pass  # will be caught below by zero_results / product_links checks
             log.info(f"Search page loaded: {page.url}")
 
             zero_results = await page.locator("text=0 találat").count()

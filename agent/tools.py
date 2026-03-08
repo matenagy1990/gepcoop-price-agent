@@ -25,6 +25,13 @@ _SUPPLIER_URLS: dict[str, str] = {
     "irontrade": os.environ.get("SUPPLIER_B_URL", "https://irontrade.hu/"),
     "koelner":   os.environ.get("SUPPLIER_C_URL", "https://webshop.koelner.hu/"),
     "mekrs":     os.environ.get("SUPPLIER_D_URL", "https://eshop.mekrs.cz/en"),
+    "fabory":    os.environ.get("SUPPLIER_E_URL", "https://www.fabory.com/hu"),
+    "reyher":    os.environ.get("SUPPLIER_F_URL", "https://rio.reyher.de"),
+    "hopefix":   os.environ.get("SUPPLIER_G_URL", "https://www.hopefix.cz/en"),
+    "fastbolt":  os.environ.get("SUPPLIER_H_URL", "https://fbonline.fastbolt.com"),
+    "schaefer":  os.environ.get("SUPPLIER_I_URL", "https://shop.schaefer-peters.com/b2b/en/"),
+    "kingb2b":   os.environ.get("SUPPLIER_J_URL", "https://kingb2b.it/PORTAL/"),
+    "wasishop":  os.environ.get("SUPPLIER_K_URL", "https://www.wasishop.de"),
 }
 
 
@@ -136,9 +143,11 @@ def lookup_mapping_all(internal_part_no: str) -> list[dict]:
                 if not col.endswith("_part_no"):
                     continue
                 val = val.strip()
-                if not val:
+                if not val or val in ('-', '–', '—', 'N/A', 'n/a'):
                     continue
                 supplier_id = col[: -len("_part_no")]          # e.g. "csavarda"
+                if supplier_id not in _IMPLEMENTED_SUPPLIERS:
+                    continue                                    # e.g. "ferdinand" — not yet implemented
                 url = _SUPPLIER_URLS.get(supplier_id, "")
                 results.append({
                     "supplier_id":      supplier_id,
@@ -180,7 +189,10 @@ def lookup_mapping(internal_part_no: str) -> dict:
 # ---------------------------------------------------------------------------
 
 # Suppliers that have a working Playwright scraper
-_IMPLEMENTED_SUPPLIERS = {"csavarda", "irontrade", "koelner", "mekrs"}
+_IMPLEMENTED_SUPPLIERS = {
+    "csavarda", "irontrade", "koelner", "mekrs",
+    "fabory", "reyher", "hopefix", "fastbolt", "schaefer", "kingb2b", "wasishop",
+}
 
 
 async def fetch_supplier_price(supplier_id: str, supplier_part_no: str, on_progress=None) -> dict:
@@ -200,6 +212,20 @@ async def fetch_supplier_price(supplier_id: str, supplier_part_no: str, on_progr
         from browser.supplier_koelner import fetch_price
     elif supplier_id == "mekrs":
         from browser.supplier_mekrs import fetch_price
+    elif supplier_id == "fabory":
+        from browser.supplier_fabory import fetch_price
+    elif supplier_id == "reyher":
+        from browser.supplier_reyher import fetch_price
+    elif supplier_id == "hopefix":
+        from browser.supplier_hopefix import fetch_price
+    elif supplier_id == "fastbolt":
+        from browser.supplier_fastbolt import fetch_price
+    elif supplier_id == "schaefer":
+        from browser.supplier_schaefer import fetch_price
+    elif supplier_id == "kingb2b":
+        from browser.supplier_kingb2b import fetch_price
+    elif supplier_id == "wasishop":
+        from browser.supplier_wasishop import fetch_price
     else:
         raise ValueError(
             f"Supplier '{supplier_id}' does not have a browser script yet. "
