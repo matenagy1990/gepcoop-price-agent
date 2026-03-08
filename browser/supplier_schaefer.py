@@ -2,12 +2,21 @@
 Playwright scraper for shop.schaefer-peters.com (Supplier I)
 
 Login flow:
-  1. GET /sp/en/login/ → fill "User name" + "Webshop-Key" → "Log in"
-  2. Redirects to /sp/en/home/ on success
-  3. Use the search box (searchbox "Submit") to find part
-  4. Click product → extract price and stock
+  1. GET /sp/en/login/ → fill input[name='input_login'] + input[name='input_password']
+     → click "Log in" → redirects to /b2b/en/?action=shop_login
 
-Currency: EUR (German supplier, stainless steel fasteners)
+Search flow:
+  2. Fill input[type='search'] with the article number → press Enter
+     → navigates directly to the product page /b2b/en/art-{slug}-p{id}/
+     (for exact article numbers the shop always resolves to the product page)
+  3. If landed on a search results page (/b2b/en/search/), click first /b2b/en/art- link
+
+Data extraction:
+  - Price:    span[itemprop='price'] content attribute → clean float (e.g. "4.58")
+  - Unit qty: .priceLabel text → regex for number before "Pcs." (e.g. "Price 100 Pcs.")
+  - Stock:    .inventory p text → strip thousand-separating dots → int (e.g. "50.800 Pcs." → 50800)
+
+Currency: EUR
 """
 
 import logging
@@ -33,13 +42,13 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
-        context = await browser.new_context()
-        page    = await context.new_page()
+        ctx = await browser.new_context()
+        page = await ctx.new_page()
 
         try:
             await emit("Opening shop.schaefer-peters.com…")
             await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-            log.info(f"Loaded login page: {page.url}")
+            log.info(f"Login page: {page.url}")
 
             # Login
             await emit("Logging in to shop.schaefer-peters.com…")
@@ -47,92 +56,91 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             password = os.getenv("SUPPLIER_I_PASSWORD", "")
             log.info(f"Logging in as: {username}")
 
-            await page.get_by_role("textbox", name="User name").fill(username)
-            await page.get_by_role("textbox", name="Webshop-Key").fill(password)
-            await page.get_by_role("button", name="Log in").click()
+            await page.locator("input[name='input_login']").first.fill(username)
+            await page.locator("input[name='input_password']").first.fill(password)
+            await page.locator("button:has-text('Log in')").first.click()
 
             await page.wait_for_load_state("domcontentloaded")
             await page.wait_for_timeout(2000)
 
-            if "/login" in page.url:
-                log.error(f"Login failed — still on: {page.url}")
-                raise RuntimeError("Login to shop.schaefer-peters.com failed. Please check credentials.")
+            if "/login" in page.url and "action=shop_login" not in page.url:
+                raise RuntimeError(
+                    "Login to shop.schaefer-peters.com failed. Please check credentials."
+                )
             log.info(f"Login successful: {page.url}")
 
-            # Search via the search box
+            # Search — use the search box and press Enter
             await emit(f"Searching for {supplier_part_no} on schaefer-peters…")
-            try:
-                await page.get_by_role("searchbox", name="Submit").fill(supplier_part_no)
-                await page.get_by_role("button", name="Submit").click()
-                await page.wait_for_load_state("domcontentloaded")
-                log.info(f"Search results: {page.url}")
-            except Exception as e:
-                log.warning(f"Search box interaction failed: {e}")
-                # Try direct URL with query
-                await page.goto(f"https://shop.schaefer-peters.com/sp/en/search/?q={supplier_part_no}", wait_until="domcontentloaded")
+            search_box = page.locator("input[type='search']").first
+            await search_box.fill(supplier_part_no)
+            await search_box.press("Enter")
+            await page.wait_for_load_state("domcontentloaded")
+            await page.wait_for_timeout(2000)
+            log.info(f"After search: {page.url}")
 
-            await page.wait_for_timeout(1500)
-            body_text = await page.locator("body").inner_text()
+            # If still on a search results page, click the first product link
+            if "/search/" in page.url or "/b2b/en/art-" not in page.url:
+                body_text = await page.locator("body").inner_text()
+                if "no result" in body_text.lower() or "0 article" in body_text.lower():
+                    raise RuntimeError(
+                        f"Part {supplier_part_no} was not found on schaefer-peters."
+                    )
+                try:
+                    first_link = page.locator("a[href*='/b2b/en/art-']").first
+                    await first_link.click(timeout=8000)
+                    await page.wait_for_load_state("domcontentloaded")
+                    await page.wait_for_timeout(1500)
+                    log.info(f"Product page: {page.url}")
+                except PlaywrightTimeout:
+                    raise RuntimeError(
+                        f"No product links found for {supplier_part_no} on schaefer-peters."
+                    )
 
-            if "no result" in body_text.lower() or "keine Ergebnisse" in body_text.lower():
-                raise RuntimeError(f"Part {supplier_part_no} was not found on schaefer-peters.")
-
-            # Click first product
-            try:
-                await page.locator("a[href*='/product/'], a[href*='/sp/en/'], .product-name a").first.click(timeout=8000)
-                await page.wait_for_load_state("domcontentloaded")
-                log.info(f"Product page: {page.url}")
-            except PlaywrightTimeout:
-                if "/search" in page.url or "/result" in page.url:
-                    raise RuntimeError(f"No product links found for {supplier_part_no} on schaefer-peters.")
-
-            await page.wait_for_timeout(1500)
             await emit("Reading price and stock from schaefer-peters…")
+            log.info(f"Extracting from: {page.url}")
 
-            price_text = ""
-            stock_text = ""
+            # --- Price via machine-readable itemprop ---
+            price_el = page.locator("span[itemprop='price']")
+            price_content = await price_el.get_attribute("content", timeout=8000)
+            if not price_content:
+                raise RuntimeError(
+                    "Could not read price from schaefer-peters. Page layout may have changed."
+                )
+            price_raw = float(price_content)
+            log.info(f"Price (itemprop): {price_raw} EUR")
 
+            # --- Unit qty from .priceLabel: "Price 100 Pcs." ---
             try:
-                price_el = page.locator("[class*='price'], .product-price, [class*='Price']").first
-                price_text = await price_el.inner_text(timeout=6000)
-                log.info(f"Price: '{price_text}'")
+                label_text = await page.locator(".priceLabel").inner_text(timeout=5000)
+                log.info(f"Price label: {label_text!r}")
+                qty_match = re.search(r"(\d[\d.]*)\s*Pcs", label_text, re.IGNORECASE)
+                price_unit_qty = int(qty_match.group(1).replace(".", "")) if qty_match else 1
             except Exception:
-                body = await page.locator("body").inner_text()
-                match = re.search(r"([\d.,]+)\s*€|€\s*([\d.,]+)", body)
-                if match:
-                    price_text = match.group(0)
+                price_unit_qty = 1
+                log.warning("Could not read unit qty from .priceLabel, defaulting to 1")
 
+            # --- Stock from .inventory p ---
+            stock_value = 0
             try:
-                stock_el = page.locator("[class*='stock'], [class*='availability'], [class*='lieferbar']").first
-                stock_text = await stock_el.inner_text(timeout=4000)
-                log.info(f"Stock: '{stock_text}'")
-            except Exception:
-                stock_text = "unknown"
+                inventory_el = page.locator("[class*='inventory']").filter(
+                    has=page.locator("p")
+                ).first
+                stock_text = await inventory_el.locator("p").first.inner_text(timeout=5000)
+                stock_text = stock_text.strip()
+                log.info(f"Stock text: {stock_text!r}")
+                # "50.800 Pcs." — dot is German thousands separator
+                m = re.search(r"[\d.]+", stock_text)
+                if m:
+                    stock_value = int(m.group().replace(".", ""))
+            except Exception as e:
+                log.warning(f"Could not read stock: {e}")
 
-            if not price_text:
-                raise RuntimeError("Could not read price from schaefer-peters. Page layout may have changed.")
-
-            price_clean = re.sub(r"[€\s\u00a0]", "", price_text).strip()
-            if "," in price_clean and "." in price_clean:
-                price_clean = price_clean.replace(".", "").replace(",", ".")
-            elif "," in price_clean:
-                price_clean = price_clean.replace(",", ".")
-            price_raw = float(re.search(r"[\d.]+", price_clean).group())
-
-            unit_qty = 1
-            qty_match = re.search(r"/\s*(\d+)\s*(?:pcs|pc|Stk|st|pieces)", price_text, re.IGNORECASE)
-            if qty_match:
-                unit_qty = int(qty_match.group(1))
-
-            in_stock = not any(w in stock_text.lower() for w in ["out", "nicht", "0"])
-            stock_value = 1 if in_stock else 0
-
-            log.info(f"Parsed — price_raw: {price_raw} EUR, unit_qty: {unit_qty}, stock: {stock_value}")
+            log.info(f"Parsed — {price_raw} EUR / {price_unit_qty} pcs, stock: {stock_value}")
 
             return {
                 "supplier_part_no": supplier_part_no,
                 "price_raw":        price_raw,
-                "price_unit_qty":   unit_qty,
+                "price_unit_qty":   price_unit_qty,
                 "currency":         "EUR",
                 "unit":             "db",
                 "stock":            stock_value,

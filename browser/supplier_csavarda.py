@@ -9,6 +9,7 @@ Login flow:
   5. Extract Nettó egységár, Készlet (Budapest + Vecsés)
 """
 
+import asyncio
 import logging
 import os
 import re
@@ -114,11 +115,16 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
             # Wait for search results to render (product links or zero-results text)
             try:
-                await page.wait_for_selector(
-                    "a[href*='/pest/termek/'], text=0 találat",
-                    timeout=15000,
+                done, pending = await asyncio.wait(
+                    [
+                        asyncio.ensure_future(page.wait_for_selector("a[href*='/pest/termek/']", timeout=15000)),
+                        asyncio.ensure_future(page.wait_for_selector("text=0 találat", timeout=15000)),
+                    ],
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
-            except PlaywrightTimeout:
+                for task in pending:
+                    task.cancel()
+            except Exception:
                 pass  # will be caught below by zero_results / product_links checks
             log.info(f"Search page loaded: {page.url}")
 

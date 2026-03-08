@@ -141,7 +141,7 @@ def compute_recommendation(supplier_results: dict) -> dict:
     """
     Compare supplier results and return a purchase recommendation.
     Only HUF suppliers are ranked. CZK suppliers (e.g. mekrs) are shown
-    as a reference note with their ECB-converted indicative price.
+    as a reference note with their open.er-api.com converted indicative price.
     """
     available = {
         sid: r for sid, r in supplier_results.items()
@@ -165,12 +165,17 @@ def compute_recommendation(supplier_results: dict) -> dict:
     if len(comparable) == 1 and not cross_currency:
         sid = next(iter(comparable))
         r = comparable[sid]
+        currency = r.get("currency", "HUF")
         stock_total = _total_stock(r.get("stock", 0))
+        price_note = f"{r['price_per_db']:.4f} {currency}/db"
+        if currency != "HUF" and r.get("price_per_db_huf") is not None:
+            rate = r.get("fx_huf_rate", "?")
+            price_note += f" ≈ {r['price_per_db_huf']:.4f} HUF/db (1 {currency} = {rate} HUF, open.er-api.com)"
         return {
             "winner": sid,
             "reason": (
-                f"Csak a(z) {sid.capitalize()} adott vissza HUF árat. "
-                f"Ár: {r['price_per_db']:.4f} HUF/db — "
+                f"Csak a(z) {sid.capitalize()} adott vissza érvényes árat. "
+                f"Ár: {price_note} — "
                 f"Készlet: {stock_total:,} db."
             ),
             "single_supplier": True,
@@ -201,11 +206,12 @@ def compute_recommendation(supplier_results: dict) -> dict:
         parts = []
         for sid, r in cross_currency.items():
             huf      = r.get("price_per_db_huf")
-            czk_rate = r.get("czk_huf_rate")
+            czk_rate = r.get("fx_huf_rate")
             if huf is not None and czk_rate is not None:
+                curr = r.get("currency", "?")
                 parts.append(
-                    f"{sid.capitalize()}: {r['price_per_db']:.4f} CZK/db"
-                    f" ≈ {huf:.4f} HUF/db (1 CZK = {czk_rate} HUF, ECB)"
+                    f"{sid.capitalize()}: {r['price_per_db']:.4f} {curr}/db"
+                    f" ≈ {huf:.4f} HUF/db (1 {curr} = {czk_rate} HUF, open.er-api.com)"
                 )
             else:
                 parts.append(f"{sid.capitalize()} ({r.get('currency','?')} — nem konvertált)")
@@ -308,6 +314,7 @@ async def query_lookup(
 @app.get("/query/stream")
 async def query_stream(
     internal_part_no: str,
+    suppliers: str | None = None,
     authorization: str | None = Header(default=None),
 ):
     _get_username(authorization)
@@ -323,19 +330,29 @@ async def query_stream(
                 "msg": f"Looking up '{part}' in mapping table…",
             }))
 
-            suppliers = lookup_mapping_all(part)
-            log.info(f"Mapping result for '{part}': {suppliers}")
+            supplier_list = lookup_mapping_all(part)
+            log.info(f"Mapping result for '{part}': {supplier_list}")
 
-            if not suppliers:
+            if not supplier_list:
                 msg = f"Part number '{part}' was not found in the supplier mapping."
                 await queue.put(("progress", {"step": "mapping", "status": "error", "msg": msg}))
                 await queue.put(("error", {"message": msg}))
                 return
 
-            supplier_labels = ", ".join(s["supplier_id"] for s in suppliers)
+            # ── Optional: filter to selected suppliers ──
+            if suppliers:
+                filter_ids = {s.strip() for s in suppliers.split(",") if s.strip()}
+                supplier_list = [s for s in supplier_list if s["supplier_id"] in filter_ids]
+                if not supplier_list:
+                    msg = f"A '{part}' cikkszám nem elérhető a kiválasztott beszállítóknál."
+                    await queue.put(("progress", {"step": "mapping", "status": "error", "msg": msg}))
+                    await queue.put(("error", {"message": msg}))
+                    return
+
+            supplier_labels = ", ".join(s["supplier_id"] for s in supplier_list)
             await queue.put(("progress", {
                 "step": "mapping", "status": "done",
-                "msg": f"Found {len(suppliers)} supplier(s): {supplier_labels}",
+                "msg": f"Found {len(supplier_list)} supplier(s): {supplier_labels}",
             }))
 
             # ── Step 2: parallel fetch for all suppliers ─────────────
@@ -362,7 +379,7 @@ async def query_stream(
                         "msg": str(exc), "supplier": sid,
                     }))
 
-            await asyncio.gather(*[fetch_one(s) for s in suppliers])
+            await asyncio.gather(*[fetch_one(s) for s in supplier_list])
 
             # ── Step 3: recommendation ───────────────────────────────
             recommendation = compute_recommendation(results)

@@ -2,12 +2,25 @@
 Playwright scraper for wasishop.de (Supplier K)
 
 Login flow:
-  1. GET /login_form.php → dismiss cookie banner → fill Name + Passwort → "Anmelden"
-  2. Redirects to /de/ or account page on success
-  3. Search via search box "Suche"
-  4. Click first product → extract price and stock
+  1. GET /login_form.php → dismiss cookie → fill Name + Passwort → Anmelden
+  2. Redirects to /de/handel/index.php on success
 
-Currency: EUR (German supplier, stainless steel)
+Search flow:
+  3. Fill input[name='search'] → press Enter → lands on Artikelliste.php
+  4. Wait for networkidle (prices are JS-injected after page load)
+
+Price structure — two cases:
+  a) Tiered ("Staffelpreis"): art_popup_infobox with "Mindestmenge" header contains
+     rows of (min qty, price/100) e.g. 0 Stk. → 30,17€ / 1.000 Stk. → 27,15€ / 52.000 Stk. → 27,15€
+     → use the MIDDLE tier price (index len//2)
+  b) Single price: div.price.discount → e.g. "0,79 €"
+  Both prices are always per 100 pieces ("Preis / 100" column).
+
+Stock:
+  Extracted from the span sequence:  orderNumber → partNo → STOCK_VALUE
+  Format: German thousands separator ("37.000" = 37000, "492.600" = 492600)
+
+Currency: EUR
 """
 
 import logging
@@ -25,6 +38,24 @@ log = logging.getLogger("wasishop")
 LOGIN_URL = "https://www.wasishop.de/login_form.php"
 
 
+def _parse_eur(text: str) -> float:
+    """Parse a German/EUR price string: '27,15 €' or '0,79\xa0€' → 27.15"""
+    clean = re.sub(r"[€\s\u00a0]", "", text).strip()
+    if "," in clean and "." in clean:
+        clean = clean.replace(".", "").replace(",", ".")
+    elif "," in clean:
+        clean = clean.replace(",", ".")
+    return float(clean)
+
+
+def _parse_stock(text: str) -> int:
+    """Parse German stock number: '37.000' → 37000, '492.600' → 492600"""
+    m = re.search(r"[\d.]+", text)
+    if not m:
+        return 0
+    return int(m.group().replace(".", ""))
+
+
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
     async def emit(msg: str):
         log.info(msg)
@@ -33,17 +64,18 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
-        context = await browser.new_context()
-        page    = await context.new_page()
+        ctx = await browser.new_context()
+        page = await ctx.new_page()
 
         try:
             await emit("Opening wasishop.de…")
             await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-            log.info(f"Loaded login page: {page.url}")
+            await page.wait_for_timeout(1500)
+            log.info(f"Login page: {page.url}")
 
-            # Dismiss cookie banner
+            # Dismiss cookie banner — use exact aria-label to avoid strict-mode violation
             try:
-                await page.get_by_role("button", name="OK").click(timeout=5000)
+                await page.locator("button[aria-label='dismiss cookie message']").click(timeout=4000)
                 await page.wait_for_timeout(500)
                 log.info("Cookie banner dismissed")
             except PlaywrightTimeout:
@@ -58,88 +90,98 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             await page.get_by_role("textbox", name="Name").fill(username)
             await page.get_by_role("textbox", name="Passwort").fill(password)
             await page.get_by_role("button", name="Anmelden").click()
-
             await page.wait_for_load_state("domcontentloaded")
             await page.wait_for_timeout(1500)
 
             if "login_form" in page.url:
-                log.error(f"Login failed — still on: {page.url}")
                 raise RuntimeError("Login to wasishop.de failed. Please check credentials.")
             log.info(f"Login successful: {page.url}")
 
-            # Search for part number
+            # Search
             await emit(f"Searching for {supplier_part_no} on wasishop.de…")
-            try:
-                await page.get_by_role("searchbox", name="Suche").fill(supplier_part_no)
-                await page.get_by_role("searchbox", name="Suche").press("Enter")
-                await page.wait_for_load_state("domcontentloaded")
-                log.info(f"Search results: {page.url}")
-            except Exception as e:
-                log.warning(f"Search box failed: {e}")
-                await page.goto(f"https://www.wasishop.de/de/search?q={supplier_part_no}", wait_until="domcontentloaded")
+            search = page.locator("input[name='search']")
+            await search.fill(supplier_part_no)
+            await search.press("Enter")
+            await page.wait_for_load_state("networkidle")
+            await page.wait_for_timeout(3000)   # prices are injected after page load
+            log.info(f"Search results: {page.url}")
 
-            await page.wait_for_timeout(1500)
             body_text = await page.locator("body").inner_text()
-
-            if "kein Ergebnis" in body_text or "keine Artikel" in body_text or "0 Artikel" in body_text:
+            if "keine Artikel" in body_text or "momentan keine Artikel" in body_text:
                 raise RuntimeError(f"Part {supplier_part_no} was not found on wasishop.de.")
 
-            # Click first product
-            try:
-                await page.locator("a[href*='/de/artikel/'], a[href*='/produkt/'], .product-item a, .artikel a").first.click(timeout=8000)
-                await page.wait_for_load_state("domcontentloaded")
-                log.info(f"Product page: {page.url}")
-            except PlaywrightTimeout:
-                if "search" in page.url or "Artikelliste" in page.url:
-                    raise RuntimeError(f"No product links found for {supplier_part_no} on wasishop.de.")
-
-            await page.wait_for_timeout(1500)
             await emit("Reading price and stock from wasishop.de…")
 
-            price_text = ""
-            stock_text = ""
+            # ── Extract price ──────────────────────────────────────────────
+            raw_data = await page.evaluate(f"""() => {{
+                const partNo = {repr(supplier_part_no)};
 
-            try:
-                price_el = page.locator("[class*='price'], .product-price, [class*='Price'], [class*='preis']").first
-                price_text = await price_el.inner_text(timeout=6000)
-                log.info(f"Price: '{price_text}'")
-            except Exception:
-                body = await page.locator("body").inner_text()
-                match = re.search(r"([\d.,]+)\s*€|€\s*([\d.,]+)", body)
-                if match:
-                    price_text = match.group(0)
+                // Case A: tiered pricing — art_popup_infobox with 'Mindestmenge'
+                const tiers = [];
+                for (const box of document.querySelectorAll('.art_popup_infobox')) {{
+                    if (box.innerText.includes('Mindestmenge')) {{
+                        const infos = Array.from(box.querySelectorAll('.art_popup_info'))
+                            .map(el => el.innerText.trim())
+                            .filter(t => t && t !== 'Mindestmenge' && t !== 'Preis');
+                        // pairs: qty at [0,2,4,...], price at [1,3,5,...]
+                        for (let i = 1; i < infos.length; i += 2) tiers.push(infos[i]);
+                        break;
+                    }}
+                }}
 
-            try:
-                stock_el = page.locator("[class*='stock'], [class*='verfügbar'], [class*='lager'], [class*='lieferbar']").first
-                stock_text = await stock_el.inner_text(timeout=4000)
-                log.info(f"Stock: '{stock_text}'")
-            except Exception:
-                stock_text = "unknown"
+                // Case B: single price — div.price.discount
+                const singleEls = document.querySelectorAll('div.price.discount');
+                const singles = [...new Set(Array.from(singleEls).map(el => el.innerText.trim()))];
 
-            if not price_text:
-                raise RuntimeError("Could not read price from wasishop.de. Page layout may have changed.")
+                // Stock — span immediately after the span containing partNo
+                // (pattern in DOM: ... 'orderNumber' span → partNo span → STOCK span ...)
+                let stock = '';
+                const spans = Array.from(document.querySelectorAll('span'));
+                for (let i = 0; i < spans.length - 1; i++) {{
+                    if (spans[i].innerText.trim() === partNo) {{
+                        // next non-empty span
+                        for (let j = i + 1; j < spans.length; j++) {{
+                            const t = spans[j].innerText.trim();
+                            if (t && t !== partNo) {{ stock = t; break; }}
+                        }}
+                        break;
+                    }}
+                }}
 
-            price_clean = re.sub(r"[€\s\u00a0]", "", price_text).strip()
-            if "," in price_clean and "." in price_clean:
-                price_clean = price_clean.replace(".", "").replace(",", ".")
-            elif "," in price_clean:
-                price_clean = price_clean.replace(",", ".")
-            price_raw = float(re.search(r"[\d.]+", price_clean).group())
+                return {{ tiers, singles, stock }};
+            }}""")
 
-            unit_qty = 1
-            qty_match = re.search(r"/\s*(\d+)\s*(?:Stk|st|pcs|pc|pieces|VPE)", price_text, re.IGNORECASE)
-            if qty_match:
-                unit_qty = int(qty_match.group(1))
+            log.info(f"Raw data: {raw_data}")
 
-            in_stock = not any(w in stock_text.lower() for w in ["nicht", "out", "0"])
-            stock_value = 1 if in_stock else 0
+            tiers   = raw_data.get("tiers", [])
+            singles = raw_data.get("singles", [])
+            stock_text = raw_data.get("stock", "")
 
-            log.info(f"Parsed — price_raw: {price_raw} EUR, unit_qty: {unit_qty}, stock: {stock_value}")
+            if tiers:
+                # Take the middle tier (index len//2)
+                middle = tiers[len(tiers) // 2]
+                price_raw = _parse_eur(middle)
+                log.info(f"Tiered prices: {tiers} → using middle: {middle!r} → {price_raw}")
+            elif singles:
+                price_raw = _parse_eur(singles[0])
+                log.info(f"Single price: {singles[0]!r} → {price_raw}")
+            else:
+                raise RuntimeError(
+                    "Could not read price from wasishop.de. Page layout may have changed."
+                )
+
+            # Price is always per 100 pcs ("Preis / 100" column)
+            price_unit_qty = 100
+
+            stock_value = _parse_stock(stock_text)
+            log.info(f"Stock text: {stock_text!r} → {stock_value}")
+
+            log.info(f"Parsed — {price_raw} EUR / {price_unit_qty} pcs, stock: {stock_value}")
 
             return {
                 "supplier_part_no": supplier_part_no,
                 "price_raw":        price_raw,
-                "price_unit_qty":   unit_qty,
+                "price_unit_qty":   price_unit_qty,
                 "currency":         "EUR",
                 "unit":             "db",
                 "stock":            stock_value,

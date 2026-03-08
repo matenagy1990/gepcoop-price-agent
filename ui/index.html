@@ -67,7 +67,7 @@
   .btn-logout:hover{border-color:var(--red);color:var(--red)}
 
   /* ── MAIN ── */
-  .app-main{flex:1;max-width:1000px;width:100%;margin:0 auto;padding:36px 24px}
+  .app-main{flex:1;max-width:1160px;width:100%;margin:0 auto;padding:36px 24px}
 
   /* ── QUERY CARD ── */
   .query-card{background:var(--white);border-radius:var(--r);box-shadow:var(--sh);padding:28px 32px;margin-bottom:24px}
@@ -280,6 +280,17 @@
   .btn-cancel-confirm{padding:10px 20px;background:none;border:1.5px solid var(--border);border-radius:10px;font-family:'Inter',sans-serif;font-size:13px;font-weight:500;color:var(--muted);cursor:pointer;transition:all .2s;white-space:nowrap}
   .btn-cancel-confirm:hover{border-color:var(--red);color:var(--red)}
 
+  /* ── SUPPLIER FILTER ── */
+  .sup-filter-section{margin-top:14px;border-top:1px solid var(--border);padding-top:13px;display:flex;align-items:center;gap:12px;min-width:0}
+  .sup-filter-label{font-family:'Oswald',sans-serif;font-size:10px;font-weight:600;letter-spacing:1.8px;text-transform:uppercase;color:var(--muted);flex-shrink:0;opacity:.65;line-height:1;padding-top:1px}
+  .sup-filter-track{flex:1;display:flex;gap:4px;overflow-x:auto;scrollbar-width:none;min-width:0;padding:2px 0;-webkit-mask-image:linear-gradient(to right,black calc(100% - 36px),transparent 100%);mask-image:linear-gradient(to right,black calc(100% - 36px),transparent 100%)}
+  .sup-filter-track::-webkit-scrollbar{display:none}
+  .sup-chip{flex-shrink:0;height:30px;padding:0 13px;border:1.5px solid var(--border);border-radius:8px;font-family:'Inter',sans-serif;font-size:12px;font-weight:500;color:var(--muted);background:var(--white);cursor:pointer;transition:border-color .15s,background .15s,color .15s;white-space:nowrap;user-select:none}
+  .sup-chip:hover:not(.chip-disabled){border-color:var(--blue);color:var(--blue)}
+  .sup-chip.chip-active{border-color:var(--blue);background:var(--blue);color:#fff;font-weight:600}
+  .sup-chip.chip-disabled{opacity:.4;cursor:not-allowed;pointer-events:none}
+  .sup-chip-sep{width:1px;background:var(--border);margin:4px 4px;flex-shrink:0}
+
   /* ── RESPONSIVE ── */
   @media(max-width:680px){
     /* General */
@@ -290,6 +301,8 @@
     .sup-price-big{font-size:24px}
     .query-row{flex-direction:column}
     .btn-query{width:100%;justify-content:center}
+    .sup-filter-label{display:none}
+    .sup-filter-track{border-radius:8px}
     .reco-savings{flex-direction:column}
 
     /* Header — prevent overflow */
@@ -368,6 +381,24 @@
         <button class="btn-query" id="btn-query">
           <span id="query-btn-inner">ÖSSZEHASONLÍTÁS</span>
         </button>
+      </div>
+      <div class="sup-filter-section">
+        <span class="sup-filter-label">Szűrők</span>
+        <div class="sup-filter-track" id="sup-filter-bar">
+          <button class="sup-chip chip-all" data-sid="all">Összes</button>
+          <div class="sup-chip-sep"></div>
+          <button class="sup-chip" data-sid="csavarda">Csavarda</button>
+          <button class="sup-chip" data-sid="irontrade">Irontrade</button>
+          <button class="sup-chip" data-sid="koelner">Koelner</button>
+          <button class="sup-chip" data-sid="mekrs">Mekrs</button>
+          <button class="sup-chip" data-sid="fabory">Fabory</button>
+          <button class="sup-chip" data-sid="reyher">Reyher</button>
+          <button class="sup-chip" data-sid="hopefix">Hopefix</button>
+          <button class="sup-chip" data-sid="fastbolt">Fastbolt</button>
+          <button class="sup-chip" data-sid="schaefer">Schaefer</button>
+          <button class="sup-chip chip-disabled" data-sid="kingb2b" disabled title="Nem elérhető">Kingb2b</button>
+          <button class="sup-chip" data-sid="wasishop">Wasishop</button>
+        </div>
       </div>
     </div>
 
@@ -753,8 +784,46 @@ function showConfirmCard(data) {
   setTimeout(() => document.getElementById('btn-confirm-search').focus(), 50);
 }
 
+/* ══ SUPPLIER CHIP LOGIC ══════════════════════════════════════ */
+const ALL_SIDS = ['csavarda','irontrade','koelner','mekrs','fabory','reyher','hopefix','fastbolt','schaefer','wasishop'];
+
+function getChip(sid){ return document.querySelector(`#sup-filter-bar [data-sid="${sid}"]`); }
+
+function _syncAllChip(){
+  const allActive = ALL_SIDS.every(s => getChip(s)?.classList.contains('chip-active'));
+  getChip('all')?.classList.toggle('chip-active', allActive);
+}
+
+function toggleSupChip(sid){
+  if(sid === 'all'){
+    // Toggle: if all selected → deselect all; otherwise → select all
+    const allActive = ALL_SIDS.every(s => getChip(s)?.classList.contains('chip-active'));
+    const activate = !allActive;
+    ALL_SIDS.forEach(s => getChip(s)?.classList.toggle('chip-active', activate));
+    getChip('all')?.classList.toggle('chip-active', activate);
+    return;
+  }
+  const chip = getChip(sid);
+  if(!chip) return;
+  chip.classList.toggle('chip-active');
+  _syncAllChip();
+}
+
+function getSelectedSuppliers(){
+  // Returns comma-separated selected IDs, or '' if none/all selected (= query all)
+  const active = ALL_SIDS.filter(s => getChip(s)?.classList.contains('chip-active'));
+  if(active.length === 0 || active.length === ALL_SIDS.length) return '';
+  return active.join(',');
+}
+
+document.getElementById('sup-filter-bar').addEventListener('click', e => {
+  const chip = e.target.closest('.sup-chip');
+  if(!chip || chip.classList.contains('chip-disabled')) return;
+  toggleSupChip(chip.dataset.sid);
+});
+
 /* ══ QUERY — Step 2: run scraping after user confirms ══════════ */
-async function startSearch(partNo) {
+async function startSearch(partNo, filterSids) {
   document.getElementById('confirm-card').classList.add('hidden');
   document.getElementById('pipeline-card').classList.remove('hidden');
   document.getElementById('runtime-line').classList.add('hidden');
@@ -762,7 +831,8 @@ async function startSearch(partNo) {
   setQueryBusy(true);
 
   try {
-    const url = `/query/stream?internal_part_no=${encodeURIComponent(partNo)}`;
+    let url = `/query/stream?internal_part_no=${encodeURIComponent(partNo)}`;
+    if (filterSids) url += `&suppliers=${encodeURIComponent(filterSids)}`;
     const response = await fetch(url, { headers:{'Authorization':`Bearer ${authToken}`} });
     if (response.status===401) { sessionStorage.removeItem('gc_token'); location.reload(); return; }
     if (!response.ok) throw new Error(`Szerver hiba: ${response.status}`);
@@ -782,13 +852,17 @@ async function startSearch(partNo) {
 }
 
 document.getElementById('btn-confirm-search').addEventListener('click', () => {
-  if (_pendingPartNo) startSearch(_pendingPartNo);
+  if (_pendingPartNo) {
+    const filterSids = getSelectedSuppliers();
+    startSearch(_pendingPartNo, filterSids);
+  }
 });
 
 document.getElementById('btn-cancel-confirm').addEventListener('click', () => {
   _pendingPartNo = null;
   document.getElementById('confirm-card').classList.add('hidden');
   document.getElementById('part-input').disabled = false;
+  document.querySelectorAll('#sup-filter-bar .sup-chip').forEach(c => c.classList.remove('chip-disabled'));
   document.getElementById('btn-query').disabled = false;
   document.getElementById('query-btn-inner').textContent = 'ÖSSZEHASONLÍTÁS';
   document.getElementById('part-input').focus();
@@ -939,20 +1013,20 @@ function renderResults(data) {
       bodyHtml = `<div class="sup-err">⚠️ ${r.error}</div>`;
     } else {
       const cur = r.currency || 'HUF';
-      let ppdb, priceUnit, rawStr, czkNote;
+      let ppdb, priceUnit, rawStr, fxNote;
 
-      if (cur === 'CZK' && r.price_per_db_huf != null) {
-        // Show HUF-converted price as primary; CZK source price as secondary
+      if (cur !== 'HUF' && r.price_per_db_huf != null) {
+        // Show HUF-converted price as primary; original currency price as secondary
         ppdb      = fmtNum(r.price_per_db_huf, 4);
         priceUnit = 'HUF';
-        czkNote   = `≈ ${fmtNum(r.price_per_db, 4)} CZK/db (1 CZK = ${r.czk_huf_rate} HUF, ECB)`;
+        fxNote    = `≈ ${fmtNum(r.price_per_db, 4)} ${cur}/db (1 ${cur} = ${r.fx_huf_rate} HUF, open.er-api.com)`;
         rawStr    = r.price_raw != null && r.price_unit_qty != null
-          ? `Eredeti: ${fmtNum(r.price_raw, 2)} CZK / ${fmtInt(r.price_unit_qty)} db`
+          ? `Eredeti: ${fmtNum(r.price_raw, 2)} ${cur} / ${fmtInt(r.price_unit_qty)} db`
           : '';
       } else {
         ppdb      = typeof r.price_per_db === 'number' ? fmtNum(r.price_per_db, 4) : '—';
         priceUnit = cur;
-        czkNote   = '';
+        fxNote    = '';
         rawStr    = r.price_raw != null && r.price_unit_qty != null
           ? `Eredeti: ${fmtNum(r.price_raw, 2)} ${cur} / ${fmtInt(r.price_unit_qty)} db`
           : '';
@@ -965,7 +1039,7 @@ function renderResults(data) {
             <span class="sup-price-big">${ppdb}</span>
             <span class="sup-price-unit">${priceUnit}/db</span>
           </div>
-          ${czkNote ? `<div class="sup-price-orig" style="color:var(--muted)">${czkNote}</div>` : ''}
+          ${fxNote ? `<div class="sup-price-orig" style="color:var(--muted)">${fxNote}</div>` : ''}
           ${rawStr ? `<div class="sup-price-orig">${rawStr}</div>` : ''}
         </div>
         <div class="sup-metric">
@@ -1038,6 +1112,7 @@ function showError(msg){
 }
 function setQueryBusy(busy){
   document.getElementById('part-input').disabled=busy;
+  document.querySelectorAll('#sup-filter-bar .sup-chip').forEach(c=>c.classList.toggle('chip-disabled',busy));
   document.getElementById('btn-query').disabled=busy;
   document.getElementById('query-btn-inner').innerHTML=busy?'<div class="spinner"></div>':'ÖSSZEHASONLÍTÁS';
 }
