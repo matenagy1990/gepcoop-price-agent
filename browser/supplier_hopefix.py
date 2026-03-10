@@ -100,60 +100,54 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             suggestion = page.locator("#ui-id-1 li").filter(has_text=supplier_part_no).first
             await suggestion.click(timeout=5000)
             await page.wait_for_load_state("domcontentloaded")
-            # Prices are loaded asynchronously — wait until a EUR cell appears in the table
-            try:
-                await page.wait_for_selector("td:has-text('€')", timeout=10000)
-            except PlaywrightTimeout:
-                log.warning("No €-cell appeared after 10s — continuing anyway")
-            await page.wait_for_timeout(500)
             log.info(f"Product page: {page.url}")
 
             await emit("Reading price and stock from hopefix.cz…")
 
-            # Find the table row whose text contains the part number
-            row = page.locator("tr").filter(has_text=supplier_part_no).first
-            if await row.count() == 0:
+            # --- Price: read from the expander form (server-rendered, reliable in headless) ---
+            # The URL hash #part_no opens the expander for that row.
+            # The <select class="package_type"> options carry data-price and data-qty attributes
+            # that are baked into the HTML by the server — no AJAX needed.
+            # We use the first option (Box = smallest packaging unit).
+            try:
+                await page.wait_for_selector(
+                    f"form:has(input[name='product_nr'][value='{supplier_part_no}']) "
+                    f"select.package_type option[data-price]",
+                    timeout=10000,
+                )
+            except PlaywrightTimeout:
                 raise RuntimeError(
-                    f"Part {supplier_part_no} row not found in product table on hopefix.cz."
+                    f"Expander pricing not found for {supplier_part_no} on hopefix.cz."
                 )
 
-            row_text = await row.inner_text()
-            log.info(f"Matched row: {row_text!r}")
+            expander = page.locator(
+                f"form:has(input[name='product_nr'][value='{supplier_part_no}'])"
+            )
+            box_option = expander.locator("select.package_type option").first
+            data_price = await box_option.get_attribute("data-price")
+            data_qty   = await box_option.get_attribute("data-qty")
+            log.info(f"Expander data-price={data_price!r}, data-qty={data_qty!r}")
 
-            # --- Price: cell containing '€' ---
-            price_cell = row.locator("td").filter(has_text="€").first
-            if await price_cell.count() == 0:
-                raise RuntimeError("EUR price cell not found in matched row on hopefix.cz.")
+            if not data_price or not data_qty:
+                raise RuntimeError(
+                    f"Missing data-price/data-qty in expander for {supplier_part_no} on hopefix.cz."
+                )
 
-            price_text = (await price_cell.inner_text(timeout=5000)).strip()
-            log.info(f"Price cell: {price_text!r}")
+            price_raw      = float(data_price)
+            price_unit_qty = int(round(float(data_qty) * 100))  # data-qty is in units of 100 pcs
 
-            # Parse: "13,31 €" or "13,31\xa0€"
-            price_clean = re.sub(r"[€\s\u00a0]", "", price_text).strip()
-            if "," in price_clean and "." in price_clean:
-                price_clean = price_clean.replace(".", "").replace(",", ".")
-            elif "," in price_clean:
-                price_clean = price_clean.replace(",", ".")
-            price_raw = float(price_clean)
-
-            # Column header is "EUR/100 pcs" — always 100 pieces
-            price_unit_qty = 100
-
-            # --- Stock: cell immediately before the EUR cell ---
-            # Column order: ... | Stock (100 pcs) | EUR/100 pcs | ...
-            cells = row.locator("td")
-            cell_count = await cells.count()
+            # --- Stock: table column index 6 "Stock (100 pcs)" — AJAX-loaded, best effort ---
+            # Columns: [0]DIN [1]IDcode [2]Dim [3]ISO [4]Material [5]YourNr [6]Stock(100pcs) [7]EUR
             stock_value = 0
-            for i in range(cell_count):
-                cell_text = (await cells.nth(i).inner_text()).strip()
-                if "€" in cell_text and i > 0:
-                    stock_text = (await cells.nth(i - 1).inner_text()).strip()
-                    log.info(f"Stock cell: {stock_text!r}")
+            row = page.locator("tr").filter(has_text=supplier_part_no).first
+            if await row.count() > 0:
+                cells = row.locator("td")
+                if await cells.count() > 6:
+                    stock_text = (await cells.nth(6).inner_text()).strip()
+                    log.info(f"Stock cell text: {stock_text!r}")
                     m = re.search(r"[\d]+(?:[.,][\d]+)?", stock_text)
                     if m:
-                        # Stock is shown in packages of 100 pcs — multiply to get actual unit count
                         stock_value = int(float(m.group().replace(",", "."))) * 100
-                    break
 
             log.info(f"Parsed — {price_raw} EUR / {price_unit_qty} pcs, stock: {stock_value}")
 
