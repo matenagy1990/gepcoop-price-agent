@@ -99,27 +99,37 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             # Click the suggestion
             suggestion = page.locator("#ui-id-1 li").filter(has_text=supplier_part_no).first
             await suggestion.click(timeout=5000)
-            await page.wait_for_load_state("domcontentloaded")
+            # Wait for AJAX to complete so table cells and toggle buttons are populated
+            try:
+                await page.wait_for_load_state("networkidle", timeout=20000)
+            except PlaywrightTimeout:
+                log.warning("networkidle timeout — continuing anyway")
+            await page.wait_for_timeout(500)
             log.info(f"Product page: {page.url}")
 
             await emit("Reading price and stock from hopefix.cz…")
 
-            # --- Price: read from the expander form (server-rendered, reliable in headless) ---
-            # The URL hash #part_no opens the expander for that row.
-            # The <select class="package_type"> options carry data-price and data-qty attributes
-            # that are baked into the HTML by the server — no AJAX needed.
-            # We use the first option (Box = smallest packaging unit).
-            try:
-                await page.wait_for_selector(
-                    f"form:has(input[name='product_nr'][value='{supplier_part_no}']) "
-                    f"select.package_type option[data-price]",
-                    timeout=10000,
-                )
-            except PlaywrightTimeout:
+            # Find the row for this part number
+            row = page.locator("tr").filter(has_text=supplier_part_no).first
+            if await row.count() == 0:
                 raise RuntimeError(
-                    f"Expander pricing not found for {supplier_part_no} on hopefix.cz."
+                    f"Part {supplier_part_no} row not found on hopefix.cz."
                 )
 
+            # --- Check toggle-expander button exists (only appears when pricing is available) ---
+            toggle = row.locator(".toggle-expander")
+            if await toggle.count() == 0:
+                raise RuntimeError(
+                    f"Part {supplier_part_no} has no pricing available on hopefix.cz "
+                    "(product may be out of stock or not offered to this account)."
+                )
+
+            # Click toggle to open the expander row
+            await toggle.click()
+            await page.wait_for_timeout(500)
+
+            # --- Price: read data-price / data-qty from the Box (first) select option ---
+            # These attributes are server-rendered inside the expander form
             expander = page.locator(
                 f"form:has(input[name='product_nr'][value='{supplier_part_no}'])"
             )
@@ -128,26 +138,24 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             data_qty   = await box_option.get_attribute("data-qty")
             log.info(f"Expander data-price={data_price!r}, data-qty={data_qty!r}")
 
-            if not data_price or not data_qty:
+            if not data_price or not data_qty or float(data_price) == 0:
                 raise RuntimeError(
-                    f"Missing data-price/data-qty in expander for {supplier_part_no} on hopefix.cz."
+                    f"Part {supplier_part_no} has no pricing available on hopefix.cz."
                 )
 
             price_raw      = float(data_price)
             price_unit_qty = int(round(float(data_qty) * 100))  # data-qty is in units of 100 pcs
 
-            # --- Stock: table column index 6 "Stock (100 pcs)" — AJAX-loaded, best effort ---
+            # --- Stock: table column index 6 "Stock (100 pcs)" — loaded after networkidle ---
             # Columns: [0]DIN [1]IDcode [2]Dim [3]ISO [4]Material [5]YourNr [6]Stock(100pcs) [7]EUR
             stock_value = 0
-            row = page.locator("tr").filter(has_text=supplier_part_no).first
-            if await row.count() > 0:
-                cells = row.locator("td")
-                if await cells.count() > 6:
-                    stock_text = (await cells.nth(6).inner_text()).strip()
-                    log.info(f"Stock cell text: {stock_text!r}")
-                    m = re.search(r"[\d]+(?:[.,][\d]+)?", stock_text)
-                    if m:
-                        stock_value = int(float(m.group().replace(",", "."))) * 100
+            cells = row.locator("td")
+            if await cells.count() > 6:
+                stock_text = (await cells.nth(6).inner_text()).strip()
+                log.info(f"Stock cell text: {stock_text!r}")
+                m = re.search(r"[\d]+(?:[.,][\d]+)?", stock_text)
+                if m:
+                    stock_value = int(float(m.group().replace(",", "."))) * 100
 
             log.info(f"Parsed — {price_raw} EUR / {price_unit_qty} pcs, stock: {stock_value}")
 
