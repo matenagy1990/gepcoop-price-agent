@@ -7,5 +7,6 @@ services:
       - .env
     volumes:
       - ./assets:/app/assets
+      - ./.env:/app/.env
     shm_size: "256m"
     restart: unless-stopped
