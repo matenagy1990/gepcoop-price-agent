@@ -114,11 +114,11 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             unit_qty   = int(price_match.group(2))
             log.info(f"Price: {price_raw} Ft / {unit_qty} db")
 
-            # Stock
+            # Stock — Fabory only shows availability, not an exact quantity
             if "Nincs készleten" in body_text:
                 stock_value = 0
             elif "Készleten" in body_text or "Raktáron" in body_text:
-                stock_value = 1
+                stock_value = "Raktáron"
             else:
                 stock_value = None  # No stock information on this page
             log.info(f"Stock: {stock_value}")

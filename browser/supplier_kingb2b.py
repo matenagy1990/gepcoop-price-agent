@@ -2,12 +2,34 @@
 Playwright scraper for kingb2b.it (Supplier J)
 
 Login flow:
-  1. GET /PORTAL/ → SPA loads, shows login form or dashboard
-  2. Fill username + password → login
-  3. Search with the search box: "Ricerca prodotto o categoria o vostro codice se abbinato..."
-  4. Navigate to product → extract price and stock
+  1. GET /PORTAL/ → SPA loads (wait for #header-search)
+  2. Check login state: div.button-text-doc style="display:none" → not logged in
+  3. Click div.header-button.account → login modal opens
+  4. Fill Username + Password → click LOGIN button
+  5. Confirmed when DOCUMENTI / TRACKING buttons become visible
 
-Currency: EUR (Italian supplier)
+Search flow:
+  6. Fill #header-search with part number → press Enter
+  7. Wait for "Attendere prego..." to disappear and div.singola-famiglia to appear
+  8. Click div.singola-famiglia (family header) → expands product table
+  9. Wait for tr.articoli-row[id="PART_NO"] to appear
+  10. Wait for td[data-cell="PREZZO"] to be non-empty (only shown when logged in)
+
+Price structure:
+  - td[data-cell="PREZZO"] contains e.g. "0,60 %" or "7,68 %"
+  - "%" → price is per 100 units (price_unit_qty = 100)
+  - "N" → price is per 1 unit (price_unit_qty = 1)
+  - Italian decimal: comma → dot
+
+Stock structure:
+  - td[data-cell="STOCK"] contains divs:
+    - div.dispo-ok   → current stock (e.g. "26.000" = 26,000 units)
+    - div.dispo-incoming → incoming stock + date (e.g. "492.000 13/05/26")
+    - div.dispo-ko   → out of stock message
+  - Parse first number from whichever div has content
+  - Italian thousands separator: dot → strip
+
+Currency: EUR
 """
 
 import logging
@@ -25,6 +47,20 @@ log = logging.getLogger("kingb2b")
 PORTAL_URL = "https://kingb2b.it/PORTAL/"
 
 
+def _parse_eur(text: str) -> float:
+    """Parse Italian price string: '0,60' or '7,68' → float"""
+    clean = text.strip().replace(".", "").replace(",", ".")
+    return float(re.search(r"[\d.]+", clean).group())
+
+
+def _parse_stock(text: str) -> int:
+    """Parse Italian stock: '492.000 13/05/26' → 492000, '26.000' → 26000"""
+    m = re.search(r"[\d.]+", text)
+    if not m:
+        return 0
+    return int(m.group().replace(".", ""))
+
+
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
     async def emit(msg: str):
         log.info(msg)
@@ -33,106 +69,135 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
-        context = await browser.new_context()
-        page    = await context.new_page()
+        ctx = await browser.new_context()
+        page = await ctx.new_page()
 
         try:
             await emit("Opening kingb2b.it…")
             await page.goto(PORTAL_URL, wait_until="domcontentloaded")
-            await page.wait_for_timeout(3000)  # SPA needs time to init
-            log.info(f"Portal loaded: {page.url}")
+            # Wait for SPA to fully initialise
+            await page.wait_for_selector("#header-search", timeout=15000)
+            await page.wait_for_timeout(1000)
+            log.info("Portal loaded")
 
-            # Check if login form is visible
-            body_text = await page.locator("body").inner_text()
-            if any(w in body_text.lower() for w in ["login", "accedi", "username", "password", "accesso"]):
+            # ── Check if login is required ─────────────────────────────
+            doc_btn = page.locator("div.button-text-doc")
+            is_hidden = await doc_btn.evaluate(
+                "el => el.style.display === 'none' || getComputedStyle(el).display === 'none'"
+            )
+
+            if is_hidden:
                 await emit("Logging in to kingb2b.it…")
                 username = os.getenv("SUPPLIER_J_USERNAME", "")
                 password = os.getenv("SUPPLIER_J_PASSWORD", "")
-                log.info(f"Login form detected, logging in as: {username}")
+                log.info(f"Logging in as: {username}")
 
+                # Open login modal
+                await page.locator("div.header-button.account").first.click()
+                await page.wait_for_selector("input[placeholder='Username']", timeout=6000)
+
+                await page.get_by_role("textbox", name="Username").fill(username)
+                await page.get_by_role("textbox", name="Password").fill(password)
+                await page.get_by_role("button", name="LOGIN").click()
+
+                # Wait for DOCUMENTI to become visible (login confirmed)
                 try:
-                    await page.get_by_role("textbox", name="Username").fill(username)
-                    await page.get_by_role("textbox", name="Password").fill(password)
-                    await page.get_by_role("button", name="Login").click()
-                except Exception:
-                    # Try alternative selectors
-                    await page.locator("input[type='text'], input[name*='user'], input[name*='login']").first.fill(username)
-                    await page.locator("input[type='password']").first.fill(password)
-                    await page.locator("button[type='submit'], input[type='submit']").first.click()
+                    await page.wait_for_function(
+                        "() => getComputedStyle(document.querySelector('div.button-text-doc')).display !== 'none'",
+                        timeout=10000,
+                    )
+                except PlaywrightTimeout:
+                    raise RuntimeError("Login to kingb2b.it failed. Please check credentials.")
 
-                await page.wait_for_timeout(3000)
-                log.info(f"After login: {page.url}")
+                log.info("Login successful")
+            else:
+                log.info("Already logged in")
 
-            # Search for part number
+            # ── Search ────────────────────────────────────────────────
             await emit(f"Searching for {supplier_part_no} on kingb2b.it…")
-            try:
-                search_box = page.locator("input[placeholder*='Ricerca'], input[placeholder*='ricerca'], input[type='search']").first
-                await search_box.fill(supplier_part_no)
-                await search_box.press("Enter")
-                await page.wait_for_timeout(2000)
-                log.info(f"Search done: {page.url}")
-            except Exception as e:
-                log.warning(f"Search box interaction failed: {e}")
-                raise RuntimeError(f"Could not use search on kingb2b.it for part {supplier_part_no}")
+            search_box = page.locator("#header-search")
+            await search_box.fill(supplier_part_no)
+            await search_box.press("Enter")
 
+            # Wait for loading to finish and results to appear
+            await page.wait_for_selector("div.singola-famiglia", timeout=12000)
+            await page.wait_for_timeout(500)
+            log.info("Search results loaded")
+
+            # Check for "not found"
             body_text = await page.locator("body").inner_text()
-            if supplier_part_no.lower() not in body_text.lower() and "nessun" in body_text.lower():
+            if "nessun risultato" in body_text.lower() or "nessun articolo" in body_text.lower():
                 raise RuntimeError(f"Part {supplier_part_no} was not found on kingb2b.it.")
 
-            # Click first product if on results page
+            # ── Expand family row ──────────────────────────────────────
+            family_row = page.locator("div.singola-famiglia").first
+            await family_row.click()
+
+            # Wait for the specific article row to appear
+            article_row = page.locator(f'tr.articoli-row[id="{supplier_part_no}"]')
             try:
-                await page.locator("a[href*='product'], a[href*='articol'], .product a, .item a").first.click(timeout=5000)
-                await page.wait_for_timeout(2000)
-                log.info(f"Product page: {page.url}")
+                await article_row.wait_for(timeout=10000)
             except PlaywrightTimeout:
-                log.info("No product link click needed — might be directly on product page")
+                raise RuntimeError(
+                    f"Part {supplier_part_no} not found in the expanded product table on kingb2b.it."
+                )
 
+            # ── Wait for price to be injected (requires login) ─────────
             await emit("Reading price and stock from kingb2b.it…")
-
-            price_text = ""
-            stock_text = ""
-
             try:
-                price_el = page.locator("[class*='price'], [class*='Price'], [class*='prezzo']").first
-                price_text = await price_el.inner_text(timeout=6000)
-                log.info(f"Price: '{price_text}'")
-            except Exception:
-                body = await page.locator("body").inner_text()
-                match = re.search(r"([\d.,]+)\s*€|€\s*([\d.,]+)", body)
-                if match:
-                    price_text = match.group(0)
+                await page.wait_for_function(
+                    f"""() => {{
+                        const row = document.querySelector('tr.articoli-row[id="{supplier_part_no}"]');
+                        return row && row.querySelector('td[data-cell="PREZZO"]')?.innerText.trim() !== '';
+                    }}""",
+                    timeout=8000,
+                )
+            except PlaywrightTimeout:
+                raise RuntimeError(
+                    "Could not read price from kingb2b.it — PREZZO cell did not populate. "
+                    "Check login status."
+                )
 
-            try:
-                stock_el = page.locator("[class*='stock'], [class*='disponib'], [class*='giacenza']").first
-                stock_text = await stock_el.inner_text(timeout=4000)
-                log.info(f"Stock: '{stock_text}'")
-            except Exception:
-                stock_text = "unknown"
+            # ── Extract price ──────────────────────────────────────────
+            prezzo_text = await article_row.locator('td[data-cell="PREZZO"]').inner_text()
+            prezzo_text = prezzo_text.strip()
+            log.info(f"PREZZO cell: {prezzo_text!r}")
 
-            if not price_text:
-                raise RuntimeError("Could not read price from kingb2b.it. Page layout may have changed.")
+            # Parse price value (Italian decimal comma)
+            price_raw = _parse_eur(prezzo_text)
 
-            price_clean = re.sub(r"[€\s\u00a0]", "", price_text).strip()
-            if "," in price_clean and "." in price_clean:
-                price_clean = price_clean.replace(".", "").replace(",", ".")
-            elif "," in price_clean:
-                price_clean = price_clean.replace(",", ".")
-            price_raw = float(re.search(r"[\d.]+", price_clean).group())
+            # Determine unit: "%" → per 100 pcs, "N" → per 1 pc
+            if "%" in prezzo_text:
+                price_unit_qty = 100
+            elif "N" in prezzo_text:
+                price_unit_qty = 1
+            else:
+                # Fallback: use BOX column quantity
+                box_text = await article_row.locator('td[data-cell="BOX"]').inner_text()
+                box_text = box_text.strip().replace(".", "")
+                try:
+                    price_unit_qty = int(box_text)
+                except ValueError:
+                    price_unit_qty = 1
+            log.info(f"Price: {price_raw} EUR / {price_unit_qty} pcs")
 
-            unit_qty = 1
-            qty_match = re.search(r"/\s*(\d+)\s*(?:pz|pcs|pc|Stk)", price_text, re.IGNORECASE)
-            if qty_match:
-                unit_qty = int(qty_match.group(1))
+            # ── Extract stock ──────────────────────────────────────────
+            stock_value = 0
+            stock_cell = article_row.locator('td[data-cell="STOCK"]')
 
-            in_stock = not any(w in stock_text.lower() for w in ["out", "esaurit", "0"])
-            stock_value = 1 if in_stock else 0
+            for cls in ["dispo-ok", "dispo-incoming"]:
+                div_text = (await stock_cell.locator(f".{cls}").inner_text()).strip()
+                if div_text:
+                    stock_value = _parse_stock(div_text)
+                    log.info(f"Stock from .{cls}: {div_text!r} → {stock_value}")
+                    break
 
-            log.info(f"Parsed — price_raw: {price_raw} EUR, unit_qty: {unit_qty}, stock: {stock_value}")
+            log.info(f"Parsed — {price_raw} EUR / {price_unit_qty} pcs, stock: {stock_value}")
 
             return {
                 "supplier_part_no": supplier_part_no,
                 "price_raw":        price_raw,
-                "price_unit_qty":   unit_qty,
+                "price_unit_qty":   price_unit_qty,
                 "currency":         "EUR",
                 "unit":             "db",
                 "stock":            stock_value,

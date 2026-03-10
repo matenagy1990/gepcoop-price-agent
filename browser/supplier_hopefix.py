@@ -145,7 +145,8 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     log.info(f"Stock cell: {stock_text!r}")
                     m = re.search(r"[\d]+(?:[.,][\d]+)?", stock_text)
                     if m:
-                        stock_value = int(float(m.group().replace(",", ".")))
+                        # Stock is shown in packages of 100 pcs — multiply to get actual unit count
+                        stock_value = int(float(m.group().replace(",", "."))) * 100
                     break
 
             log.info(f"Parsed — {price_raw} EUR / {price_unit_qty} pcs, stock: {stock_value}")

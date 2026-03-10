@@ -192,7 +192,7 @@ def lookup_mapping(internal_part_no: str) -> dict:
 # Suppliers that have a working Playwright scraper
 _IMPLEMENTED_SUPPLIERS = {
     "csavarda", "irontrade", "koelner", "mekrs",
-    "fabory", "reyher", "hopefix", "fastbolt", "schaefer", "wasishop",
+    "fabory", "reyher", "hopefix", "fastbolt", "schaefer", "kingb2b", "wasishop",
 }
 
 

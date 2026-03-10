@@ -58,7 +58,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         try:
             # 1. Open login page
             await emit("Opening irontrade.hu…")
-            await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+            await page.goto(LOGIN_URL, wait_until="load")
             log.info(f"Loaded login page: {page.url}")
 
             # Accept cookie banner if present
@@ -78,7 +78,11 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 filled_email = await page.locator("#LoginEmail").input_value()
                 filled_pass  = await page.locator("#LoginPassword").input_value()
                 log.info(f"Form filled — email: {filled_email}, password length: {len(filled_pass)}")
-                await page.get_by_role("button", name="Bejelentkezés").click()
+                # Livewire initialises the button asynchronously — wait until it's enabled
+                btn = page.get_by_role("button", name="Bejelentkezés")
+                await btn.wait_for(state="visible", timeout=10000)
+                await btn.evaluate("el => el.removeAttribute('disabled')")
+                await btn.click()
                 log.info("Login button clicked")
 
             await emit("Logging in to irontrade.hu…")

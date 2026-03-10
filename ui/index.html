@@ -257,6 +257,20 @@
   .btn-delete-map:hover{background:rgba(254,26,0,.07);border-color:var(--red)}
   .btn-delete-map:disabled{opacity:.4;cursor:not-allowed}
 
+  /* ── SUPPLIER PASSWORD MODAL ── */
+  #pw-modal{position:fixed;inset:0;background:rgba(22,27,99,.55);backdrop-filter:blur(3px);z-index:600;display:flex;align-items:center;justify-content:center;padding:24px}
+  .pw-card{background:var(--white);border-radius:var(--r);box-shadow:0 8px 48px rgba(22,27,99,.22);width:100%;max-width:440px;overflow:hidden;border-top:4px solid #d97706}
+  .pw-hdr{background:linear-gradient(135deg,#92400e 0%,#b45309 100%);padding:16px 24px;color:#fff;font-family:'Oswald',sans-serif;font-size:14px;font-weight:700;letter-spacing:1.8px;text-transform:uppercase}
+  .pw-body{padding:24px 24px 20px}
+  .pw-desc{font-size:13px;color:var(--muted);margin-bottom:18px;line-height:1.6}
+  .pw-row{display:flex;gap:8px;align-items:center}
+  .pw-input{flex:1;height:40px;border:1.5px solid var(--border);border-radius:8px;padding:0 12px;font-family:'Inter',sans-serif;font-size:14px;color:var(--navy);outline:none;transition:border-color .15s}
+  .pw-input:focus{border-color:var(--blue)}
+  .pw-btn{height:40px;padding:0 18px;background:var(--blue);border:none;border-radius:8px;color:#fff;font-family:'Oswald',sans-serif;font-size:13px;font-weight:700;letter-spacing:1px;cursor:pointer;white-space:nowrap;transition:opacity .15s}
+  .pw-btn:hover{opacity:.85}
+  .pw-btn:disabled{opacity:.45;cursor:not-allowed}
+  .pw-msg{margin-top:10px;font-size:12px;min-height:16px;font-family:'Inter',sans-serif}
+
   /* ── CONFIRM CARD ── */
   .confirm-card{background:var(--white);border-radius:var(--r);box-shadow:var(--sh);overflow:hidden;margin-bottom:24px;animation:slideDown .3s ease;border-top:4px solid var(--blue)}
   .confirm-hdr{padding:20px 28px 16px;border-bottom:1px solid var(--border)}
@@ -395,7 +409,7 @@
           <button class="sup-chip" data-sid="hopefix">Hopefix</button>
           <button class="sup-chip" data-sid="fastbolt">Fastbolt</button>
           <button class="sup-chip" data-sid="schaefer">Schaefer</button>
-          <button class="sup-chip chip-disabled" data-sid="kingb2b" disabled title="Nem elérhető">Kingb2b</button>
+          <button class="sup-chip" data-sid="kingb2b">Kingb2b</button>
           <button class="sup-chip" data-sid="wasishop">Wasishop</button>
         </div>
       </div>
@@ -462,6 +476,21 @@
     <div class="results-grid hidden" id="results-grid"></div>
 
   </main>
+</div>
+
+<!-- ══ SUPPLIER PASSWORD MODAL ══════════════════════════════════ -->
+<div id="pw-modal" class="hidden">
+  <div class="pw-card">
+    <div class="pw-hdr">Schaefer &mdash; Jelszó megváltozott</div>
+    <div class="pw-body">
+      <div class="pw-desc">A Schaefer bejelentkezés sikertelen &mdash; a jelszó valószínűleg megváltozott. Kérem adja meg az új jelszót, és a rendszer automatikusan újra lekérdezi az árat.</div>
+      <div class="pw-row">
+        <input id="pw-input" class="pw-input" type="password" placeholder="Új jelszó…" autocomplete="new-password">
+        <button class="pw-btn" id="pw-save-btn">Mentés</button>
+      </div>
+      <div class="pw-msg" id="pw-msg"></div>
+    </div>
+  </div>
 </div>
 
 <!-- ══ ADMIN OVERLAY ══════════════════════════════════════════════ -->
@@ -538,11 +567,7 @@
       <!-- Upload section -->
       <div class="adm-section">
         <div class="adm-section-title">Mapping CSV feltöltése</div>
-        <p class="adm-hint">
-          Kötelező oszlop: <code>gepcoop_part_no</code> &nbsp;|&nbsp;
-          Opcionális: <code>csavarda_part_no</code>, <code>irontrade_part_no</code>,
-          <code>koelner_part_no</code>, <code>mekrs_part_no</code>
-        </p>
+        <div id="adm-col-hint" class="adm-hint">Oszlopok betöltése…</div>
         <div class="adm-upload-row">
           <label class="adm-file-label" for="adm-file">
             📂 <span id="adm-file-name">Válasszon CSV fájlt…</span>
@@ -576,8 +601,9 @@
 /* ══ STATE ══════════════════════════════════════════════════════ */
 let authToken = sessionStorage.getItem('gc_token');
 let username  = sessionStorage.getItem('gc_user');
-let _pendingPartNo = null;  // part number waiting for user confirmation
-let _searchStartTs  = null; // timestamp when scraping started
+let _pendingPartNo   = null;  // part number waiting for user confirmation
+let _searchStartTs   = null;  // timestamp when scraping started
+let _currentFilterSids = '';  // active supplier filter for the running search
 
 // pipeline state per supplier: {csavarda: [s0,s1,s2,s3], irontrade: [...]}
 const BROWSER_STEPS = [
@@ -784,7 +810,7 @@ function showConfirmCard(data) {
 }
 
 /* ══ SUPPLIER CHIP LOGIC ══════════════════════════════════════ */
-const ALL_SIDS = ['csavarda','irontrade','koelner','mekrs','fabory','reyher','hopefix','fastbolt','schaefer','wasishop'];
+const ALL_SIDS = ['csavarda','irontrade','koelner','mekrs','fabory','reyher','hopefix','fastbolt','schaefer','kingb2b','wasishop'];
 
 function getChip(sid){ return document.querySelector(`#sup-filter-bar [data-sid="${sid}"]`); }
 
@@ -823,10 +849,14 @@ document.getElementById('sup-filter-bar').addEventListener('click', e => {
 
 /* ══ QUERY — Step 2: run scraping after user confirms ══════════ */
 async function startSearch(partNo, filterSids) {
-  document.getElementById('confirm-card').classList.add('hidden');
+  // Keep the confirm-card visible so the mapping stays visible alongside the results.
+  // Only hide the action footer (buttons) — they're no longer needed once search starts.
+  document.getElementById('confirm-card').classList.remove('hidden');
+  document.querySelector('.confirm-footer').classList.add('hidden');
   document.getElementById('pipeline-card').classList.remove('hidden');
   document.getElementById('runtime-line').classList.add('hidden');
   _searchStartTs = Date.now();
+  _currentFilterSids = filterSids || '';
   setQueryBusy(true);
 
   try {
@@ -878,6 +908,68 @@ function parseSSE(raw) {
   if (type==='progress') handleProgress(data);
   else if (type==='result') handleResult(data);
   else if (type==='error') handleError(data);
+  else if (type==='password_required') handlePasswordRequired(data);
+}
+
+/* ══ SCHAEFER PASSWORD PROMPT ════════════════════════════════ */
+function handlePasswordRequired(data) {
+  const sid = data.supplier;
+  // Mark the active pipeline step as error
+  if (sid) {
+    const steps = supPipeState[sid] || [];
+    for (let i = steps.length - 1; i >= 0; i--) {
+      if (steps[i] === 'active') { setSupStep(sid, i, 'error'); break; }
+    }
+  }
+  document.getElementById('pw-modal').classList.remove('hidden');
+  document.getElementById('pw-input').value = '';
+  document.getElementById('pw-msg').textContent = '';
+  setTimeout(() => document.getElementById('pw-input').focus(), 50);
+}
+
+function closePwModal() {
+  document.getElementById('pw-modal').classList.add('hidden');
+}
+
+document.getElementById('pw-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') saveSchaeferPassword();
+});
+document.getElementById('pw-save-btn').addEventListener('click', saveSchaeferPassword);
+
+async function saveSchaeferPassword() {
+  const pw    = document.getElementById('pw-input').value;
+  const msgEl = document.getElementById('pw-msg');
+  const btn   = document.getElementById('pw-save-btn');
+  if (!pw) {
+    msgEl.style.color = 'var(--red)';
+    msgEl.textContent = 'Kérjük adja meg az új jelszót.';
+    return;
+  }
+  btn.disabled = true;
+  msgEl.style.color = 'var(--muted)';
+  msgEl.textContent = 'Mentés…';
+  try {
+    const res = await fetch('/supplier/update-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
+      body: JSON.stringify({ supplier_id: 'schaefer', password: pw }),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || 'Mentés sikertelen.');
+    }
+    msgEl.style.color = 'var(--green, #16a34a)';
+    msgEl.textContent = 'Jelszó elmentve — újra lekérdezés…';
+    const partNo = _pendingPartNo;
+    setTimeout(() => {
+      closePwModal();
+      if (partNo) startSearch(partNo, 'schaefer');
+    }, 900);
+  } catch(e) {
+    msgEl.style.color = 'var(--red)';
+    msgEl.textContent = e.message;
+    btn.disabled = false;
+  }
 }
 
 function handleProgress(ev) {
@@ -955,25 +1047,33 @@ function renderResults(data) {
   const winnerLabel = winner ? winner.charAt(0).toUpperCase()+winner.slice(1) : 'N/A';
 
   let statsHtml = '';
-  if (recommendation.prices && Object.keys(recommendation.prices).length > 1) {
-    const sids = Object.keys(recommendation.prices);
-    for (const sid of sids) {
-      const p = recommendation.prices[sid];
+  if (recommendation.prices && Object.keys(recommendation.prices).length >= 1) {
+    // Sort by price ascending, show top 3
+    const RANK_LABELS = ['1. legjobb', '2. legjobb', '3. legjobb'];
+    const sorted = Object.entries(recommendation.prices)
+      .sort((a, b) => a[1] - b[1])
+      .slice(0, 3);
+
+    for (let i = 0; i < sorted.length; i++) {
+      const [sid, price] = sorted[i];
+      const isWinner = i === 0;
       statsHtml += `
         <div class="reco-stat">
-          <div class="reco-stat-label">${sid.toUpperCase()} Ár</div>
-          <div class="reco-stat-value ${sid===winner?'green':''}">${fmtNum(p,4)} HUF/db</div>
+          <div class="reco-stat-label">${RANK_LABELS[i]} &mdash; ${sid.toUpperCase()}</div>
+          <div class="reco-stat-value ${isWinner ? 'green' : ''}">${fmtNum(price,4)} HUF/db</div>
         </div>`;
     }
-    if (recommendation.price_diff > 0) {
+
+    // Diff between 1st and 2nd
+    if (sorted.length >= 2 && recommendation.price_diff > 0) {
       statsHtml += `
         <div class="reco-stat">
-          <div class="reco-stat-label">Megtakarítás darabonként</div>
-          <div class="reco-stat-value green">−${fmtNum(recommendation.price_diff,4)} HUF</div>
+          <div class="reco-stat-label">1. – 2. különbség</div>
+          <div class="reco-stat-value green">−${fmtNum(recommendation.price_diff,4)} HUF/db</div>
         </div>
         <div class="reco-stat">
           <div class="reco-stat-label">Olcsóbb</div>
-          <div class="reco-stat-value green">${recommendation.savings_pct}%</div>
+          <div class="reco-stat-value green">${fmtNum(recommendation.savings_pct,1)}%</div>
         </div>`;
     }
   }
@@ -1018,7 +1118,7 @@ function renderResults(data) {
         // Show HUF-converted price as primary; original currency price as secondary
         ppdb      = fmtNum(r.price_per_db_huf, 4);
         priceUnit = 'HUF';
-        fxNote    = `≈ ${fmtNum(r.price_per_db, 4)} ${cur}/db (1 ${cur} = ${r.fx_huf_rate} HUF, open.er-api.com)`;
+        fxNote    = `≈ ${fmtNum(r.price_per_db, 4)} ${cur}/db (1 ${cur} = ${fmtNum(r.fx_huf_rate, 2)} HUF, open.er-api.com)`;
         rawStr    = r.price_raw != null && r.price_unit_qty != null
           ? `Eredeti: ${fmtNum(r.price_raw, 2)} ${cur} / ${fmtInt(r.price_unit_qty)} db`
           : '';
@@ -1094,7 +1194,7 @@ function fmtNum(n,dec){
   if(n==null||isNaN(Number(n)))return '—';
   const parts=Number(n).toFixed(dec).split('.');
   parts[0]=parts[0].replace(/\B(?=(\d{3})+(?!\d))/g,'\u00A0');
-  return parts.join('.');
+  return parts.join(',');
 }
 function fmtInt(n){
   const v=Math.round(Number(n||0));
@@ -1118,9 +1218,12 @@ function setQueryBusy(busy){
 function resetUI(){
   supPipeState={};
   _pendingPartNo = null;
+  _currentFilterSids = '';
+  document.getElementById('pw-modal').classList.add('hidden');
   setMapStep('pending');
   document.getElementById('pipe-suppliers').innerHTML='';
   document.getElementById('confirm-card').classList.add('hidden');
+  document.querySelector('.confirm-footer').classList.remove('hidden');
   document.getElementById('pipeline-card').classList.add('hidden');
   document.getElementById('runtime-line').classList.add('hidden');
   document.getElementById('err-banner').classList.add('hidden');
@@ -1227,8 +1330,23 @@ function admRenderTable(columns, rows) {
   const count = document.getElementById('adm-row-count');
   const thead = document.getElementById('adm-thead');
   const tbody = document.getElementById('adm-tbody');
+  const hint  = document.getElementById('adm-col-hint');
 
-  count.textContent = `${rows.length} cikkszám`;
+  const totalRows = rows.length;
+  const preview   = rows.slice(0, 10);
+  count.textContent = totalRows
+    ? `${totalRows} cikkszám (első 10 sor előnézet)`
+    : '0 cikkszám';
+
+  // Update the upload hint with the required column order
+  if (columns.length) {
+    const colTags = columns.map(c => `<code>${c}</code>`).join(' <span style="color:var(--muted);font-size:10px">▸</span> ');
+    hint.innerHTML =
+      `<strong>Kötelező oszlopok (ebben a sorrendben):</strong><br>` +
+      `<span style="line-height:2">${colTags}</span>`;
+  } else {
+    hint.innerHTML = `Kötelező oszlop: <code>gepcoop_part_no</code> — töltsön fel egy meglévő mapping CSV-t az oszlopszerkezet megtekintéséhez.`;
+  }
 
   if (!columns.length) {
     thead.innerHTML = '';
@@ -1237,7 +1355,7 @@ function admRenderTable(columns, rows) {
   }
 
   thead.innerHTML = '<tr>' + columns.map(c => `<th>${c}</th>`).join('') + '</tr>';
-  tbody.innerHTML = rows.map(row =>
+  tbody.innerHTML = preview.map(row =>
     '<tr>' + columns.map(c => `<td>${row[c] ?? ''}</td>`).join('') + '</tr>'
   ).join('');
 }

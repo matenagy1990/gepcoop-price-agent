@@ -186,7 +186,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 price_text = price_text.replace(",", ".")
             price_raw = float(price_text)
 
-            stock_value = 1
+            stock_value = None  # Reyher does not publish stock quantities
             log.info(f"Parsed — price_raw: {price_raw} EUR / {price_unit_qty} db, stock: {stock_value}")
 
             return {

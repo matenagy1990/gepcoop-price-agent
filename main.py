@@ -136,12 +136,34 @@ def _get_admin(authorization: str | None) -> str:
     return admin_sessions[token]
 
 
+def _hu(n: float, dec: int = 4) -> str:
+    """Format a number with Hungarian decimal comma, e.g. 0.2496 → '0,2496'."""
+    return f"{n:.{dec}f}".replace(".", ",")
+
+
+def _hu_int(n: int) -> str:
+    """Format an integer with non-breaking space as thousands separator, e.g. 20000 → '20 000'."""
+    return f"{n:,}".replace(",", "\u00a0")
+
+
+def _fmt_stock(stock) -> str:
+    """Human-readable stock string for recommendation text (Hungarian)."""
+    if stock is None:
+        return "ismeretlen"
+    if isinstance(stock, str):
+        if stock.lower().startswith("raktár"):
+            return "raktáron (pontos mennyiség ismeretlen)"
+        return stock
+    v = int(stock or 0)
+    return "nincs készleten" if v == 0 else f"{_hu_int(v)} db"
+
+
 # ── Recommendation logic ─────────────────────────────────────────────
 def compute_recommendation(supplier_results: dict) -> dict:
     """
     Compare supplier results and return a purchase recommendation.
-    Only HUF suppliers are ranked. CZK suppliers (e.g. mekrs) are shown
-    as a reference note with their open.er-api.com converted indicative price.
+    All suppliers are ranked together. Non-HUF suppliers (e.g. mekrs, reyher)
+    are included using their live-converted price_per_db_huf value.
     """
     available = {
         sid: r for sid, r in supplier_results.items()
@@ -154,79 +176,78 @@ def compute_recommendation(supplier_results: dict) -> dict:
             "reason": "Egyik beszállítótól sem érkezett érvényes áradat.",
         }
 
-    # Only HUF suppliers enter the price ranking
-    comparable = {sid: r for sid, r in available.items() if r.get("currency", "HUF") == "HUF"}
-    cross_currency = {sid: r for sid, r in available.items() if r.get("currency", "HUF") != "HUF"}
+    def _rank_price(r: dict) -> float | None:
+        """HUF-comparable price used for ranking."""
+        if r.get("currency", "HUF") == "HUF":
+            return r["price_per_db"]
+        return r.get("price_per_db_huf")   # None if FX conversion failed
 
-    if not comparable:
-        comparable = available
-        cross_currency = {}
+    def _price_label(sid: str, huf_price: float) -> str:
+        """Formatted price string, noting original currency for non-HUF suppliers."""
+        r = available[sid]
+        curr = r.get("currency", "HUF")
+        if curr == "HUF":
+            return f"{_hu(huf_price)} HUF/db"
+        rate = r.get("fx_huf_rate", "?")
+        return (
+            f"{_hu(r['price_per_db'])} {curr}/db"
+            f" ≈ {_hu(huf_price)} HUF/db (1 {curr} = {_hu(rate, 2)} HUF, open.er-api.com)"
+        )
 
-    if len(comparable) == 1 and not cross_currency:
-        sid = next(iter(comparable))
-        r = comparable[sid]
-        currency = r.get("currency", "HUF")
-        stock_total = _total_stock(r.get("stock", 0))
-        price_note = f"{r['price_per_db']:.4f} {currency}/db"
-        if currency != "HUF" and r.get("price_per_db_huf") is not None:
-            rate = r.get("fx_huf_rate", "?")
-            price_note += f" ≈ {r['price_per_db_huf']:.4f} HUF/db (1 {currency} = {rate} HUF, open.er-api.com)"
+    # All suppliers with a usable HUF-comparable price enter the ranking
+    rankable = {sid: _rank_price(r) for sid, r in available.items() if _rank_price(r) is not None}
+
+    if not rankable:
+        return {
+            "winner": None,
+            "reason": "Egyik beszállítótól sem érkezett érvényes áradat.",
+        }
+
+    if len(rankable) == 1:
+        sid = next(iter(rankable))
+        r = available[sid]
         return {
             "winner": sid,
             "reason": (
                 f"Csak a(z) {sid.capitalize()} adott vissza érvényes árat. "
-                f"Ár: {price_note} — "
-                f"Készlet: {stock_total:,} db."
+                f"Ár: {_price_label(sid, rankable[sid])} — "
+                f"Készlet: {_fmt_stock(r.get('stock', 0))}."
             ),
             "single_supplier": True,
         }
 
-    prices  = {sid: r["price_per_db"] for sid, r in comparable.items()}
-    winner  = min(prices, key=prices.get)
-    others  = [s for s in prices if s != winner]
-    loser   = others[0] if others else None
+    sorted_sids = sorted(rankable, key=rankable.get)
+    winner      = sorted_sids[0]
+    second      = sorted_sids[1]
 
-    winner_price = prices[winner]
-    loser_price  = prices[loser] if loser else winner_price
-    price_diff   = round(loser_price - winner_price, 6)
-    savings_pct  = round((price_diff / loser_price) * 100, 1) if loser_price > 0 else 0.0
+    winner_price = rankable[winner]
+    second_price = rankable[second]
+    price_diff   = round(second_price - winner_price, 6)
+    savings_pct  = round((price_diff / second_price) * 100, 1) if second_price > 0 else 0.0
 
-    winner_stock = _total_stock(comparable[winner].get("stock", 0))
-    loser_stock  = _total_stock(comparable[loser].get("stock", 0)) if loser else 0
+    winner_stock_raw = available[winner].get("stock", 0)
+    second_stock_raw = available[second].get("stock", 0)
+    winner_stock     = _total_stock(winner_stock_raw)
+    second_stock     = _total_stock(second_stock_raw)
 
     stock_note = ""
-    if loser and loser_stock > winner_stock * 2:
+    if (not isinstance(winner_stock_raw, str)
+            and not isinstance(second_stock_raw, str)
+            and second_stock > winner_stock * 2):
         stock_note = (
-            f" Megjegyzés: a(z) {loser.capitalize()} lényegesen nagyobb készlettel rendelkezik "
-            f"({loser_stock:,} vs {winner_stock:,} db) — érdemes mérlegelni az elérhetőséget."
+            f" Megjegyzés: a(z) {second.capitalize()} lényegesen nagyobb készlettel rendelkezik "
+            f"({_fmt_stock(second_stock_raw)} vs {_fmt_stock(winner_stock_raw)}) — érdemes mérlegelni az elérhetőséget."
         )
-
-    cross_note = ""
-    if cross_currency:
-        parts = []
-        for sid, r in cross_currency.items():
-            huf      = r.get("price_per_db_huf")
-            czk_rate = r.get("fx_huf_rate")
-            if huf is not None and czk_rate is not None:
-                curr = r.get("currency", "?")
-                parts.append(
-                    f"{sid.capitalize()}: {r['price_per_db']:.4f} {curr}/db"
-                    f" ≈ {huf:.4f} HUF/db (1 {curr} = {czk_rate} HUF, open.er-api.com)"
-                )
-            else:
-                parts.append(f"{sid.capitalize()} ({r.get('currency','?')} — nem konvertált)")
-        cross_note = f" ({'; '.join(parts)} — tájékoztató jellegű, nem szerepel a rangsorban.)"
 
     reason = (
         f"Vásárolj a(z) {winner.capitalize()}-tól — "
-        f"{winner_price:.4f} HUF/db vs {loser_price:.4f} HUF/db "
-        f"({savings_pct:.1f}%-kal olcsóbb, darabonként {price_diff:.4f} HUF megtakarítás)."
-        f"{stock_note}{cross_note}"
+        f"{_price_label(winner, winner_price)} vs {_price_label(second, second_price)} "
+        f"({_hu(savings_pct, 1)}%-kal olcsóbb, darabonként {_hu(price_diff)} HUF megtakarítás)."
+        f"{stock_note}"
     )
 
-    # prices dict: only the HUF suppliers that were actually ranked
-    all_prices = {sid: round(r["price_per_db"], 6) for sid, r in comparable.items()}
-    all_stocks = {sid: _total_stock(r.get("stock", 0)) for sid, r in available.items()}
+    all_prices = {sid: round(p, 6) for sid, p in rankable.items()}
+    all_stocks = {sid: r.get("stock", 0) for sid, r in available.items()}
 
     return {
         "winner":      winner,
@@ -263,6 +284,10 @@ class UpdateUserRequest(BaseModel):
 class UpdateSupplierRequest(BaseModel):
     supplier_id: str
     username: str
+    password: str
+
+class UpdatePasswordRequest(BaseModel):
+    supplier_id: str
     password: str
 
 
@@ -373,11 +398,19 @@ async def query_stream(
                     log.info(f"[{sid}] fetch done: price_per_db={r.get('price_per_db')}")
                 except Exception as exc:
                     log.error(f"[{sid}] fetch failed: {exc}")
-                    results[sid] = {"error": str(exc), "supplier_id": sid}
-                    await queue.put(("progress", {
-                        "step": "browser", "status": "error",
-                        "msg": str(exc), "supplier": sid,
-                    }))
+                    err_msg = str(exc)
+                    results[sid] = {"error": err_msg, "supplier_id": sid}
+                    # Schaefer rotates passwords monthly — prompt user to update
+                    if sid == "schaefer" and "failed" in err_msg.lower() and "credential" in err_msg.lower():
+                        await queue.put(("password_required", {
+                            "supplier": sid,
+                            "msg": err_msg,
+                        }))
+                    else:
+                        await queue.put(("progress", {
+                            "step": "browser", "status": "error",
+                            "msg": err_msg, "supplier": sid,
+                        }))
 
             await asyncio.gather(*[fetch_one(s) for s in supplier_list])
 
@@ -424,6 +457,25 @@ def get_parts(authorization: str | None = Header(default=None)):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.post("/supplier/update-password")
+def update_supplier_password(
+    req: UpdatePasswordRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Allow a logged-in user to update a supplier's password (e.g. after Schaefer monthly rotation)."""
+    _get_username(authorization)
+    if req.supplier_id not in SUPPLIER_CREDS:
+        raise HTTPException(status_code=400, detail=f"Ismeretlen beszállító: {req.supplier_id}")
+    if not req.password:
+        raise HTTPException(status_code=400, detail="Jelszó megadása kötelező.")
+    env_prefix = SUPPLIER_META[req.supplier_id]["env"]
+    SUPPLIER_CREDS[req.supplier_id]["password"] = req.password
+    _update_env_file({f"{env_prefix}_PASSWORD": req.password})
+    _apply_suppliers_to_env(SUPPLIER_CREDS)
+    log.info(f"Jelszó frissítve: {req.supplier_id}")
+    return {"ok": True}
 
 
 # ── Admin routes ──────────────────────────────────────────────────────
