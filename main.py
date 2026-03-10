@@ -57,38 +57,48 @@ sessions: dict[str, str] = {}   # token → username
 
 # ── Supplier credentials ──────────────────────────────────────────
 SUPPLIER_META = {
-    "csavarda":  {"url": "https://csavarda.hu/",                         "env": "SUPPLIER_A"},
-    "irontrade": {"url": "https://irontrade.hu/",                        "env": "SUPPLIER_B"},
-    "koelner":   {"url": "https://webshop.koelner.hu/",                  "env": "SUPPLIER_C"},
-    "mekrs":     {"url": "https://eshop.mekrs.cz/en",                   "env": "SUPPLIER_D"},
-    "fabory":    {"url": "https://www.fabory.com/hu",                    "env": "SUPPLIER_E"},
-    "reyher":    {"url": "https://rio.reyher.de",                        "env": "SUPPLIER_F"},
-    "hopefix":   {"url": "https://www.hopefix.cz/en",                   "env": "SUPPLIER_G"},
-    "fastbolt":  {"url": "https://fbonline.fastbolt.com",               "env": "SUPPLIER_H"},
-    "schaefer":  {"url": "https://shop.schaefer-peters.com/b2b/en/",    "env": "SUPPLIER_I"},
-    "kingb2b":   {"url": "https://kingb2b.it/PORTAL/",                  "env": "SUPPLIER_J"},
-    "wasishop":  {"url": "https://www.wasishop.de",                      "env": "SUPPLIER_K"},
+    "csavarda":  {"url": "https://csavarda.hu/",                         "env": "SUPPLIER_A", "extra": []},
+    "irontrade": {"url": "https://irontrade.hu/",                        "env": "SUPPLIER_B", "extra": []},
+    "koelner":   {"url": "https://webshop.koelner.hu/",                  "env": "SUPPLIER_C", "extra": []},
+    "mekrs":     {"url": "https://eshop.mekrs.cz/en",                   "env": "SUPPLIER_D", "extra": []},
+    "fabory":    {"url": "https://www.fabory.com/hu",                    "env": "SUPPLIER_E", "extra": []},
+    "reyher":    {"url": "https://rio.reyher.de",                        "env": "SUPPLIER_F", "extra": [
+        {"key": "customer_code", "env_suffix": "CUSTOMER_CODE", "label": "Ügyfélszám"},
+    ]},
+    "hopefix":   {"url": "https://www.hopefix.cz/en",                   "env": "SUPPLIER_G", "extra": []},
+    "fastbolt":  {"url": "https://fbonline.fastbolt.com",               "env": "SUPPLIER_H", "extra": [
+        {"key": "shortname", "env_suffix": "SHORTNAME", "label": "Shortname"},
+    ]},
+    "schaefer":  {"url": "https://shop.schaefer-peters.com/b2b/en/",    "env": "SUPPLIER_I", "extra": []},
+    "kingb2b":   {"url": "https://kingb2b.it/PORTAL/",                  "env": "SUPPLIER_J", "extra": []},
+    "wasishop":  {"url": "https://www.wasishop.de",                      "env": "SUPPLIER_K", "extra": []},
 }
 
 def _load_supplier_creds_from_env() -> dict:
     result = {}
     for sid, meta in SUPPLIER_META.items():
         env = meta["env"]
-        result[sid] = {
+        creds = {
             "url":      os.environ.get(f"{env}_URL", meta["url"]),
             "username": os.environ.get(f"{env}_USERNAME", ""),
             "password": os.environ.get(f"{env}_PASSWORD", ""),
         }
+        for ex in meta.get("extra", []):
+            creds[ex["key"]] = os.environ.get(f"{env}_{ex['env_suffix']}", "")
+        result[sid] = creds
     return result
 
 def _apply_suppliers_to_env(suppliers: dict) -> None:
     """Push credentials into os.environ so browser scripts pick them up."""
     for sid, creds in suppliers.items():
-        env = SUPPLIER_META.get(sid, {}).get("env")
+        meta = SUPPLIER_META.get(sid, {})
+        env  = meta.get("env")
         if env:
             os.environ[f"{env}_URL"]      = creds.get("url", "")
             os.environ[f"{env}_USERNAME"] = creds.get("username", "")
             os.environ[f"{env}_PASSWORD"] = creds.get("password", "")
+            for ex in meta.get("extra", []):
+                os.environ[f"{env}_{ex['env_suffix']}"] = creds.get(ex["key"], "")
 
 SUPPLIER_CREDS: dict = _load_supplier_creds_from_env()
 
@@ -285,6 +295,7 @@ class UpdateSupplierRequest(BaseModel):
     supplier_id: str
     username: str
     password: str
+    extra: dict | None = None
 
 class UpdatePasswordRequest(BaseModel):
     supplier_id: str
@@ -551,12 +562,21 @@ def admin_delete_mapping():
 
 @app.get("/admin/suppliers")
 def admin_get_suppliers():
-    return {
-        "suppliers": [
-            {"id": sid, "url": creds.get("url", ""), "username": creds.get("username", ""), "password": creds.get("password", "")}
-            for sid, creds in SUPPLIER_CREDS.items()
-        ]
-    }
+    result = []
+    for sid, creds in SUPPLIER_CREDS.items():
+        meta = SUPPLIER_META.get(sid, {})
+        entry = {
+            "id":       sid,
+            "url":      creds.get("url", ""),
+            "username": creds.get("username", ""),
+            "password": creds.get("password", ""),
+            "extra":    [
+                {"key": ex["key"], "label": ex["label"], "value": creds.get(ex["key"], "")}
+                for ex in meta.get("extra", [])
+            ],
+        }
+        result.append(entry)
+    return {"suppliers": result}
 
 
 @app.post("/admin/update-supplier")
@@ -567,13 +587,22 @@ def admin_update_supplier(
         raise HTTPException(status_code=400, detail=f"Ismeretlen beszállító: {req.supplier_id}")
     if not req.username.strip() or not req.password:
         raise HTTPException(status_code=400, detail="Felhasználónév és jelszó megadása kötelező.")
+    meta       = SUPPLIER_META[req.supplier_id]
+    env_prefix = meta["env"]
+
     SUPPLIER_CREDS[req.supplier_id]["username"] = req.username.strip()
     SUPPLIER_CREDS[req.supplier_id]["password"] = req.password
-    env_prefix = SUPPLIER_META[req.supplier_id]["env"]
-    _update_env_file({
+    env_updates = {
         f"{env_prefix}_USERNAME": req.username.strip(),
         f"{env_prefix}_PASSWORD": req.password,
-    })
+    }
+    # Save extra fields (customer_code, shortname, …)
+    for ex in meta.get("extra", []):
+        val = (req.extra or {}).get(ex["key"], "")
+        SUPPLIER_CREDS[req.supplier_id][ex["key"]] = val
+        env_updates[f"{env_prefix}_{ex['env_suffix']}"] = val
+
+    _update_env_file(env_updates)
     _apply_suppliers_to_env(SUPPLIER_CREDS)
     log.info(f"Beszállítói adatok frissítve: {req.supplier_id}, username={req.username.strip()}")
     return {"supplier_id": req.supplier_id, "username": req.username.strip()}

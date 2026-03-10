@@ -1428,6 +1428,12 @@ function admRenderSuppliers(suppliers) {
         <a href="${escAttr(s.url)}" target="_blank" class="adm-sup-url">${escAttr(s.url)} ↗</a>
       </div>
       <div class="adm-sup-fields">
+        ${(s.extra||[]).map(ex => `
+        <div class="field">
+          <label>${escAttr(ex.label)}</label>
+          <input type="text" id="sup-extra-${s.id}-${ex.key}" value="${escAttr(ex.value)}"
+                 autocomplete="off" readonly onfocus="this.removeAttribute('readonly')">
+        </div>`).join('')}
         <div class="field">
           <label>Felhasználónév</label>
           <input type="text" id="sup-user-${s.id}" value="${escAttr(s.username)}"
@@ -1467,6 +1473,13 @@ async function admSaveSupplier(sid) {
   const msgEl    = document.getElementById(`sup-msg-${sid}`);
   const btn      = document.getElementById(`sup-btn-${sid}`);
 
+  // Collect extra fields (customer_code, shortname, …)
+  const extra = {};
+  document.querySelectorAll(`[id^="sup-extra-${sid}-"]`).forEach(el => {
+    const key = el.id.replace(`sup-extra-${sid}-`, '');
+    extra[key] = el.value.trim();
+  });
+
   msgEl.className = 'hidden';
   if (!username || !password) {
     msgEl.className = 'adm-msg err';
@@ -1479,7 +1492,7 @@ async function admSaveSupplier(sid) {
     const res = await fetch('/admin/update-supplier', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ supplier_id: sid, username, password }),
+      body: JSON.stringify({ supplier_id: sid, username, password, extra }),
     });
     const d = await res.json();
     if (!res.ok) throw new Error(d.detail || 'Mentés sikertelen.');
