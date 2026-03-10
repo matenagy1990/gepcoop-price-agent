@@ -100,7 +100,12 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             suggestion = page.locator("#ui-id-1 li").filter(has_text=supplier_part_no).first
             await suggestion.click(timeout=5000)
             await page.wait_for_load_state("domcontentloaded")
-            await page.wait_for_timeout(1500)
+            # Prices are loaded asynchronously — wait until a EUR cell appears in the table
+            try:
+                await page.wait_for_selector("td:has-text('€')", timeout=10000)
+            except PlaywrightTimeout:
+                log.warning("No €-cell appeared after 10s — continuing anyway")
+            await page.wait_for_timeout(500)
             log.info(f"Product page: {page.url}")
 
             await emit("Reading price and stock from hopefix.cz…")
@@ -135,6 +140,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             price_unit_qty = 100
 
             # --- Stock: cell immediately before the EUR cell ---
+            # Column order: ... | Stock (100 pcs) | EUR/100 pcs | ...
             cells = row.locator("td")
             cell_count = await cells.count()
             stock_value = 0
