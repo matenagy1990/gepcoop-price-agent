@@ -19,6 +19,26 @@ _FX_TTL = 3600
 
 MAPPING_FILE = Path(__file__).parent.parent / "assets" / "mapping.csv"
 
+# ── Supabase client (optional — falls back to CSV if not configured) ──────────
+_supabase = None
+
+def _get_supabase():
+    global _supabase
+    if _supabase is not None:
+        return _supabase
+    url = os.environ.get("SUPABASE_URL", "")
+    key = os.environ.get("SUPABASE_KEY", "")
+    if not url or not key:
+        return None
+    try:
+        from supabase import create_client
+        _supabase = create_client(url, key)
+        log.info("Supabase client initialised")
+    except Exception as exc:
+        log.warning(f"Supabase init failed, falling back to CSV: {exc}")
+        _supabase = None
+    return _supabase
+
 # Supplier URLs — read from .env, same source as main.py
 _SUPPLIER_URLS: dict[str, str] = {
     "csavarda":  os.environ.get("SUPPLIER_A_URL", "https://csavarda.hu/"),
@@ -124,44 +144,94 @@ async def _get_huf_rate(currency: str) -> float | None:
         return None
 
 
+def _row_to_suppliers(row: dict) -> list[dict]:
+    """Convert a mapping row (dict) to a list of supplier entries."""
+    results = []
+    for col, val in row.items():
+        if col in ("gepcoop_part_no", "name"):
+            continue
+        if not col.endswith("_part_no"):
+            continue
+        if not val or val in ('-', '–', '—', 'N/A', 'n/a'):
+            continue
+        supplier_id = col[: -len("_part_no")]
+        if supplier_id not in _IMPLEMENTED_SUPPLIERS:
+            continue
+        url = _SUPPLIER_URLS.get(supplier_id, "")
+        results.append({
+            "supplier_id":      supplier_id,
+            "supplier_part_no": val,
+            "supplier_url":     url,
+        })
+    return results
+
+
 def lookup_mapping_all(internal_part_no: str) -> list[dict]:
     """
     Return a list of supplier entries for the given Gép-Coop part number.
     Each entry: {supplier_id, supplier_part_no, supplier_url}
-    Skips any supplier column that is empty.
+    Tries Supabase first, falls back to local CSV.
     """
     search = internal_part_no.strip().upper()
 
-    with open(MAPPING_FILE, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            if row["gepcoop_part_no"].strip().upper() != search:
-                continue
-            results = []
-            for col, val in row.items():
-                if col == "gepcoop_part_no":
+    # ── Try Supabase ──────────────────────────────────────────────────────────
+    sb = _get_supabase()
+    if sb is not None:
+        try:
+            res = (
+                sb.table("article_mapping")
+                .select("*")
+                .eq("gepcoop_part_no", search)
+                .limit(1)
+                .execute()
+            )
+            if res.data:
+                return _row_to_suppliers(res.data[0])
+            return []
+        except Exception as exc:
+            log.warning(f"Supabase lookup failed, falling back to CSV: {exc}")
+
+    # ── CSV fallback ──────────────────────────────────────────────────────────
+    try:
+        with open(MAPPING_FILE, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row["gepcoop_part_no"].strip().upper() != search:
                     continue
-                if not col.endswith("_part_no"):
-                    continue
-                val = val.strip()
-                if not val or val in ('-', '–', '—', 'N/A', 'n/a'):
-                    continue
-                supplier_id = col[: -len("_part_no")]          # e.g. "csavarda"
-                if supplier_id not in _IMPLEMENTED_SUPPLIERS:
-                    continue                                    # e.g. "ferdinand" — not yet implemented
-                url = _SUPPLIER_URLS.get(supplier_id, "")
-                results.append({
-                    "supplier_id":      supplier_id,
-                    "supplier_part_no": val,
-                    "supplier_url":     url,
-                })
-            return results
+                return _row_to_suppliers(row)
+    except FileNotFoundError:
+        log.error(f"Mapping file not found: {MAPPING_FILE}")
 
     return []
 
 
 def get_all_part_numbers() -> list[str]:
-    """Return every Gép-Coop internal part number in the mapping file."""
+    """Return every Gép-Coop internal part number. Tries Supabase, falls back to CSV."""
+    # ── Try Supabase ──────────────────────────────────────────────────────────
+    sb = _get_supabase()
+    if sb is not None:
+        try:
+            # Fetch only the part number column, all rows (paginated)
+            parts = []
+            page_size = 1000
+            offset = 0
+            while True:
+                res = (
+                    sb.table("article_mapping")
+                    .select("gepcoop_part_no")
+                    .range(offset, offset + page_size - 1)
+                    .execute()
+                )
+                batch = [r["gepcoop_part_no"] for r in res.data if r.get("gepcoop_part_no")]
+                parts.extend(batch)
+                if len(res.data) < page_size:
+                    break
+                offset += page_size
+            return parts
+        except Exception as exc:
+            log.warning(f"Supabase get_all_part_numbers failed, falling back to CSV: {exc}")
+
+    # ── CSV fallback ──────────────────────────────────────────────────────────
     parts = []
     try:
         with open(MAPPING_FILE, newline="", encoding="utf-8") as f:
