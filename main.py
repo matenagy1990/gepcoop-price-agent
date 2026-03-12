@@ -5,12 +5,13 @@ import json
 import logging
 import os
 import secrets
+from datetime import datetime, timezone
 from fastapi import FastAPI, File, HTTPException, Header, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from pathlib import Path
-from agent.tools import lookup_mapping_all, fetch_supplier_price, get_all_part_numbers, MAPPING_FILE
+from agent.tools import lookup_mapping_all, fetch_supplier_price, get_all_part_numbers
 
 logging.basicConfig(
     level=logging.INFO,
@@ -105,14 +106,16 @@ SUPPLIER_CREDS: dict = _load_supplier_creds_from_env()
 
 def _lookup_part_name(part_no: str) -> str:
     """Return the product name (Cikknév) for a given Gép-Coop part number."""
+    from agent.tools import _get_supabase
     search = part_no.strip().upper()
+    sb = _get_supabase()
+    if sb is None:
+        return ""
     try:
-        with open(MAPPING_FILE, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if row.get("gepcoop_part_no", "").strip().upper() == search:
-                    return row.get("name", "").strip()
-    except FileNotFoundError:
+        res = sb.table("article_mapping").select("name").eq("gepcoop_part_no", search).limit(1).execute()
+        if res.data:
+            return (res.data[0].get("name") or "").strip()
+    except Exception:
         pass
     return ""
 
@@ -350,6 +353,48 @@ async def query_lookup(
     return {"part_no": part, "name": name, "suppliers": suppliers, "unavailable": unavailable}
 
 
+_sb_main = None
+
+def _get_supabase_main():
+    global _sb_main
+    if _sb_main is not None:
+        return _sb_main
+    url = os.environ.get("SUPABASE_URL", "")
+    key = os.environ.get("SUPABASE_KEY", "")
+    if not url or not key:
+        return None
+    try:
+        from supabase import create_client
+        _sb_main = create_client(url, key)
+    except Exception as exc:
+        log.warning(f"Supabase (main) init failed: {exc}")
+        _sb_main = None
+    return _sb_main
+
+
+def _save_run(run_id, part_no, started_at, status,
+              suppliers_queried, suppliers_ok, suppliers_error,
+              error_message, duration_ms):
+    sb = _get_supabase_main()
+    if sb is None:
+        return
+    try:
+        sb.table("query_runs").upsert({
+            "run_id":           run_id,
+            "gepcoop_part_no":  part_no,
+            "started_at":       started_at.isoformat(),
+            "finished_at":      datetime.now(timezone.utc).isoformat(),
+            "status":           status,
+            "suppliers_queried": suppliers_queried,
+            "suppliers_ok":     suppliers_ok,
+            "suppliers_error":  suppliers_error,
+            "error_message":    error_message,
+            "duration_ms":      duration_ms,
+        }, on_conflict="run_id").execute()
+    except Exception as exc:
+        log.warning(f"run log mentés sikertelen: {exc}")
+
+
 @app.get("/query/stream")
 async def query_stream(
     internal_part_no: str,
@@ -361,7 +406,17 @@ async def query_stream(
     queue: asyncio.Queue = asyncio.Queue()
 
     async def runner():
-        part = internal_part_no.strip()
+        part       = internal_part_no.strip()
+        run_id     = secrets.token_hex(8)
+        started_at = datetime.now(timezone.utc)
+
+        # run-level tracking state
+        _suppliers_queried: list[str] = []
+        _suppliers_ok:      list[str] = []
+        _suppliers_error:   list[str] = []
+        _error_message:     str | None = None
+        _run_status:        str = "error"
+
         try:
             # ── Step 1: mapping lookup ───────────────────────────────
             await queue.put(("progress", {
@@ -370,10 +425,11 @@ async def query_stream(
             }))
 
             supplier_list = lookup_mapping_all(part)
-            log.info(f"Mapping result for '{part}': {supplier_list}")
+            log.info(f"[{run_id}] Mapping result for '{part}': {supplier_list}")
 
             if not supplier_list:
                 msg = f"Part number '{part}' was not found in the supplier mapping."
+                _error_message = msg
                 await queue.put(("progress", {"step": "mapping", "status": "error", "msg": msg}))
                 await queue.put(("error", {"message": msg}))
                 return
@@ -384,11 +440,13 @@ async def query_stream(
                 supplier_list = [s for s in supplier_list if s["supplier_id"] in filter_ids]
                 if not supplier_list:
                     msg = f"A '{part}' cikkszám nem elérhető a kiválasztott beszállítóknál."
+                    _error_message = msg
                     await queue.put(("progress", {"step": "mapping", "status": "error", "msg": msg}))
                     await queue.put(("error", {"message": msg}))
                     return
 
-            supplier_labels = ", ".join(s["supplier_id"] for s in supplier_list)
+            _suppliers_queried = [s["supplier_id"] for s in supplier_list]
+            supplier_labels = ", ".join(_suppliers_queried)
             await queue.put(("progress", {
                 "step": "mapping", "status": "done",
                 "msg": f"Found {len(supplier_list)} supplier(s): {supplier_labels}",
@@ -409,9 +467,9 @@ async def query_stream(
                         sid, sup["supplier_part_no"], on_progress=on_progress
                     )
                     results[sid] = r
-                    log.info(f"[{sid}] fetch done: price_per_db={r.get('price_per_db')}")
+                    log.info(f"[{run_id}][{sid}] fetch done: price_per_db={r.get('price_per_db')}")
                 except Exception as exc:
-                    log.error(f"[{sid}] fetch failed: {exc}")
+                    log.error(f"[{run_id}][{sid}] fetch failed: {exc}")
                     err_msg = str(exc)
                     results[sid] = {"error": err_msg, "supplier_id": sid}
                     # Schaefer rotates passwords monthly — prompt user to update
@@ -428,9 +486,26 @@ async def query_stream(
 
             await asyncio.gather(*[fetch_one(s) for s in supplier_list])
 
+            # ── Collect ok/error per supplier ──────────────────────
+            for sid, r in results.items():
+                if "error" in r:
+                    _suppliers_error.append(sid)
+                else:
+                    _suppliers_ok.append(sid)
+
+            if _suppliers_ok and _suppliers_error:
+                _run_status = "partial"
+            elif _suppliers_ok:
+                _run_status = "ok"
+            else:
+                _run_status = "error"
+                _error_message = "; ".join(
+                    results[s].get("error", "") for s in _suppliers_error
+                )
+
             # ── Step 3: recommendation ───────────────────────────────
             recommendation = compute_recommendation(results)
-            log.info(f"Recommendation: {recommendation}")
+            log.info(f"[{run_id}] Recommendation: {recommendation}")
 
             await queue.put(("result", {
                 "internal_part_no": part,
@@ -439,9 +514,16 @@ async def query_stream(
             }))
 
         except Exception as exc:
-            log.exception(f"Unexpected error in runner: {exc}")
+            log.exception(f"[{run_id}] Unexpected error in runner: {exc}")
+            _error_message = str(exc)
             await queue.put(("error", {"message": str(exc)}))
         finally:
+            duration_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
+            await asyncio.to_thread(
+                _save_run, run_id, part, started_at, _run_status,
+                _suppliers_queried, _suppliers_ok, _suppliers_error,
+                _error_message, duration_ms,
+            )
             await queue.put(None)
 
     asyncio.create_task(runner())
@@ -505,62 +587,179 @@ def admin_login(req: AdminLoginRequest):
 
 @app.get("/admin/mapping")
 def admin_get_mapping():
+    from agent.tools import _get_supabase
+    sb = _get_supabase()
+    if sb is None:
+        return {"columns": [], "rows": []}
     try:
-        with open(MAPPING_FILE, newline="", encoding="utf-8-sig") as f:
-            reader = csv.DictReader(f)
-            columns = list(reader.fieldnames or [])
-            rows    = [dict(r) for r in reader]
-    except FileNotFoundError:
+        res = sb.table("article_mapping").select("*").limit(10).execute()
+        rows = res.data or []
+        columns = list(rows[0].keys()) if rows else []
+    except Exception:
         columns, rows = [], []
     return {"columns": columns, "rows": rows}
 
+
+_MAPPING_COL_ALIASES: dict[str, str] = {
+    "gépcoop cikkszám": "gepcoop_part_no",
+    "gepcoop cikkszám": "gepcoop_part_no",
+    "cikknév":          "name",
+    "csavarda":         "csavarda_part_no",
+    "iron trade":       "irontrade_part_no",
+    "irontrade":        "irontrade_part_no",
+    "koelner":          "koelner_part_no",
+    "mekrs":            "mekrs_part_no",
+    "fabory":           "fabory_part_no",
+    "ferdinand":        "ferdinand_part_no",
+    "reyher":           "reyher_part_no",
+    "hopefix":          "hopefix_part_no",
+    "fastbolt":         "fastbolt_part_no",
+    "schafer":          "schaefer_part_no",
+    "schaefer":         "schaefer_part_no",
+    "king":             "kingb2b_part_no",
+    "kingb2b":          "kingb2b_part_no",
+    "wasi":             "wasishop_part_no",
+    "wasishop":         "wasishop_part_no",
+}
+
+_MAPPING_EMPTY = {"", "-", "–", "—", "N/A", "n/a"}
+
+def _normalize_mapping_columns(df) -> "pandas.DataFrame":
+    """Rename human-readable / Hungarian column names to internal snake_case names."""
+    import pandas as pd
+    rename = {}
+    for col in df.columns:
+        low = col.strip().lower()
+        if low in _MAPPING_COL_ALIASES:
+            rename[col] = _MAPPING_COL_ALIASES[low]
+    if rename:
+        df = df.rename(columns=rename)
+    return df
+
+def _clean_mapping_val(v) -> str | None:
+    if v is None:
+        return None
+    s = str(v).strip()
+    return None if s in _MAPPING_EMPTY else s
 
 @app.post("/admin/upload-mapping")
 async def admin_upload_mapping(
     file: UploadFile = File(...),
 ):
-    content = await file.read()
-    try:
-        text = content.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        text = content.decode("latin-1")
+    import pandas as pd
 
-    reader  = csv.DictReader(io.StringIO(text))
-    columns = list(reader.fieldnames or [])
-    if "gepcoop_part_no" not in columns:
-        raise HTTPException(
-            status_code=400,
-            detail="A CSV-nek tartalmaznia kell a 'gepcoop_part_no' oszlopot.",
-        )
-    rows = [dict(r) for r in reader]
+    content  = await file.read()
+    fname    = file.filename or ""
+    ext      = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
+
+    if ext == "xlsx":
+        df = pd.read_excel(io.BytesIO(content), dtype=str)
+        df.columns = [c.strip() for c in df.columns]
+        df = _normalize_mapping_columns(df)
+        columns = list(df.columns)
+        if "gepcoop_part_no" not in columns:
+            raise HTTPException(
+                status_code=400,
+                detail="Az Excel-nek tartalmaznia kell a 'gepcoop_part_no' (vagy 'Gépcoop cikkszám') oszlopot.",
+            )
+        rows = df.fillna("").to_dict(orient="records")
+    else:
+        try:
+            text = content.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = content.decode("latin-1")
+        reader  = csv.DictReader(io.StringIO(text))
+        columns = list(reader.fieldnames or [])
+        if "gepcoop_part_no" not in columns:
+            raise HTTPException(
+                status_code=400,
+                detail="A CSV-nek tartalmaznia kell a 'gepcoop_part_no' oszlopot.",
+            )
+        rows = [dict(r) for r in reader]
+
     if not rows:
-        raise HTTPException(status_code=400, detail="A CSV fájl üres.")
+        raise HTTPException(status_code=400, detail="A fájl üres.")
 
-    with open(MAPPING_FILE, "w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=columns)
-        writer.writeheader()
-        writer.writerows(rows)
+    # ── Supabase upsert ────────────────────────────────────────────
+    supabase_rows = 0
+    sb_url = os.environ.get("SUPABASE_URL", "")
+    sb_key = os.environ.get("SUPABASE_KEY", "")
+    if sb_url and sb_key:
+        from supabase import create_client
+        sb = create_client(sb_url, sb_key)
+        TABLE      = "article_mapping"
+        BATCH_SIZE = 500
+        DB_COLS    = [
+            "gepcoop_part_no", "name",
+            "csavarda_part_no", "irontrade_part_no", "koelner_part_no",
+            "mekrs_part_no", "fabory_part_no", "ferdinand_part_no",
+            "reyher_part_no", "hopefix_part_no", "fastbolt_part_no",
+            "schaefer_part_no", "kingb2b_part_no", "wasishop_part_no",
+        ]
 
-    log.info(f"Mapping frissítve: {len(rows)} sor, oszlopok={columns}, fájl={file.filename}")
-    return {"filename": file.filename, "columns": columns, "rows": rows}
+        def _build_sb_rows(raw_rows: list[dict]) -> list[dict]:
+            result = []
+            for r in raw_rows:
+                part_no = _clean_mapping_val(r.get("gepcoop_part_no", ""))
+                if not part_no:
+                    continue
+                result.append({col: _clean_mapping_val(r.get(col, "")) for col in DB_COLS})
+            return result
+
+        sb_rows = await asyncio.to_thread(_build_sb_rows, rows)
+
+        def _do_upsert(sb_rows: list[dict]) -> int:
+            # Full replace: delete all then batch upsert
+            sb.table(TABLE).delete().neq("gepcoop_part_no", "").execute()
+            total = len(sb_rows)
+            batches = (total + BATCH_SIZE - 1) // BATCH_SIZE
+            for i in range(batches):
+                batch = sb_rows[i * BATCH_SIZE : (i + 1) * BATCH_SIZE]
+                sb.table(TABLE).upsert(batch, on_conflict="gepcoop_part_no").execute()
+                log.info(f"Supabase upsert batch {i+1}/{batches} ({len(batch)} rows)")
+            return total
+
+        supabase_rows = await asyncio.to_thread(_do_upsert, sb_rows)
+        log.info(f"Supabase mapping frissítve: {supabase_rows} sor")
+    else:
+        log.warning("SUPABASE_URL/KEY hiányzik — csak lokális CSV mentve")
+
+    log.info(f"Mapping frissítve: {len(rows)} sor, oszlopok={columns}, fájl={fname}")
+    return {"filename": fname, "columns": columns, "rows": rows, "supabase_rows": supabase_rows}
 
 
 @app.delete("/admin/mapping")
 def admin_delete_mapping():
-    columns = []
+    from agent.tools import _get_supabase
+    sb = _get_supabase()
+    if sb is None:
+        raise HTTPException(status_code=503, detail="Supabase nincs konfigurálva.")
     try:
-        with open(MAPPING_FILE, newline="", encoding="utf-8-sig") as f:
-            reader = csv.DictReader(f)
-            columns = list(reader.fieldnames or [])
-    except FileNotFoundError:
-        columns = ["gepcoop_part_no", "csavarda_part_no", "irontrade_part_no", "koelner_part_no", "mekrs_part_no"]
+        sb.table("article_mapping").delete().neq("gepcoop_part_no", "").execute()
+        log.info("Supabase article_mapping tábla törölve")
+    except Exception as exc:
+        log.warning(f"Supabase törlés sikertelen: {exc}")
+        raise HTTPException(status_code=500, detail=f"Supabase törlés sikertelen: {exc}")
+    return {"deleted": True}
 
-    with open(MAPPING_FILE, "w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(columns)
 
-    log.info(f"Mapping adatok törölve. Fejléc megmaradt: {columns}")
-    return {"deleted": True, "columns": columns}
+@app.get("/admin/runs")
+def admin_get_runs():
+    sb = _get_supabase_main()
+    if sb is None:
+        return {"runs": []}
+    try:
+        res = (
+            sb.table("query_runs")
+            .select("run_id,gepcoop_part_no,started_at,finished_at,status,suppliers_queried,suppliers_ok,suppliers_error,error_message,duration_ms")
+            .order("started_at", desc=True)
+            .limit(10)
+            .execute()
+        )
+        return {"runs": res.data or []}
+    except Exception as exc:
+        log.warning(f"admin_get_runs hiba: {exc}")
+        return {"runs": []}
 
 
 @app.get("/admin/suppliers")
