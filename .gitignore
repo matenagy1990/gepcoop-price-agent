@@ -1,4 +1,5 @@
 .env
+Private/
 assets/users.json
 assets/suppliers.json
 __pycache__/
