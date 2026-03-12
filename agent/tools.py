@@ -170,78 +170,47 @@ def lookup_mapping_all(internal_part_no: str) -> list[dict]:
     """
     Return a list of supplier entries for the given Gép-Coop part number.
     Each entry: {supplier_id, supplier_part_no, supplier_url}
-    Tries Supabase first, falls back to local CSV.
+    Supabase only (CSV fallback disabled for testing).
     """
     search = internal_part_no.strip().upper()
 
-    # ── Try Supabase ──────────────────────────────────────────────────────────
     sb = _get_supabase()
-    if sb is not None:
-        try:
-            res = (
-                sb.table("article_mapping")
-                .select("*")
-                .eq("gepcoop_part_no", search)
-                .limit(1)
-                .execute()
-            )
-            if res.data:
-                return _row_to_suppliers(res.data[0])
-            return []
-        except Exception as exc:
-            log.warning(f"Supabase lookup failed, falling back to CSV: {exc}")
+    if sb is None:
+        raise RuntimeError("Supabase not configured (SUPABASE_URL / SUPABASE_KEY missing).")
 
-    # ── CSV fallback ──────────────────────────────────────────────────────────
-    try:
-        with open(MAPPING_FILE, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if row["gepcoop_part_no"].strip().upper() != search:
-                    continue
-                return _row_to_suppliers(row)
-    except FileNotFoundError:
-        log.error(f"Mapping file not found: {MAPPING_FILE}")
-
+    res = (
+        sb.table("article_mapping")
+        .select("*")
+        .eq("gepcoop_part_no", search)
+        .limit(1)
+        .execute()
+    )
+    if res.data:
+        return _row_to_suppliers(res.data[0])
     return []
 
 
 def get_all_part_numbers() -> list[str]:
-    """Return every Gép-Coop internal part number. Tries Supabase, falls back to CSV."""
-    # ── Try Supabase ──────────────────────────────────────────────────────────
+    """Return every Gép-Coop internal part number. Supabase only (CSV fallback disabled for testing)."""
     sb = _get_supabase()
-    if sb is not None:
-        try:
-            # Fetch only the part number column, all rows (paginated)
-            parts = []
-            page_size = 1000
-            offset = 0
-            while True:
-                res = (
-                    sb.table("article_mapping")
-                    .select("gepcoop_part_no")
-                    .range(offset, offset + page_size - 1)
-                    .execute()
-                )
-                batch = [r["gepcoop_part_no"] for r in res.data if r.get("gepcoop_part_no")]
-                parts.extend(batch)
-                if len(res.data) < page_size:
-                    break
-                offset += page_size
-            return parts
-        except Exception as exc:
-            log.warning(f"Supabase get_all_part_numbers failed, falling back to CSV: {exc}")
+    if sb is None:
+        raise RuntimeError("Supabase not configured (SUPABASE_URL / SUPABASE_KEY missing).")
 
-    # ── CSV fallback ──────────────────────────────────────────────────────────
     parts = []
-    try:
-        with open(MAPPING_FILE, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                pn = row.get("gepcoop_part_no", "").strip()
-                if pn:
-                    parts.append(pn)
-    except FileNotFoundError:
-        pass
+    page_size = 1000
+    offset = 0
+    while True:
+        res = (
+            sb.table("article_mapping")
+            .select("gepcoop_part_no")
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+        batch = [r["gepcoop_part_no"] for r in res.data if r.get("gepcoop_part_no")]
+        parts.extend(batch)
+        if len(res.data) < page_size:
+            break
+        offset += page_size
     return parts
 
 
