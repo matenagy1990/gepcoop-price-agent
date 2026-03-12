@@ -164,7 +164,10 @@ def _fmt_stock(stock) -> str:
         if stock.lower().startswith("raktár"):
             return "raktáron (pontos mennyiség ismeretlen)"
         return stock
-    v = int(stock or 0)
+    if isinstance(stock, dict):
+        v = sum(stock.values())
+    else:
+        v = int(stock or 0)
     return "nincs készleten" if v == 0 else f"{_hu_int(v)} db"
 
 
