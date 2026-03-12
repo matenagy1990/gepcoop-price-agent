@@ -129,40 +129,38 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 stock_str = ""
                 log.warning("Stock element not found — assuming out of stock")
 
-            # Price and unit qty — JS scan: find any leaf element whose text
-            # looks like a price ("digits Kč") — class-name independent
+            # Price and unit qty — find them as a PAIRED set:
+            # locate the "/ N pcs" unit element first, then find the Kč price
+            # in the same ancestor block (avoids mismatching rows).
             price_str, unit_str, price_elem_html = await page.evaluate("""() => {
-                // Collect all leaf text nodes
-                const candidates = [];
-                for (const el of document.querySelectorAll('*')) {
-                    if (el.childElementCount > 0) continue;
-                    const t = el.textContent.trim();
-                    candidates.push({el, t});
-                }
+                const leaves = Array.from(document.querySelectorAll('*'))
+                    .filter(el => el.childElementCount === 0);
 
-                // Price: numeric value followed by Kč (possibly with spaces)
-                let priceEl = null;
-                for (const {el, t} of candidates) {
-                    if (/[\\d][\\d.,]*\\s*Kč/.test(t)) {
-                        priceEl = el;
-                        break;
+                for (const unitEl of leaves) {
+                    const ut = unitEl.textContent.trim();
+                    if (!/\\/\\s*\\d[\\d,]*\\s*pcs/.test(ut)) continue;
+
+                    // Walk up to 6 levels to find a common ancestor that also
+                    // contains a sibling Kč price element
+                    let ancestor = unitEl.parentElement;
+                    for (let i = 0; i < 6; i++) {
+                        if (!ancestor) break;
+                        const priceEl = Array.from(ancestor.querySelectorAll('*'))
+                            .find(el =>
+                                el.childElementCount === 0 &&
+                                /[\\d][\\d.,]*\\s*Kč/.test(el.textContent.trim())
+                            );
+                        if (priceEl) {
+                            return [
+                                priceEl.textContent.trim(),
+                                ut,
+                                priceEl.outerHTML,
+                            ];
+                        }
+                        ancestor = ancestor.parentElement;
                     }
                 }
-
-                // Unit: "/ N pcs" pattern — first occurrence after price element in DOM
-                let unitEl = null;
-                for (const {el, t} of candidates) {
-                    if (/\\/\\s*\\d[\\d,]*\\s*pcs/.test(t)) {
-                        unitEl = el;
-                        break;
-                    }
-                }
-
-                return [
-                    priceEl ? priceEl.textContent.trim() : null,
-                    unitEl  ? unitEl.textContent.trim()  : null,
-                    priceEl ? priceEl.outerHTML           : null,
-                ];
+                return [null, null, null];
             }""")
 
             log.info(f"Price element HTML: {price_elem_html}")
