@@ -116,20 +116,70 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 stock_str = ""
                 log.warning("Stock element not found — assuming out of stock")
 
-            # Price and unit qty are in the sibling div (after <hr>), use page-level locators
-            price_str = await page.locator(
-                "span.text-primaryRed.font-bold.text-lg.leading-none"
-            ).first.inner_text(timeout=8000)
+            # Price and unit qty — try exact Tailwind classes first, then broader fallbacks
+            # (mekrs.cz occasionally tweaks Tailwind size classes)
+            price_str = None
+            for price_sel in [
+                "span.text-primaryRed.font-bold.text-lg.leading-none",
+                "span.text-primaryRed.font-bold",
+                "span[class*='primaryRed'][class*='font-bold']",
+            ]:
+                try:
+                    el = page.locator(price_sel).first
+                    if await el.count() > 0:
+                        price_str = await el.inner_text(timeout=4000)
+                        log.info(f"Price found with selector: {price_sel!r}")
+                        break
+                except PlaywrightTimeout:
+                    continue
 
-            unit_str = await page.locator(
-                "span.text-black.font-medium.text-sm.leading-none"
-            ).first.inner_text(timeout=8000)
+            if not price_str:
+                # Last resort: JS scan for element containing "Kč" in red-ish text near a product card
+                price_str = await page.evaluate("""() => {
+                    for (const el of document.querySelectorAll('span')) {
+                        if (el.childElementCount === 0 &&
+                            el.textContent.includes('Kč') &&
+                            el.className.includes('primaryRed')) {
+                            return el.textContent.trim();
+                        }
+                    }
+                    return null;
+                }""")
+                if price_str:
+                    log.info("Price found via JS fallback scan")
+
+            unit_str = None
+            for unit_sel in [
+                "span.text-black.font-medium.text-sm.leading-none",
+                "span[class*='font-medium'][class*='text-sm']",
+            ]:
+                try:
+                    el = page.locator(unit_sel).first
+                    if await el.count() > 0:
+                        unit_str = await el.inner_text(timeout=4000)
+                        log.info(f"Unit found with selector: {unit_sel!r}")
+                        break
+                except PlaywrightTimeout:
+                    continue
+
+            if not unit_str:
+                unit_str = await page.evaluate("""() => {
+                    for (const el of document.querySelectorAll('span')) {
+                        if (el.childElementCount === 0 &&
+                            el.textContent.trim().match(/\\/\\s*\\d+\\s*pcs/)) {
+                            return el.textContent.trim();
+                        }
+                    }
+                    return null;
+                }""")
+                if unit_str:
+                    log.info("Unit found via JS fallback scan")
 
             log.info(
                 f"Raw — price: '{price_str}', unit: '{unit_str}', stock: '{stock_str}'"
             )
 
-            if not price_str.strip():
+            if not price_str or not price_str.strip():
                 raise RuntimeError(
                     "Could not read price from eshop.mekrs.cz. Page layout may have changed."
                 )
