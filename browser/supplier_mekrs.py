@@ -93,7 +93,20 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     "(autocomplete returned no results)."
                 )
             await show_all.click()
-            await page.wait_for_timeout(3000)
+            # Wait for product cards AND for price to be AJAX-rendered
+            try:
+                await page.wait_for_selector("[data-testid='product-card']", timeout=10000)
+            except PlaywrightTimeout:
+                raise RuntimeError(f"Part {supplier_part_no} was not found on eshop.mekrs.cz.")
+            # Wait for Kč price text to appear in DOM (AJAX-loaded)
+            try:
+                await page.wait_for_function(
+                    "() => document.body.innerText.includes('Kč')",
+                    timeout=10000,
+                )
+                log.info("Kč price text detected in DOM")
+            except PlaywrightTimeout:
+                log.warning("Kč not found in DOM after 10s — attempting extraction anyway")
             log.info(f"Results page loaded: {page.url}")
 
             # 4. Verify at least one product card exists
