@@ -238,7 +238,11 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             target_row = None
 
             for idx, href in enumerate(item_hrefs):
-                modified = re.sub(r"cikkszam=[^&]+", f"cikkszam={supplier_part_no}", href)
+                if "cikkszam=" in href:
+                    modified = re.sub(r"cikkszam=[^&]+", f"cikkszam={supplier_part_no}", href)
+                else:
+                    sep = "&" if "?" in href else "?"
+                    modified = href + f"{sep}cikkszam={supplier_part_no}"
                 product_url = (
                     f"https://webshop.koelner.hu{modified}"
                     if modified.startswith("/") else modified
