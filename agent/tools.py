@@ -172,7 +172,7 @@ def lookup_mapping_all(internal_part_no: str) -> list[dict]:
     Each entry: {supplier_id, supplier_part_no, supplier_url}
     Supabase only (CSV fallback disabled for testing).
     """
-    search = internal_part_no.strip().upper()
+    search = internal_part_no.strip()
 
     sb = _get_supabase()
     if sb is None:
@@ -181,7 +181,7 @@ def lookup_mapping_all(internal_part_no: str) -> list[dict]:
     res = (
         sb.table("article_mapping")
         .select("*")
-        .eq("gepcoop_part_no", search)
+        .ilike("gepcoop_part_no", search)
         .limit(1)
         .execute()
     )
