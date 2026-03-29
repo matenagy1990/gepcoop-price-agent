@@ -23,10 +23,12 @@ Stock:
 Currency: EUR
 """
 
+import json
 import logging
 import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
@@ -35,7 +37,31 @@ load_dotenv()
 
 log = logging.getLogger("wasishop")
 
-LOGIN_URL = "https://www.wasishop.de/login_form.php"
+LOGIN_URL    = "https://www.wasishop.de/login_form.php"
+HOME_URL     = "https://www.wasishop.de/de/handel/index.php"
+SESSION_FILE = Path(__file__).parent.parent / "assets" / "sessions" / "wasishop_session.json"
+
+
+def _load_saved_cookies() -> list | None:
+    try:
+        if SESSION_FILE.exists():
+            return json.loads(SESSION_FILE.read_text())
+    except Exception:
+        pass
+    return None
+
+
+def _save_cookies(cookies: list) -> None:
+    try:
+        SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SESSION_FILE.write_text(json.dumps(cookies, indent=2))
+        log.info(f"Session saved to {SESSION_FILE}")
+    except Exception as exc:
+        log.warning(f"Could not save session: {exc}")
+
+
+async def _is_logged_in(page) -> bool:
+    return "login_form" not in page.url
 
 
 def _parse_eur(text: str) -> float:
@@ -67,35 +93,47 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         ctx = await browser.new_context()
         page = await ctx.new_page()
 
-        try:
-            await emit("Opening wasishop.de…")
+        async def _do_login():
             await page.goto(LOGIN_URL, wait_until="domcontentloaded")
             await page.wait_for_timeout(1500)
-            log.info(f"Login page: {page.url}")
-
-            # Dismiss cookie banner — use exact aria-label to avoid strict-mode violation
             try:
                 await page.locator("button[aria-label='dismiss cookie message']").click(timeout=4000)
                 await page.wait_for_timeout(500)
-                log.info("Cookie banner dismissed")
             except PlaywrightTimeout:
-                log.info("No cookie banner")
-
-            # Login
-            await emit("Logging in to wasishop.de…")
+                pass
             username = os.getenv("SUPPLIER_K_USERNAME", "")
             password = os.getenv("SUPPLIER_K_PASSWORD", "")
             log.info(f"Logging in as: {username}")
-
             await page.get_by_role("textbox", name="Name").fill(username)
             await page.get_by_role("textbox", name="Passwort").fill(password)
             await page.get_by_role("button", name="Anmelden").click()
             await page.wait_for_load_state("domcontentloaded")
             await page.wait_for_timeout(1500)
-
             if "login_form" in page.url:
                 raise RuntimeError("Login to wasishop.de failed. Please check credentials.")
             log.info(f"Login successful: {page.url}")
+
+        try:
+            await emit("Opening wasishop.de…")
+
+            # --- 1. Restore saved session or do fresh login ---
+            saved_cookies = _load_saved_cookies()
+            if saved_cookies:
+                log.info("Restoring saved session cookies")
+                await context.add_cookies(saved_cookies)
+                await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=15000)
+                if not await _is_logged_in(page):
+                    log.warning("Saved session expired — performing fresh login")
+                    SESSION_FILE.unlink(missing_ok=True)
+                    await emit("Logging in to wasishop.de…")
+                    await _do_login()
+                    _save_cookies(await context.cookies())
+                else:
+                    log.info("Session restored successfully")
+            else:
+                await emit("Logging in to wasishop.de…")
+                await _do_login()
+                _save_cookies(await context.cookies())
 
             # Search
             await emit(f"Searching for {supplier_part_no} on wasishop.de…")

@@ -13,10 +13,12 @@ Price format: "605 Ft" → 605 HUF per unit_qty pieces (unit_qty from "Ár /" co
 Stock format: "Készleten" = in stock, anything else = out of stock
 """
 
+import json
 import logging
 import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
@@ -25,8 +27,32 @@ load_dotenv()
 
 log = logging.getLogger("fabory")
 
-LOGIN_URL  = "https://www.fabory.com/hu/login"
-SEARCH_URL = "https://www.fabory.com/hu/search?text={part_no}"
+LOGIN_URL    = "https://www.fabory.com/hu/login"
+HOME_URL     = "https://www.fabory.com/hu"
+SEARCH_URL   = "https://www.fabory.com/hu/search?text={part_no}"
+SESSION_FILE = Path(__file__).parent.parent / "assets" / "sessions" / "fabory_session.json"
+
+
+def _load_saved_cookies() -> list | None:
+    try:
+        if SESSION_FILE.exists():
+            return json.loads(SESSION_FILE.read_text())
+    except Exception:
+        pass
+    return None
+
+
+def _save_cookies(cookies: list) -> None:
+    try:
+        SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SESSION_FILE.write_text(json.dumps(cookies, indent=2))
+        log.info(f"Session saved to {SESSION_FILE}")
+    except Exception as exc:
+        log.warning(f"Could not save session: {exc}")
+
+
+async def _is_logged_in(page) -> bool:
+    return "/login" not in page.url
 
 
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
@@ -40,36 +66,46 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         context = await browser.new_context()
         page    = await context.new_page()
 
-        try:
-            await emit("Opening fabory.com…")
+        async def _do_login():
             await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-            log.info(f"Loaded login page: {page.url}")
-
-            # Accept cookie banner
             try:
                 await page.get_by_role("button", name="Összes elfogadása").click(timeout=5000)
                 await page.wait_for_timeout(800)
-                log.info("Cookie banner accepted")
             except PlaywrightTimeout:
-                log.info("No cookie banner appeared")
-
-            # Login
-            await emit("Logging in to fabory.com…")
+                pass
             username = os.getenv("SUPPLIER_E_USERNAME", "")
             password = os.getenv("SUPPLIER_E_PASSWORD", "")
-            log.info(f"Filling login form for user: {username}")
-
+            log.info(f"Logging in as: {username}")
             await page.get_by_role("textbox", name="Email cím").fill(username)
             await page.locator("input[placeholder='Jelszó']").fill(password)
             await page.get_by_role("button", name="Belépés").click()
-
             try:
                 await page.wait_for_url("https://www.fabory.com/hu", timeout=15000)
                 log.info(f"Login successful: {page.url}")
             except PlaywrightTimeout:
-                body = await page.locator("body").inner_text()
-                log.error(f"Login failed — URL: {page.url}")
                 raise RuntimeError("Login to fabory.com failed. Please check credentials.")
+
+        try:
+            await emit("Opening fabory.com…")
+
+            # --- 1. Restore saved session or do fresh login ---
+            saved_cookies = _load_saved_cookies()
+            if saved_cookies:
+                log.info("Restoring saved session cookies")
+                await context.add_cookies(saved_cookies)
+                await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=15000)
+                if not await _is_logged_in(page):
+                    log.warning("Saved session expired — performing fresh login")
+                    SESSION_FILE.unlink(missing_ok=True)
+                    await emit("Logging in to fabory.com…")
+                    await _do_login()
+                    _save_cookies(await context.cookies())
+                else:
+                    log.info("Session restored successfully")
+            else:
+                await emit("Logging in to fabory.com…")
+                await _do_login()
+                _save_cookies(await context.cookies())
 
             # Search for part
             search_url = SEARCH_URL.format(part_no=supplier_part_no)

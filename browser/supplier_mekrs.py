@@ -23,10 +23,12 @@ Price normalisation:
   price_raw=50.63, price_unit_qty=100 → tools.py yields price_per_db=0.5063 CZK/db
 """
 
+import json
 import logging
 import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
@@ -35,7 +37,31 @@ load_dotenv()
 
 log = logging.getLogger("mekrs")
 
-LOGIN_URL = "https://eshop.mekrs.cz/en"
+LOGIN_URL    = "https://eshop.mekrs.cz/en"
+SESSION_FILE = Path(__file__).parent.parent / "assets" / "sessions" / "mekrs_session.json"
+
+
+def _load_saved_cookies() -> list | None:
+    try:
+        if SESSION_FILE.exists():
+            return json.loads(SESSION_FILE.read_text())
+    except Exception:
+        pass
+    return None
+
+
+def _save_cookies(cookies: list) -> None:
+    try:
+        SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SESSION_FILE.write_text(json.dumps(cookies, indent=2))
+        log.info(f"Session saved to {SESSION_FILE}")
+    except Exception as exc:
+        log.warning(f"Could not save session: {exc}")
+
+
+async def _is_logged_in(page) -> bool:
+    """Logged in if the login form is NOT visible."""
+    return await page.locator("input[name='username']").count() == 0
 
 
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
@@ -55,26 +81,41 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
         page.on("dialog", handle_dialog)
 
-        try:
-            # 1. Open site and log in
-            await emit("Opening eshop.mekrs.cz…")
+        async def _do_login():
             await page.goto(LOGIN_URL, wait_until="domcontentloaded")
             await page.wait_for_timeout(2000)
-            log.info(f"Loaded: {page.url}")
-
-            await emit("Logging in to eshop.mekrs.cz…")
             username = os.getenv("SUPPLIER_D_USERNAME", "")
             log.info(f"Logging in as: {username}")
-
             await page.locator("input[name='username']").fill(username)
             await page.locator("input[name='password']").fill(os.getenv("SUPPLIER_D_PASSWORD", ""))
             await page.locator("[data-testid='login-button']").click()
             await page.wait_for_timeout(3000)
-
             if await page.locator("input[name='username']").count() > 0:
                 raise RuntimeError("Login to eshop.mekrs.cz failed. Please check credentials.")
-
             log.info(f"Login successful — URL: {page.url}")
+
+        try:
+            await emit("Opening eshop.mekrs.cz…")
+
+            # --- 1. Restore saved session or do fresh login ---
+            saved_cookies = _load_saved_cookies()
+            if saved_cookies:
+                log.info("Restoring saved session cookies")
+                await context.add_cookies(saved_cookies)
+                await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=15000)
+                await page.wait_for_timeout(1000)
+                if not await _is_logged_in(page):
+                    log.warning("Saved session expired — performing fresh login")
+                    SESSION_FILE.unlink(missing_ok=True)
+                    await emit("Logging in to eshop.mekrs.cz…")
+                    await _do_login()
+                    _save_cookies(await context.cookies())
+                else:
+                    log.info("Session restored successfully")
+            else:
+                await emit("Logging in to eshop.mekrs.cz…")
+                await _do_login()
+                _save_cookies(await context.cookies())
 
             # 2. Type the part number into the search box to trigger autocomplete
             await emit(f"Searching for part {supplier_part_no} on eshop.mekrs.cz…")

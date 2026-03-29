@@ -32,10 +32,12 @@ Stock structure:
 Currency: EUR
 """
 
+import json
 import logging
 import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
@@ -44,7 +46,26 @@ load_dotenv()
 
 log = logging.getLogger("kingb2b")
 
-PORTAL_URL = "https://kingb2b.it/PORTAL/"
+PORTAL_URL   = "https://kingb2b.it/PORTAL/"
+SESSION_FILE = Path(__file__).parent.parent / "assets" / "sessions" / "kingb2b_session.json"
+
+
+def _load_saved_cookies() -> list | None:
+    try:
+        if SESSION_FILE.exists():
+            return json.loads(SESSION_FILE.read_text())
+    except Exception:
+        pass
+    return None
+
+
+def _save_cookies(cookies: list) -> None:
+    try:
+        SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SESSION_FILE.write_text(json.dumps(cookies, indent=2))
+        log.info(f"Session saved to {SESSION_FILE}")
+    except Exception as exc:
+        log.warning(f"Could not save session: {exc}")
 
 
 def _parse_eur(text: str) -> float:
@@ -74,6 +95,13 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
         try:
             await emit("Opening kingb2b.it…")
+
+            # --- 1. Restore saved session cookies if available ---
+            saved_cookies = _load_saved_cookies()
+            if saved_cookies:
+                log.info("Restoring saved session cookies")
+                await ctx.add_cookies(saved_cookies)
+
             await page.goto(PORTAL_URL, wait_until="domcontentloaded")
             # Wait for SPA to fully initialise
             await page.wait_for_selector("#header-search", timeout=15000)
@@ -110,8 +138,9 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     raise RuntimeError("Login to kingb2b.it failed. Please check credentials.")
 
                 log.info("Login successful")
+                _save_cookies(await ctx.cookies())
             else:
-                log.info("Already logged in")
+                log.info("Session restored — already logged in")
 
             # ── Search ────────────────────────────────────────────────
             await emit(f"Searching for {supplier_part_no} on kingb2b.it…")

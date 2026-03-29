@@ -10,10 +10,12 @@ Login flow:
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
@@ -22,8 +24,32 @@ load_dotenv()
 
 log = logging.getLogger("csavarda")
 
-LOGIN_URL  = "https://csavarda.hu/bejelentkezes"
-SEARCH_URL = "https://csavarda.hu/pest/kereso?search={part_no}"
+LOGIN_URL    = "https://csavarda.hu/bejelentkezes"
+HOME_URL     = "https://csavarda.hu/pest"
+SEARCH_URL   = "https://csavarda.hu/pest/kereso?search={part_no}"
+SESSION_FILE = Path(__file__).parent.parent / "assets" / "sessions" / "csavarda_session.json"
+
+
+def _load_saved_cookies() -> list | None:
+    try:
+        if SESSION_FILE.exists():
+            return json.loads(SESSION_FILE.read_text())
+    except Exception:
+        pass
+    return None
+
+
+def _save_cookies(cookies: list) -> None:
+    try:
+        SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SESSION_FILE.write_text(json.dumps(cookies, indent=2))
+        log.info(f"Session saved to {SESSION_FILE}")
+    except Exception as exc:
+        log.warning(f"Could not save session: {exc}")
+
+
+async def _is_logged_in(page) -> bool:
+    return "bejelentkezes" not in page.url
 
 _JS_NEXT_SIBLING = """
 (labelText) => {
@@ -46,6 +72,35 @@ _JS_CONTAINS = """
 """
 
 
+async def _do_login(page, emit) -> None:
+    """Full login flow: login page → select Budapest location."""
+    await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+    log.info(f"Loaded login page: {page.url}")
+    try:
+        await page.get_by_role("button", name="Összes elfogadása").click(timeout=4000)
+        await page.wait_for_timeout(800)
+        log.info("Cookie banner accepted")
+    except PlaywrightTimeout:
+        log.info("No cookie banner appeared")
+
+    await emit("Logging in to csavarda.hu…")
+    username = os.getenv("SUPPLIER_A_USERNAME", "")
+    log.info(f"Filling login form for user: {username}")
+    await page.locator("#email").fill(username)
+    await page.locator("#password").fill(os.getenv("SUPPLIER_A_PASSWORD", ""))
+    await page.locator("button:has-text('Bejelentkezés')").click()
+
+    try:
+        await page.wait_for_url("**/telephely-valasztasa", timeout=12000)
+        log.info(f"Login successful: {page.url}")
+    except PlaywrightTimeout:
+        raise RuntimeError("Login to csavarda.hu failed. Please check credentials.")
+
+    await page.get_by_role("link", name=re.compile("Budapesti telephely")).click()
+    await page.wait_for_url("**/pest", timeout=10000)
+    log.info(f"Location selected: {page.url}")
+
+
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
     async def emit(msg: str):
         log.info(msg)
@@ -59,54 +114,24 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         page.on("dialog", lambda d: (log.info(f"Dialog dismissed: {d.message}"), d.accept()))
 
         try:
-            # 1. Open login page
             await emit("Opening csavarda.hu…")
-            await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-            log.info(f"Loaded login page: {page.url}")
 
-            # Accept cookie banner if present
-            try:
-                await page.get_by_role("button", name="Összes elfogadása").click(timeout=4000)
-                await page.wait_for_timeout(800)
-                log.info("Cookie banner accepted")
-            except PlaywrightTimeout:
-                log.info("No cookie banner appeared")
-
-            # 2. Fill login form using stable id selectors
-            await emit("Logging in to csavarda.hu…")
-            username = os.getenv("SUPPLIER_A_USERNAME", "")
-            log.info(f"Filling login form for user: {username}")
-
-            await page.locator("#email").fill(username)
-            await page.locator("#password").fill(os.getenv("SUPPLIER_A_PASSWORD", ""))
-
-            # Verify fields were actually filled
-            filled_email = await page.locator("#email").input_value()
-            filled_pass  = await page.locator("#password").input_value()
-            log.info(f"Form filled — email: {filled_email}, password length: {len(filled_pass)}")
-
-            await page.locator("button:has-text('Bejelentkezés')").click()
-            log.info("Login button clicked, waiting for redirect…")
-
-            try:
-                await page.wait_for_url("**/telephely-valasztasa", timeout=12000)
-                log.info(f"Login successful, redirected to: {page.url}")
-            except PlaywrightTimeout:
-                current_url = page.url
-                log.error(f"Login failed — still on: {current_url}")
-                # Grab any visible error message on the page
-                body_text = await page.locator("body").inner_text()
-                for line in body_text.splitlines():
-                    line = line.strip()
-                    if line and any(w in line.lower() for w in ["hiba", "error", "sikertelen", "érvénytelen", "helytelen"]):
-                        log.error(f"Page error text: {line}")
-                raise RuntimeError("Login to csavarda.hu failed. Please check credentials.")
-
-            # 3. Select Budapest location
-            log.info("Selecting Budapest location…")
-            await page.get_by_role("link", name=re.compile("Budapesti telephely")).click()
-            await page.wait_for_url("**/pest", timeout=10000)
-            log.info(f"Location selected, now at: {page.url}")
+            # --- 1. Restore saved session or do fresh login ---
+            saved_cookies = _load_saved_cookies()
+            if saved_cookies:
+                log.info("Restoring saved session cookies")
+                await context.add_cookies(saved_cookies)
+                await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=15000)
+                if not await _is_logged_in(page):
+                    log.warning("Saved session expired — performing fresh login")
+                    SESSION_FILE.unlink(missing_ok=True)
+                    await _do_login(page, emit)
+                    _save_cookies(await context.cookies())
+                else:
+                    log.info("Session restored successfully")
+            else:
+                await _do_login(page, emit)
+                _save_cookies(await context.cookies())
 
             # 4. Search for part
             search_url = SEARCH_URL.format(part_no=supplier_part_no)

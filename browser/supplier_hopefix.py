@@ -18,10 +18,12 @@ Price column: "EUR/100 pcs" → price_unit_qty = 100
 Stock column: "Stock (100 pcs)" — raw value stored as int
 """
 
+import json
 import logging
 import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
@@ -30,7 +32,31 @@ load_dotenv()
 
 log = logging.getLogger("hopefix")
 
-LOGIN_URL = "https://www.hopefix.cz/en/login"
+LOGIN_URL    = "https://www.hopefix.cz/en/login"
+HOME_URL     = "https://www.hopefix.cz/en/products"
+SESSION_FILE = Path(__file__).parent.parent / "assets" / "sessions" / "hopefix_session.json"
+
+
+def _load_saved_cookies() -> list | None:
+    try:
+        if SESSION_FILE.exists():
+            return json.loads(SESSION_FILE.read_text())
+    except Exception:
+        pass
+    return None
+
+
+def _save_cookies(cookies: list) -> None:
+    try:
+        SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SESSION_FILE.write_text(json.dumps(cookies, indent=2))
+        log.info(f"Session saved to {SESSION_FILE}")
+    except Exception as exc:
+        log.warning(f"Could not save session: {exc}")
+
+
+async def _is_logged_in(page) -> bool:
+    return "/login" not in page.url
 
 
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
@@ -44,39 +70,50 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         ctx = await browser.new_context()
         page = await ctx.new_page()
 
-        try:
-            await emit("Opening hopefix.cz…")
+        async def _do_login():
             await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-            log.info(f"Login page: {page.url}")
-
-            # Accept cookie banner
             try:
                 await page.get_by_role("button", name="Vše přijmout").click(timeout=5000)
                 await page.wait_for_timeout(600)
-                log.info("Cookie banner accepted")
             except PlaywrightTimeout:
                 try:
                     await page.get_by_role("button", name="Accept all").click(timeout=3000)
                     await page.wait_for_timeout(600)
                 except PlaywrightTimeout:
-                    log.info("No cookie banner")
-
-            # Login
-            await emit("Logging in to hopefix.cz…")
+                    pass
             username = os.getenv("SUPPLIER_G_USERNAME", "")
             password = os.getenv("SUPPLIER_G_PASSWORD", "")
             log.info(f"Logging in as: {username}")
-
             await page.get_by_role("textbox", name="E-mail").fill(username)
             await page.get_by_role("textbox", name="Password").fill(password)
             await page.get_by_role("button", name="Login").click()
-
             await page.wait_for_load_state("domcontentloaded")
             await page.wait_for_timeout(1500)
-
             if "/login" in page.url:
                 raise RuntimeError("Login to hopefix.cz failed. Please check credentials.")
             log.info(f"Login successful: {page.url}")
+
+        try:
+            await emit("Opening hopefix.cz…")
+
+            # --- 1. Restore saved session or do fresh login ---
+            saved_cookies = _load_saved_cookies()
+            if saved_cookies:
+                log.info("Restoring saved session cookies")
+                await context.add_cookies(saved_cookies)
+                await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=15000)
+                if not await _is_logged_in(page):
+                    log.warning("Saved session expired — performing fresh login")
+                    SESSION_FILE.unlink(missing_ok=True)
+                    await emit("Logging in to hopefix.cz…")
+                    await _do_login()
+                    _save_cookies(await context.cookies())
+                else:
+                    log.info("Session restored successfully")
+            else:
+                await emit("Logging in to hopefix.cz…")
+                await _do_login()
+                _save_cookies(await context.cookies())
 
             # Search via autocomplete search box
             await emit(f"Searching for {supplier_part_no} on hopefix.cz…")
