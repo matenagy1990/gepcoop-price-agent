@@ -100,20 +100,20 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             saved_cookies = _load_saved_cookies()
             if saved_cookies:
                 log.info("Restoring saved session cookies")
-                await context.add_cookies(saved_cookies)
+                await ctx.add_cookies(saved_cookies)
                 await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=15000)
                 if not await _is_logged_in(page):
                     log.warning("Saved session expired — performing fresh login")
                     SESSION_FILE.unlink(missing_ok=True)
                     await emit("Logging in to hopefix.cz…")
                     await _do_login()
-                    _save_cookies(await context.cookies())
+                    _save_cookies(await ctx.cookies())
                 else:
                     log.info("Session restored successfully")
             else:
                 await emit("Logging in to hopefix.cz…")
                 await _do_login()
-                _save_cookies(await context.cookies())
+                _save_cookies(await ctx.cookies())
 
             # Search via autocomplete search box
             await emit(f"Searching for {supplier_part_no} on hopefix.cz…")

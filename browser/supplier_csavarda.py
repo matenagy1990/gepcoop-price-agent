@@ -49,7 +49,10 @@ def _save_cookies(cookies: list) -> None:
 
 
 async def _is_logged_in(page) -> bool:
-    return "bejelentkezes" not in page.url
+    if "bejelentkezes" in page.url:
+        return False
+    # Kosaram (cart) link is only present when authenticated
+    return await page.locator("a[href*='/kosar']").count() > 0
 
 _JS_NEXT_SIBLING = """
 (labelText) => {
@@ -86,9 +89,9 @@ async def _do_login(page, emit) -> None:
     await emit("Logging in to csavarda.hu…")
     username = os.getenv("SUPPLIER_A_USERNAME", "")
     log.info(f"Filling login form for user: {username}")
-    await page.locator("#email").fill(username)
-    await page.locator("#password").fill(os.getenv("SUPPLIER_A_PASSWORD", ""))
-    await page.locator("button:has-text('Bejelentkezés')").click()
+    await page.get_by_role("textbox", name="Email cím").fill(username)
+    await page.get_by_role("textbox", name="Jelszó").fill(os.getenv("SUPPLIER_A_PASSWORD", ""))
+    await page.get_by_role("button", name="Bejelentkezés").click()
 
     try:
         await page.wait_for_url("**/telephely-valasztasa", timeout=12000)

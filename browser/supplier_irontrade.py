@@ -93,8 +93,8 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             async def fill_login_form():
                 username = os.getenv("SUPPLIER_B_USERNAME", "")
                 log.info(f"Filling login form for user: {username}")
-                await page.locator("#LoginEmail").fill(username)
-                await page.locator("#LoginPassword").fill(os.getenv("SUPPLIER_B_PASSWORD", ""))
+                await page.get_by_role("textbox", name="Email").fill(username)
+                await page.get_by_role("textbox", name="Jelszó").fill(os.getenv("SUPPLIER_B_PASSWORD", ""))
                 btn = page.get_by_role("button", name="Bejelentkezés")
                 await btn.wait_for(state="visible", timeout=10000)
                 await btn.evaluate("el => el.removeAttribute('disabled')")
