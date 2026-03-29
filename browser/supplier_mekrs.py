@@ -178,15 +178,13 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     "Could not read price from eshop.mekrs.cz. Page layout may have changed."
                 )
 
-            # Parse price: Czech format — dot=thousands sep, comma=decimal sep
-            # "50.63 Kč"   → 50.63  (dot only → treat as decimal)
-            # "3.638,71 Kč"→ 3638.71 (both → remove dots, replace comma)
-            # "50,63 Kč"   → 50.63  (comma only → replace comma)
+            # Parse price: English format — dot=decimal sep, comma=thousands sep
+            # "128.96 Kč"    → 128.96   (dot only → decimal)
+            # "1,234.56 Kč"  → 1234.56  (comma=thousands, dot=decimal → remove commas)
+            # "1,234 Kč"     → 1234     (comma=thousands only → remove commas)
             price_clean = re.sub(r"[^\d.,]", "", price_str)
-            if "," in price_clean and "." in price_clean:
-                price_clean = price_clean.replace(".", "").replace(",", ".")
-            elif "," in price_clean:
-                price_clean = price_clean.replace(",", ".")
+            if "," in price_clean:
+                price_clean = price_clean.replace(",", "")
             price_raw = float(price_clean)
 
             # Parse unit qty: " / 100 pcs" → 100

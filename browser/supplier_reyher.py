@@ -4,14 +4,23 @@ Playwright scraper for rio.reyher.de (Supplier F)
 Login flow:
   1. Try to restore session from assets/sessions/reyher_session.json
   2. If session invalid/missing: login with credentials, save new session
-  3. Fill Cikkszám search field → press Enter
-  4. Extract price and packaging qty from search results table
 
-Session persistence:
-  Cookies are saved after each successful login. On the next run the
-  saved cookies are restored so that login is skipped entirely.  Only
-  when the session has expired (site shows "Csak vendéghozzáféréssel
-  rendelkezik") is a fresh login performed.
+Search + price flow:
+  3. Fill Cikkszám search field → press Enter → wait_for_selector("table.table tbody tr")
+  4. Click td:nth-child(2) of the first result row (part number cell) → opens detail panel
+  5. wait_for_function: body.innerText.includes('Own price')
+     — covers both panel-open AND SAP AJAX response arriving (single condition)
+  6. Text-walker extraction — anchors on label text only, no class/ID/data-bind deps:
+       find text node starting with "own price" → grandparent row → children[1] = value
+       unit qty parsed from label text "/100 Pcs" → 100
+
+Data extraction (rendered detail panel — layout-agnostic):
+  - Price:    text-walker finds "Own price…" → next numeric sibling → e.g. "27,47"
+  - Unit qty: parsed from label text "/100 Pcs" → 100
+  - Stock:    text-walker finds "Available quantity:" → next sibling value
+
+Price normalisation:
+  price_raw=27.47, price_unit_qty=100 → tools.py yields price_per_db=0.2747 EUR/db
 
 Currency: EUR (German supplier)
 """
@@ -108,15 +117,20 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             await emit("Opening rio.reyher.de…")
 
             # --- 1. Restore saved session or do fresh login ---
-            # The homepage always shows guest state for headless browsers
-            # (CDN-cached / bot detection), so we skip auth verification there
-            # and rely on the two-strategy price extraction instead.
             saved_cookies = _load_saved_cookies()
             if saved_cookies:
-                log.info("Restoring saved session cookies — skipping login")
+                log.info("Restoring saved session cookies")
                 await context.add_cookies(saved_cookies)
-                # Navigate to homepage so the Cikkszám search field is accessible
                 await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=15000)
+                # Verify the session is still valid; re-login if expired
+                if not await _is_logged_in(page):
+                    log.warning("Saved session is expired — performing fresh login")
+                    SESSION_FILE.unlink(missing_ok=True)
+                    await _login(page, emit)
+                    cookies = await context.cookies()
+                    _save_cookies(cookies)
+                else:
+                    log.info("Session restored successfully")
             else:
                 await _login(page, emit)
                 cookies = await context.cookies()
@@ -126,59 +140,82 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             await emit(f"Searching for {supplier_part_no} on rio.reyher.de…")
             await page.get_by_role("textbox", name="Cikkszám").fill(supplier_part_no)
             await page.get_by_role("textbox", name="Cikkszám").press("Enter")
-            await page.wait_for_load_state("networkidle", timeout=25000)
-            log.info(f"Search results: {page.url}")
 
-            # Wait for authenticated price column to render
-            try:
-                await page.wait_for_function(
-                    r"document.body.innerText.match(/\d[,.\d]*\s*EUR/)",
-                    timeout=20000,
-                )
-                log.info("Numeric EUR price detected in DOM")
-            except PlaywrightTimeout:
-                log.warning("Price not in DOM after 20s — falling back to HTML source")
+            # Wait only for the results table — much faster than networkidle
+            # (networkidle blocks on analytics/SAP polling requests for 20-25s)
+            await page.wait_for_selector("table.table tbody tr", timeout=15000)
+            log.info(f"Search results table loaded: {page.url}")
 
-            # --- 4. Extract price ---
+            # --- 4. Check results ---
             body_text = await page.locator("body").inner_text()
-            raw_html  = await page.content()
-            log.info(f"Body (first 500 chars): {body_text[:500]}")
-
             if "Nem található" in body_text or "0 találat" in body_text.lower():
                 raise RuntimeError(f"Part {supplier_part_no} was not found on rio.reyher.de.")
 
+            # Click the part number div (the cursor:pointer element inside td:nth-child(2)).
+            # Clicking the <td> itself is unreliable — the panel is opened by the inner <div>.
+            # get_by_text scoped to the table finds exactly that div.
+            await page.locator("table.table").get_by_text(supplier_part_no, exact=True).click(timeout=8000)
+            log.info(f"Clicked part number div for {supplier_part_no} — detail panel opening")
+
+            # Wait for the SAP AJAX response to populate the "Own price" field.
+            # "Own price" only appears in body.innerText after the panel is open
+            # AND the SAP call has completed — this single wait covers both conditions.
+            await page.wait_for_function(
+                "() => document.body.innerText.includes('Own price')",
+                timeout=20000,
+            )
+            log.info("Own price visible in DOM — detail panel fully loaded")
+
             await emit("Reading price and stock from rio.reyher.de…")
 
-            price_unit_qty = None
-            price_text     = None
+            # --- Price extraction ---
+            # Text-walker approach: anchors on the "Own price" label text only.
+            # Robust against CSS class / layout changes.
+            #
+            # Rendered DOM structure in the detail panel:
+            #   <div>                            ← grandparent row
+            #     <div>Own price/100 Pcs</div>   ← label  (children[0])
+            #     <div>27,47</div>               ← value  (children[1])
+            #     <div>€</div>                   ← unit   (children[2])
+            #   </div>
+            own_price_data = await page.evaluate("""() => {
+                const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+                let node;
+                while ((node = walker.nextNode())) {
+                    const text = node.textContent.trim();
+                    if (!text.toLowerCase().startsWith('own price')) continue;
 
-            # Strategy 1: rendered DOM — table row "200\n55,00 EUR"
-            qty_price_match = re.search(
-                r"(\d+)\s*\n\s*([\d]{1,3}(?:[.,\u00a0 ]?\d{3})*[.,]\d{2})[\s\u00a0]*EUR",
-                body_text
-            )
-            if qty_price_match:
-                price_unit_qty = int(qty_price_match.group(1))
-                price_text     = qty_price_match.group(2)
-                log.info("Price extracted from DOM text")
-            else:
-                # Strategy 2: server-rendered HTML JSON
-                # price&quot;:&quot;55,00\u00a0EUR&quot;
-                html_match = re.search(
-                    r'price&quot;:&quot;([\d,\.]+)(?:\\u00a0|&nbsp;|\u00a0| )EUR&quot;',
-                    raw_html
+                    const labelEl = node.parentElement;       // div with label text
+                    const row     = labelEl.parentElement;    // parent div (the row)
+                    const siblings = Array.from(row.children);
+                    const labelIdx = siblings.indexOf(labelEl);
+
+                    // Unit qty from label: "Own price/100 Pcs" → 100
+                    const qtyMatch = text.match(/\\/(\\d[\\d,]*)/);
+                    const qty = qtyMatch ? parseInt(qtyMatch[1].replace(',', '')) : 100;
+
+                    // Price: first sibling after the label whose text looks like a number
+                    for (let i = labelIdx + 1; i < siblings.length; i++) {
+                        const val = siblings[i].textContent.trim();
+                        if (/^[\\d][\\d.,]*$/.test(val)) {
+                            return { price: val, qty };
+                        }
+                    }
+                }
+                return null;
+            }""")
+
+            log.info(f"Own price data: {own_price_data}")
+
+            if not own_price_data or not own_price_data.get("price"):
+                log.error(f"Own price not found. Body sample: {body_text[:500]}")
+                raise RuntimeError(
+                    "Could not read own price from rio.reyher.de. "
+                    "Check that the account has customer-specific pricing enabled."
                 )
-                if html_match:
-                    price_text = html_match.group(1)
-                    qty_html = re.search(
-                        r'(?:qty_csp|packaging_qty|qty_min|minQty)&quot;:&quot;(\d+)',
-                        raw_html
-                    )
-                    price_unit_qty = int(qty_html.group(1)) if qty_html else 200
-                    log.info(f"Price extracted from HTML source (qty={price_unit_qty})")
-                else:
-                    log.error(f"Body sample: {body_text[:500]}")
-                    raise RuntimeError("Could not read price from rio.reyher.de. No EUR amount found.")
+
+            price_text     = own_price_data["price"]
+            price_unit_qty = own_price_data["qty"]
 
             if "," in price_text and "." in price_text:
                 price_text = price_text.replace(".", "").replace(",", ".")
@@ -186,7 +223,27 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 price_text = price_text.replace(",", ".")
             price_raw = float(price_text)
 
-            stock_value = None  # Reyher does not publish stock quantities
+            # --- Stock extraction ---
+            # Same text-walker pattern for "Available quantity:" label.
+            stock_data = await page.evaluate("""() => {
+                const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+                let node;
+                while ((node = walker.nextNode())) {
+                    const text = node.textContent.trim();
+                    if (!text.toLowerCase().includes('available quantity')) continue;
+
+                    const labelEl  = node.parentElement;
+                    const row      = labelEl.parentElement;
+                    const siblings = Array.from(row.children);
+                    const idx      = siblings.indexOf(labelEl);
+                    const valueEl  = siblings[idx + 1];
+                    return valueEl ? valueEl.textContent.trim() : null;
+                }
+                return null;
+            }""")
+            log.info(f"Stock data: {stock_data!r}")
+            stock_value = int(re.sub(r"[^\d]", "", stock_data)) if stock_data else None
+
             log.info(f"Parsed — price_raw: {price_raw} EUR / {price_unit_qty} db, stock: {stock_value}")
 
             return {

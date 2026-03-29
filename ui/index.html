@@ -602,7 +602,13 @@
           <!-- Tab: Cikkszám mapping -->
           <div class="adm-tab hidden" id="adm-tab-mapping">
             <div class="adm-section">
-              <div class="adm-section-title">Mapping feltöltése (.csv vagy .xlsx)</div>
+              <div class="adm-section-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+                <span>Mapping feltöltése (.csv vagy .xlsx)</span>
+                <a id="adm-btn-template" href="/admin/mapping-template" download="mapping_sablon.xlsx"
+                   style="padding:6px 14px;background:none;border:1.5px solid var(--blue);border-radius:8px;font-family:'Inter',sans-serif;font-size:12px;font-weight:600;color:var(--blue);text-decoration:none;display:flex;align-items:center;gap:5px;white-space:nowrap">
+                  ⬇ Sablon letöltése
+                </a>
+              </div>
               <div id="adm-col-hint" class="adm-hint">Oszlopok betöltése…</div>
               <div class="adm-upload-row">
                 <label class="adm-file-label" for="adm-file">

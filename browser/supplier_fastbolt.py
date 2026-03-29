@@ -4,10 +4,26 @@ Playwright scraper for fbonline.fastbolt.com (Supplier H)
 Login flow:
   1. GET /login → fill Shortname + Loginname + Password → "Sign in"
   2. Redirects to dashboard on success
-  3. Search for part number via search box or URL
-  4. Extract price and stock
 
-Currency: EUR (German supplier)
+Search + price flow:
+  3. Navigate to /matrix/{supplier_part_no}
+     → shows a size/variant matrix table; the exact part is highlighted as a clickable cell
+  4. Click the matrix cell: generic[title="{supplier_part_no}"]
+     → adds the article to the enquiry panel (bottom of page)
+  5. Wait for input#enquiry-item-{supplier_part_no} to appear in the enquiry panel
+  6. Clear the quantity input and type "1", then click a.btn-change-amount (fa-check)
+     → triggers AJAX price recalculation
+  7. Wait for div.current-amount to contain EUR text
+
+Data extraction (enquiry panel layout after quantity confirm):
+  - Price:     div.current-amount span.text-red inner text → "10.58 EUR\n/ 100\n= 105.80 EUR"
+  - Unit qty:  "/ 100" extracted from that text
+  - Stock:     span.progress-bar-success inner text        → "1,000" (in-stock qty)
+
+Price normalisation:
+  price_raw=10.58, price_unit_qty=100 → tools.py yields price_per_db=0.1058 EUR/db
+
+Currency: EUR
 """
 
 import logging
@@ -23,7 +39,7 @@ load_dotenv()
 log = logging.getLogger("fastbolt")
 
 LOGIN_URL  = "https://fbonline.fastbolt.com/login"
-SEARCH_URL = "https://fbonline.fastbolt.com/search?q={part_no}"
+MATRIX_URL = "https://fbonline.fastbolt.com/matrix/{part_no}"
 
 
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
@@ -58,82 +74,119 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             await page.wait_for_timeout(2000)
 
             if "/login" in page.url:
-                log.error(f"Login failed — still on: {page.url}")
                 raise RuntimeError("Login to fbonline.fastbolt.com failed. Please check credentials.")
             log.info(f"Login successful: {page.url}")
 
-            # Search for part
+            # Navigate to the product matrix page
             await emit(f"Searching for {supplier_part_no} on fastbolt…")
-            search_url = SEARCH_URL.format(part_no=supplier_part_no)
-            await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
-            log.info(f"Search page: {page.url}")
-            await page.wait_for_timeout(1500)
+            matrix_url = MATRIX_URL.format(part_no=supplier_part_no)
+            await page.goto(matrix_url, wait_until="domcontentloaded", timeout=20000)
+            log.info(f"Matrix page: {page.url}")
 
-            body_text = await page.locator("body").inner_text()
-            if "no result" in body_text.lower() or "0 result" in body_text.lower() or "nicht gefunden" in body_text.lower():
+            # If redirected away, the part number does not exist on fastbolt
+            if f"/matrix/{supplier_part_no}" not in page.url:
                 raise RuntimeError(f"Part {supplier_part_no} was not found on fastbolt.")
 
-            # Click first product link
+            # Click the specific cell in the matrix table to add it to the enquiry panel
+            matrix_cell = page.locator(f"[title='{supplier_part_no}']").first
             try:
-                await page.locator("a.product-link, .product-list a, [href*='/product/'], [href*='/artikel/']").first.click(timeout=8000)
-                await page.wait_for_load_state("domcontentloaded")
-                log.info(f"Product page: {page.url}")
+                await matrix_cell.wait_for(timeout=8000)
+                await matrix_cell.click()
+                log.info(f"Clicked matrix cell for {supplier_part_no}")
             except PlaywrightTimeout:
-                # might already be on product page
-                if "search" in page.url:
-                    raise RuntimeError(f"No product links found for {supplier_part_no} on fastbolt.")
+                raise RuntimeError(f"Part {supplier_part_no} not found in matrix table on fastbolt.")
 
-            await page.wait_for_timeout(1500)
+            # Wait for the enquiry input for this specific part to appear
+            qty_selector = f"input#enquiry-item-{supplier_part_no}"
+            try:
+                await page.wait_for_selector(qty_selector, timeout=10000)
+                log.info(f"Enquiry panel updated for {supplier_part_no}")
+            except PlaywrightTimeout:
+                raise RuntimeError(f"Enquiry panel did not load for {supplier_part_no} on fastbolt.")
+
             await emit("Reading price and stock from fastbolt…")
 
-            price_text = ""
-            stock_text = ""
+            # Type "1" into the quantity field and click the checkmark to trigger price load
+            qty_input = page.locator(qty_selector)
+            await qty_input.fill("1")
+            log.info("Filled quantity with 1")
 
+            # Click the checkmark inside the enquiry item row for this specific part
+            item_locator = page.locator(f".item.enquiry-item:has(input#enquiry-item-{supplier_part_no})")
+            await item_locator.locator("a.btn-change-amount").click()
+            log.info("Clicked checkmark to confirm quantity")
+
+            # Wait for the AJAX price update — span.text-red > b must contain EUR
             try:
-                price_el = page.locator("[class*='price'], .product-price, [class*='Price']").first
-                price_text = await price_el.inner_text(timeout=6000)
-                log.info(f"Price: '{price_text}'")
-            except Exception:
+                await page.wait_for_function(
+                    "() => {"
+                    "  const b = document.querySelector('.current-amount span.text-red b');"
+                    "  return b && b.innerText.includes('EUR');"
+                    "}",
+                    timeout=10000,
+                )
+                log.info("Price loaded in enquiry panel")
+            except PlaywrightTimeout:
+                log.warning("Price did not appear after 10s — attempting extraction anyway")
+
+            # Extract price and unit qty — scope to the specific enquiry item for this part
+            price_data = await page.evaluate(f"""() => {{
+                const item = document.querySelector(
+                    '.item.enquiry-item:has(input#enquiry-item-{supplier_part_no})'
+                );
+                if (!item) return null;
+                const span = item.querySelector('.current-amount span.text-red');
+                if (!span) return null;
+                return span.innerText.trim();   // e.g. "10.58 EUR\\n/ 100\\n= 105.80 EUR"
+            }}""")
+
+            log.info(f"Raw price text: {price_data!r}")
+
+            if not price_data or "EUR" not in price_data:
                 body = await page.locator("body").inner_text()
-                match = re.search(r"([\d.,]+)\s*€|€\s*([\d.,]+)", body)
-                if match:
-                    price_text = match.group(0)
-
-            try:
-                stock_el = page.locator("[class*='stock'], [class*='availability']").first
-                stock_text = await stock_el.inner_text(timeout=4000)
-                log.info(f"Stock: '{stock_text}'")
-            except Exception:
-                stock_text = "unknown"
-
-            if not price_text:
+                log.error(f"Price not found. Body snippet: {body[:500]}")
                 raise RuntimeError("Could not read price from fastbolt. Page layout may have changed.")
 
-            price_clean = re.sub(r"[€\s\u00a0]", "", price_text).strip()
-            if "," in price_clean and "." in price_clean:
-                price_clean = price_clean.replace(".", "").replace(",", ".")
-            elif "," in price_clean:
-                price_clean = price_clean.replace(",", ".")
-            price_raw = float(re.search(r"[\d.]+", price_clean).group())
+            # Parse: "3.10 EUR\n/ 100\n= 7.75 EUR"
+            # Price value
+            price_match = re.search(r"([\d.,]+)\s*EUR", price_data)
+            if not price_match:
+                raise RuntimeError(f"Could not parse price from: {price_data!r}")
+            price_str = price_match.group(1)
+            # German/English format: dots as thousands sep, comma as decimal — or just dot as decimal
+            if "," in price_str and "." in price_str:
+                price_str = price_str.replace(",", "")          # "1,234.56" → "1234.56"
+            elif "," in price_str:
+                price_str = price_str.replace(",", ".")         # "3,10" → "3.10"
+            price_raw = float(price_str)
 
-            # Check for unit qty in price (e.g. "5,00 € / 100 pcs")
-            unit_qty = 1
-            qty_match = re.search(r"/\s*(\d+)\s*(?:pcs|pc|Stk|st)", price_text, re.IGNORECASE)
-            if qty_match:
-                unit_qty = int(qty_match.group(1))
+            # Unit qty: "/ 100" → 100
+            qty_match = re.search(r"/\s*([\d,]+)", price_data)
+            price_unit_qty = int(qty_match.group(1).replace(",", "")) if qty_match else 1
+            if not qty_match:
+                log.warning(f"Could not parse unit qty from {price_data!r}, assuming 1")
 
-            in_stock = not any(w in stock_text.lower() for w in ["out", "nicht", "0"])
-            stock_value = 1 if in_stock else 0
+            # Stock: .progress-bar-success scoped to this specific enquiry item
+            stock_text = await page.evaluate(f"""() => {{
+                const item = document.querySelector(
+                    '.item.enquiry-item:has(input#enquiry-item-{supplier_part_no})'
+                );
+                if (!item) return '';
+                const bar = item.querySelector('.progress-bar-success');
+                return bar ? bar.innerText.trim() : '';
+            }}""")
+            log.info(f"Stock text: {stock_text!r}")
+            stock = _parse_stock(stock_text)
 
-            log.info(f"Parsed — price_raw: {price_raw} EUR, unit_qty: {unit_qty}, stock: {stock_value}")
+            log.info(f"Parsed — price_raw: {price_raw} EUR, unit_qty: {price_unit_qty}, stock: {stock}")
 
             return {
                 "supplier_part_no": supplier_part_no,
                 "price_raw":        price_raw,
-                "price_unit_qty":   unit_qty,
+                "price_unit_qty":   price_unit_qty,
                 "currency":         "EUR",
                 "unit":             "db",
-                "stock":            stock_value,
+                "stock":            stock,
                 "queried_at":       datetime.now().isoformat(timespec="seconds"),
             }
 
@@ -145,3 +198,11 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         finally:
             await browser.close()
             log.info("Browser closed")
+
+
+def _parse_stock(s: str) -> int:
+    """Extract integer from stock text, e.g. '1,250' → 1250, '250' → 250"""
+    if not s:
+        return 0
+    cleaned = re.sub(r"[^\d]", "", s)
+    return int(cleaned) if cleaned else 0

@@ -728,6 +728,34 @@ async def admin_upload_mapping(
     return {"filename": fname, "columns": columns, "rows": rows, "supabase_rows": supabase_rows}
 
 
+@app.get("/admin/mapping-template")
+def admin_mapping_template():
+    """Return an Excel (.xlsx) template with all column headers and two example rows."""
+    import pandas as pd
+
+    headers = [
+        "gepcoop_part_no", "name",
+        "csavarda_part_no", "irontrade_part_no", "koelner_part_no",
+        "mekrs_part_no", "fabory_part_no", "ferdinand_part_no",
+        "reyher_part_no", "hopefix_part_no", "fastbolt_part_no",
+        "schaefer_part_no", "kingb2b_part_no", "wasishop_part_no",
+    ]
+    example_rows = [
+        ["GC001", "Hatlapfejű csavar DIN 933 M8x20 horg.", "934012000000801000", "", "61025", "08555.18.02.100.100", "", "", "000094001000050112", "", "", "", "", ""],
+        ["GC002", "Hatlapfejű csavar DIN 931 M10x50 horg.", "", "", "", "", "", "", "", "", "", "", "", ""],
+    ]
+    df = pd.DataFrame(example_rows, columns=headers)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Mapping")
+    buf.seek(0)
+    return Response(
+        content=buf.read(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=mapping_sablon.xlsx"},
+    )
+
+
 @app.delete("/admin/mapping")
 def admin_delete_mapping():
     from agent.tools import _get_supabase
