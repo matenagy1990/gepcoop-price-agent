@@ -684,26 +684,26 @@ const BROWSER_STEPS = [
 ];
 let supPipeState = {}; // supplier_id → array of 4 step states
 
-// ── Autocomplete (native datalist) ──────────────────────────────
-let allParts = [];
+// ── Autocomplete (server-side debounced search) ──────────────────
+let _partsDebounceTimer = null;
 
-async function loadParts() {
+async function fetchPartSuggestions(q) {
+  if (!q || q.length < 2) {
+    document.getElementById('parts-datalist').innerHTML = '';
+    return;
+  }
   try {
-    const res = await fetch('/parts', { headers: { 'Authorization': `Bearer ${authToken}` } });
+    const res = await fetch(`/parts/search?q=${encodeURIComponent(q)}`, {
+      headers: { 'Authorization': `Bearer ${authToken}` },
+    });
     if (!res.ok) return;
-    allParts = (await res.json()).parts || [];
-    fillDatalist('');
+    const parts = (await res.json()).parts || [];
+    document.getElementById('parts-datalist').innerHTML =
+      parts.map(p => `<option value="${p}">`).join('');
   } catch(e) {}
 }
 
-function fillDatalist(q) {
-  const up = q.toUpperCase();
-  const matches = up
-    ? allParts.filter(p => p.toUpperCase().includes(up))
-    : allParts;
-  document.getElementById('parts-datalist').innerHTML =
-    matches.slice(0, 20).map(p => `<option value="${p}">`).join('');
-}
+function loadParts() { /* no-op: autocomplete is now server-side on demand */ }
 
 /* ══ DATALIST — desktop only ════════════════════════════════════ */
 function updateDatalistBinding() {
@@ -776,7 +776,10 @@ document.getElementById('btn-logout').addEventListener('click', () => {
 });
 const partInput = document.getElementById('part-input');
 
-partInput.addEventListener('input', () => fillDatalist(partInput.value.trim()));
+partInput.addEventListener('input', () => {
+  clearTimeout(_partsDebounceTimer);
+  _partsDebounceTimer = setTimeout(() => fetchPartSuggestions(partInput.value.trim()), 280);
+});
 partInput.addEventListener('keydown', e => { if (e.key === 'Enter') doQuery(); });
 
 document.getElementById('btn-query').addEventListener('click', doQuery);

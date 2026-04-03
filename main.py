@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from pathlib import Path
-from agent.tools import lookup_mapping_all, fetch_supplier_price, get_all_part_numbers
+from agent.tools import lookup_mapping_all, fetch_supplier_price, get_all_part_numbers, search_part_numbers
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,6 +22,9 @@ log = logging.getLogger("main")
 
 app = FastAPI(title="Gép-Coop Price Agent", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# Max 4 scraper runs simultaneously — prevents Chromium overload under concurrent users
+SCRAPER_LIMIT = asyncio.Semaphore(4)
 
 # ── .env helpers ──────────────────────────────────────────────────────
 ENV_FILE = Path(__file__).parent / ".env"
@@ -462,27 +465,28 @@ async def query_stream(
                     ev["supplier"] = sid
                     await queue.put(("progress", ev))
 
-                try:
-                    r = await fetch_supplier_price(
-                        sid, sup["supplier_part_no"], on_progress=on_progress
-                    )
-                    results[sid] = r
-                    log.info(f"[{run_id}][{sid}] fetch done: price_per_db={r.get('price_per_db')}")
-                except Exception as exc:
-                    log.error(f"[{run_id}][{sid}] fetch failed: {exc}")
-                    err_msg = str(exc)
-                    results[sid] = {"error": err_msg, "supplier_id": sid}
-                    # Schaefer rotates passwords monthly — prompt user to update
-                    if sid == "schaefer" and "failed" in err_msg.lower() and "credential" in err_msg.lower():
-                        await queue.put(("password_required", {
-                            "supplier": sid,
-                            "msg": err_msg,
-                        }))
-                    else:
-                        await queue.put(("progress", {
-                            "step": "browser", "status": "error",
-                            "msg": err_msg, "supplier": sid,
-                        }))
+                async with SCRAPER_LIMIT:
+                    try:
+                        r = await fetch_supplier_price(
+                            sid, sup["supplier_part_no"], on_progress=on_progress
+                        )
+                        results[sid] = r
+                        log.info(f"[{run_id}][{sid}] fetch done: price_per_db={r.get('price_per_db')}")
+                    except Exception as exc:
+                        log.error(f"[{run_id}][{sid}] fetch failed: {exc}")
+                        err_msg = str(exc)
+                        results[sid] = {"error": err_msg, "supplier_id": sid}
+                        # Schaefer rotates passwords monthly — prompt user to update
+                        if sid == "schaefer" and "failed" in err_msg.lower() and "credential" in err_msg.lower():
+                            await queue.put(("password_required", {
+                                "supplier": sid,
+                                "msg": err_msg,
+                            }))
+                        else:
+                            await queue.put(("progress", {
+                                "step": "browser", "status": "error",
+                                "msg": err_msg, "supplier": sid,
+                            }))
 
             await asyncio.gather(*[fetch_one(s) for s in supplier_list])
 
@@ -548,6 +552,14 @@ async def query_stream(
 def get_parts(authorization: str | None = Header(default=None)):
     _get_username(authorization)
     return {"parts": get_all_part_numbers()}
+
+
+@app.get("/parts/search")
+def search_parts(q: str = "", authorization: str | None = Header(default=None)):
+    _get_username(authorization)
+    if not q or len(q) < 2:
+        return {"parts": []}
+    return {"parts": search_part_numbers(q, limit=20)}
 
 
 @app.get("/health")

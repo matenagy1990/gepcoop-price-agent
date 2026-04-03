@@ -150,13 +150,14 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             # The reliable indicator is whether the login form (#login_username)
             # is present (not logged in) or absent (already logged in).
             await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=15000)
-            await page.wait_for_timeout(1500)
+            # Wait for either the login form or a logged-in indicator to appear
+            await page.wait_for_selector("#login_username, #user-menu, .logout", state="attached", timeout=8000)
             log.info(f"After navigating to LOGIN_URL, landed on: {page.url}")
 
             # Dismiss cookie/consent banner wherever we are
             try:
                 await page.get_by_role("button", name="Rendben").click(timeout=3000)
-                await page.wait_for_timeout(500)
+                await page.wait_for_timeout(200)  # brief settle after cookie banner dismiss
                 log.info("Cookie notice accepted")
             except PlaywrightTimeout:
                 log.info("No cookie notice appeared")
@@ -185,11 +186,14 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                          f"password length: {len(filled_pass)} chars")
 
                 await page.locator("#loginbutton").click()
-                log.info("Login button clicked, waiting for redirect…")
-                await page.wait_for_timeout(3000)
-
+                log.info("Login button clicked, waiting for login form to disappear…")
                 # Koelner stays on /belepes/ after both success and failure.
                 # Success = login form is gone; failure = form still present.
+                try:
+                    await page.locator("#login_username").wait_for(state="hidden", timeout=10000)
+                except PlaywrightTimeout:
+                    pass  # form still visible → check below will catch failure
+
                 login_form_present = await page.locator("#login_username").count() > 0
 
                 if login_form_present:
@@ -210,7 +214,8 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             log.info(f"Navigating to search URL: {search_url}")
 
             await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
-            await page.wait_for_timeout(1500)
+            # Wait for search results container or empty-state indicator
+            await page.wait_for_selector(".products, .item, [class*='no-result'], h1", state="attached", timeout=8000)
             log.info(f"Search page loaded: {page.url}")
 
             body_text = await page.locator("body").inner_text(timeout=10000)
@@ -249,7 +254,11 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 )
                 log.info(f"Checking group {idx+1}/{len(item_hrefs)}: {product_url}")
                 await page.goto(product_url, wait_until="domcontentloaded", timeout=20000)
-                await page.wait_for_timeout(2500)   # table is lazy-loaded
+                # Wait for the lazy-loaded product table to appear
+                try:
+                    await page.wait_for_selector("table tbody tr.gy_item", state="attached", timeout=8000)
+                except PlaywrightTimeout:
+                    pass  # no matching rows → selected check below returns empty
 
                 selected = await page.locator("table tbody tr.gy_item.item-selected").all()
                 if selected:
