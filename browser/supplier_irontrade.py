@@ -1,20 +1,30 @@
 """
 Playwright scraper for irontrade.hu
 
-Login flow:
+Session flow:
+  1. Try to restore saved session from assets/sessions/irontrade_session.json
+     - Skip restore if saved_at > 20 h old
+  2. Verify session with a positive authenticated marker:
+     look for 'Kijelentkezés' link that only appears for logged-in users
+  3. If session missing / stale / invalid: full login, save new session with timestamp
+
+Login flow (fallback):
   1. GET /bejelentkezes → fill #LoginEmail + #LoginPassword → submit
   2. Livewire may return 419 (CSRF expired) → "This page has expired" dialog appears
      → accept dialog → page reloads → fill and submit again
   3. Redirects to https://irontrade.hu/ on success
-  4. Search: /kereso?name={supplier_part_no}
+
+Search flow:
+  4. /kereso?name={supplier_part_no}
   5. Click first product link → full product page
   6. Extract Nettó ár, Készlet
 """
 
-import asyncio
+import json
 import logging
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
@@ -23,8 +33,10 @@ load_dotenv()
 
 log = logging.getLogger("irontrade")
 
-LOGIN_URL  = "https://irontrade.hu/bejelentkezes"
-SEARCH_URL = "https://irontrade.hu/kereso?name={part_no}"
+LOGIN_URL    = "https://irontrade.hu/bejelentkezes"
+SEARCH_URL   = "https://irontrade.hu/kereso?name={part_no}"
+_SESSION_FILE = Path(__file__).parent.parent / "assets" / "sessions" / "irontrade_session.json"
+_SESSION_MAX_AGE_H = 20
 
 _JS_NEXT_SIBLING = """
 (labelText) => {
@@ -37,6 +49,57 @@ _JS_NEXT_SIBLING = """
 """
 
 
+# ── Session helpers ────────────────────────────────────────────────────────────
+
+def _load_session() -> dict | None:
+    """Return {saved_at, state} or None if missing / unreadable."""
+    try:
+        if _SESSION_FILE.exists():
+            data = json.loads(_SESSION_FILE.read_text())
+            if isinstance(data, dict) and "state" in data:
+                return data
+    except Exception:
+        pass
+    return None
+
+
+def _session_is_fresh(session: dict) -> bool:
+    """Return True if session was saved less than _SESSION_MAX_AGE_H hours ago."""
+    saved_at = session.get("saved_at")
+    if not saved_at:
+        return False
+    try:
+        age_h = (datetime.now() - datetime.fromisoformat(saved_at)).total_seconds() / 3600
+        return age_h < _SESSION_MAX_AGE_H
+    except Exception:
+        return False
+
+
+async def _save_session(context) -> None:
+    """Persist Playwright storage_state (cookies + localStorage) with a timestamp."""
+    try:
+        state = await context.storage_state()
+        _SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _SESSION_FILE.write_text(json.dumps(
+            {"saved_at": datetime.now().isoformat(timespec="seconds"), "state": state},
+            indent=2,
+        ))
+        log.info(f"Session saved → {_SESSION_FILE}")
+    except Exception as exc:
+        log.warning(f"Could not save session: {exc}")
+
+
+async def _is_logged_in(page) -> bool:
+    """
+    Session check: if the restored session is valid, irontrade.hu serves the search
+    page directly. If invalid, it redirects to /bejelentkezes (login page).
+    URL check is instant and more reliable than waiting for a DOM element.
+    """
+    return "/bejelentkezes" not in page.url
+
+
+# ── Main scraper ───────────────────────────────────────────────────────────────
+
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
     async def emit(msg: str):
         log.info(msg)
@@ -45,10 +108,29 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
-        context = await browser.new_context()
-        page    = await context.new_page()
 
-        # Properly await async dialog acceptance
+        # ── Step 1: try to restore saved session ──────────────────────────────
+        session  = _load_session()
+        context  = None
+        skip_login = False
+
+        if session and _session_is_fresh(session):
+            try:
+                context = await browser.new_context(storage_state=session["state"])
+                log.info("Session restored (age < 20 h) — will verify after navigation")
+            except Exception as exc:
+                log.warning(f"Could not restore session state: {exc}")
+                _SESSION_FILE.unlink(missing_ok=True)
+                context = None
+        elif session:
+            log.info("Session stale (> 20 h) — proactive re-login")
+            _SESSION_FILE.unlink(missing_ok=True)
+
+        if context is None:
+            context = await browser.new_context()
+
+        page = await context.new_page()
+
         async def handle_dialog(dialog):
             log.info(f"Dialog dismissed: '{dialog.message}'")
             await dialog.accept()
@@ -56,79 +138,94 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         page.on("dialog", handle_dialog)
 
         try:
-            # 1. Open login page
             await emit("Opening irontrade.hu…")
-            await page.goto(LOGIN_URL, wait_until="load")
-            log.info(f"Loaded login page: {page.url}")
 
-            # Accept cookie banner if present
-            try:
-                await page.get_by_role("button", name="Összes elfogadása").click(timeout=4000)
-                await page.wait_for_timeout(800)
-                log.info("Cookie banner accepted")
-            except PlaywrightTimeout:
-                log.info("No cookie banner appeared")
-
-            # 2. Fill login form using stable id selectors
-            async def fill_login_form():
-                username = os.getenv("SUPPLIER_B_USERNAME", "")
-                log.info(f"Filling login form for user: {username}")
-                await page.locator("#LoginEmail").fill(username)
-                await page.locator("#LoginPassword").fill(os.getenv("SUPPLIER_B_PASSWORD", ""))
-                filled_email = await page.locator("#LoginEmail").input_value()
-                filled_pass  = await page.locator("#LoginPassword").input_value()
-                log.info(f"Form filled — email: {filled_email}, password length: {len(filled_pass)}")
-                # Livewire initialises the button asynchronously — wait until it's enabled
-                btn = page.get_by_role("button", name="Bejelentkezés")
-                await btn.wait_for(state="visible", timeout=10000)
-                await btn.evaluate("el => el.removeAttribute('disabled')")
-                await btn.click()
-                log.info("Login button clicked")
-
-            await emit("Logging in to irontrade.hu…")
-            await fill_login_form()
-
-            # First attempt: wait for redirect to homepage
-            try:
-                await page.wait_for_url("https://irontrade.hu/", timeout=8000)
-                log.info(f"Login successful on first attempt: {page.url}")
-
-            except PlaywrightTimeout:
-                # Livewire 419 CSRF expiry causes a dialog → page reloads back to /bejelentkezes
-                # The dialog handler already accepted it; wait for the reload to settle
-                log.warning(f"First login attempt timed out (likely CSRF dialog), URL: {page.url}")
-                await page.wait_for_timeout(2500)
-                log.info(f"URL after waiting for dialog reload: {page.url}")
-
-                if "/bejelentkezes" not in page.url:
-                    # Might have already redirected (slow network)
-                    log.info("Not on login page — assuming login succeeded late")
+            # ── Step 2: verify session by navigating to search and checking auth ─
+            if session and _session_is_fresh(session):
+                search_url = SEARCH_URL.format(part_no=supplier_part_no)
+                await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
+                if await _is_logged_in(page):
+                    log.info("Session valid — skipping login")
+                    skip_login = True
                 else:
-                    # Page reloaded with fresh CSRF token — try again
-                    log.info("Retrying login with fresh CSRF token…")
-                    await fill_login_form()
-                    try:
-                        await page.wait_for_url("https://irontrade.hu/", timeout=12000)
-                        log.info(f"Login successful on retry: {page.url}")
-                    except PlaywrightTimeout:
-                        current_url = page.url
-                        log.error(f"Login still failed after retry — URL: {current_url}")
-                        body_text = await page.locator("body").inner_text(timeout=5000)
-                        for line in body_text.splitlines():
-                            line = line.strip()
-                            if line and any(w in line.lower() for w in ["hiba", "error", "sikertelen", "érvénytelen"]):
-                                log.error(f"Page error text: {line}")
-                        raise RuntimeError("Login to irontrade.hu failed. Please check credentials.")
+                    log.warning("Session invalid — falling back to full login")
+                    _SESSION_FILE.unlink(missing_ok=True)
+                    # Re-create context without stale cookies
+                    await browser.close()
+                    browser  = await pw.chromium.launch(headless=True)
+                    context  = await browser.new_context()
+                    page     = await context.new_page()
+                    page.on("dialog", handle_dialog)
 
-            # 3. Search for part
-            search_url = SEARCH_URL.format(part_no=supplier_part_no)
-            await emit(f"Searching for part {supplier_part_no} on irontrade.hu…")
-            log.info(f"Navigating to search URL: {search_url}")
+            # ── Step 3: full login (if session missing or invalid) ────────────
+            if not skip_login:
+                await page.goto(LOGIN_URL, wait_until="load")
+                log.info(f"Loaded login page: {page.url}")
 
-            await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
+                try:
+                    await page.get_by_role("button", name="Összes elfogadása").click(timeout=4000)
+                    await page.wait_for_timeout(800)
+                    log.info("Cookie banner accepted")
+                except PlaywrightTimeout:
+                    log.info("No cookie banner appeared")
+
+                async def fill_login_form():
+                    username = os.getenv("SUPPLIER_B_USERNAME", "")
+                    log.info(f"Filling login form for user: {username}")
+                    await page.locator("#LoginEmail").fill(username)
+                    await page.locator("#LoginPassword").fill(os.getenv("SUPPLIER_B_PASSWORD", ""))
+                    filled_email = await page.locator("#LoginEmail").input_value()
+                    filled_pass  = await page.locator("#LoginPassword").input_value()
+                    log.info(f"Form filled — email: {filled_email}, password length: {len(filled_pass)}")
+                    btn = page.get_by_role("button", name="Bejelentkezés")
+                    await btn.wait_for(state="visible", timeout=10000)
+                    await btn.evaluate("el => el.removeAttribute('disabled')")
+                    await btn.click()
+                    log.info("Login button clicked")
+
+                await emit("Logging in to irontrade.hu…")
+                await fill_login_form()
+
+                try:
+                    await page.wait_for_url("https://irontrade.hu/", timeout=8000)
+                    log.info(f"Login successful on first attempt: {page.url}")
+
+                except PlaywrightTimeout:
+                    log.warning(f"First login attempt timed out (likely CSRF dialog), URL: {page.url}")
+                    await page.wait_for_timeout(2500)
+                    log.info(f"URL after waiting for dialog reload: {page.url}")
+
+                    if "/bejelentkezes" not in page.url:
+                        log.info("Not on login page — assuming login succeeded late")
+                    else:
+                        log.info("Retrying login with fresh CSRF token…")
+                        await fill_login_form()
+                        try:
+                            await page.wait_for_url("https://irontrade.hu/", timeout=12000)
+                            log.info(f"Login successful on retry: {page.url}")
+                        except PlaywrightTimeout:
+                            current_url = page.url
+                            log.error(f"Login still failed after retry — URL: {current_url}")
+                            body_text = await page.locator("body").inner_text(timeout=5000)
+                            for line in body_text.splitlines():
+                                line = line.strip()
+                                if line and any(w in line.lower() for w in ["hiba", "error", "sikertelen", "érvénytelen"]):
+                                    log.error(f"Page error text: {line}")
+                            raise RuntimeError("Login to irontrade.hu failed. Please check credentials.")
+
+                await _save_session(context)
+
+                # ── Step 4: navigate to search after login ────────────────────
+                search_url = SEARCH_URL.format(part_no=supplier_part_no)
+                await emit(f"Searching for part {supplier_part_no} on irontrade.hu…")
+                log.info(f"Navigating to search URL: {search_url}")
+                await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
+
+            else:
+                # Already on the search page from session verify step
+                await emit(f"Searching for part {supplier_part_no} on irontrade.hu…")
+
             log.info(f"Search page loaded: {page.url}")
-
-            # Wait for content to be ready
             await page.wait_for_timeout(1500)
 
             body_text = await page.locator("body").inner_text(timeout=10000)
@@ -138,14 +235,13 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 log.warning(f"Zero results for part {supplier_part_no}")
                 raise RuntimeError(f"Part {supplier_part_no} was not found on irontrade.hu.")
 
-            # Count result rows
             rows = await page.locator("table tbody tr").count()
             log.info(f"Search result rows found: {rows}")
 
             if rows == 0:
                 raise RuntimeError(f"Part {supplier_part_no} was not found on irontrade.hu.")
 
-            # 4. Navigate to product page
+            # ── Step 5: navigate to product page ─────────────────────────────
             log.info("Clicking first product link…")
             await page.locator("table tbody tr td a").first.click()
             await page.wait_for_load_state("domcontentloaded")
@@ -160,7 +256,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     "irontrade.hu page layout may have changed — price selector not found."
                 )
 
-            # 5. Extract price and stock
+            # ── Step 6: extract price and stock ──────────────────────────────
             await emit("Reading price and stock from irontrade.hu…")
             price_str = await page.evaluate(_JS_NEXT_SIBLING, "Nettó ár:")
             stock_str = await page.evaluate(_JS_NEXT_SIBLING, "Készlet:")
