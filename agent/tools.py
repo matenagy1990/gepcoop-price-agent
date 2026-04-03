@@ -270,7 +270,20 @@ async def fetch_supplier_price(supplier_id: str, supplier_part_no: str, on_progr
     elif supplier_id == "fabory":
         from browser.supplier_fabory import fetch_price
     elif supplier_id == "reyher":
-        from browser.supplier_reyher import fetch_price
+        # Automated price scraping is not reliable for Reyher due to SAP session
+        # initialisation issues in headless mode. A headed browser button is shown
+        # in the UI instead so the buyer can open the page with one click.
+        if on_progress:
+            await on_progress({
+                "step": "browser", "status": "done",
+                "msg": "Reyher: kézi megnyitás szükséges — használja a gombot a kártyán.",
+            })
+        from datetime import datetime
+        return {
+            "supplier_part_no": supplier_part_no,
+            "manual": True,
+            "queried_at": datetime.now().isoformat(timespec="seconds"),
+        }
     elif supplier_id == "hopefix":
         from browser.supplier_hopefix import fetch_price
     elif supplier_id == "fastbolt":
