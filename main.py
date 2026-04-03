@@ -6,12 +6,12 @@ import logging
 import os
 import secrets
 from datetime import datetime, timezone
-from fastapi import FastAPI, File, HTTPException, Header, UploadFile
+from fastapi import FastAPI, File, HTTPException, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from pathlib import Path
-from agent.tools import lookup_mapping_all, fetch_supplier_price, get_all_part_numbers
+from agent.tools import lookup_mapping_all, fetch_supplier_price, get_all_part_numbers, search_part_numbers
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,6 +22,9 @@ log = logging.getLogger("main")
 
 app = FastAPI(title="Gép-Coop Price Agent", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# Max 4 scraper runs simultaneously — prevents Chromium overload under concurrent users
+SCRAPER_LIMIT = asyncio.Semaphore(4)
 
 # ── .env helpers ──────────────────────────────────────────────────────
 ENV_FILE = Path(__file__).parent / ".env"
@@ -462,27 +465,33 @@ async def query_stream(
                     ev["supplier"] = sid
                     await queue.put(("progress", ev))
 
-                try:
-                    r = await fetch_supplier_price(
-                        sid, sup["supplier_part_no"], on_progress=on_progress
-                    )
-                    results[sid] = r
-                    log.info(f"[{run_id}][{sid}] fetch done: price_per_db={r.get('price_per_db')}")
-                except Exception as exc:
-                    log.error(f"[{run_id}][{sid}] fetch failed: {exc}")
-                    err_msg = str(exc)
-                    results[sid] = {"error": err_msg, "supplier_id": sid}
-                    # Schaefer rotates passwords monthly — prompt user to update
-                    if sid == "schaefer" and "failed" in err_msg.lower() and "credential" in err_msg.lower():
-                        await queue.put(("password_required", {
-                            "supplier": sid,
-                            "msg": err_msg,
-                        }))
-                    else:
-                        await queue.put(("progress", {
-                            "step": "browser", "status": "error",
-                            "msg": err_msg, "supplier": sid,
-                        }))
+                async with SCRAPER_LIMIT:
+                    try:
+                        r = await fetch_supplier_price(
+                            sid, sup["supplier_part_no"], on_progress=on_progress
+                        )
+                        results[sid] = r
+                        log.info(f"[{run_id}][{sid}] fetch done: price_per_db={r.get('price_per_db')}")
+                    except Exception as exc:
+                        log.error(f"[{run_id}][{sid}] fetch failed: {exc}")
+                        err_msg = str(exc)
+                        results[sid] = {"error": err_msg, "supplier_id": sid}
+                        # Any supplier login failure → prompt user to update password
+                        _login_fail_keywords = (
+                            "credential", "login", "bejelentkezés", "password",
+                            "jelszó", "authentication", "unauthorized", "invalid user",
+                        )
+                        _is_login_fail = any(kw in err_msg.lower() for kw in _login_fail_keywords)
+                        if _is_login_fail:
+                            await queue.put(("password_required", {
+                                "supplier": sid,
+                                "msg": err_msg,
+                            }))
+                        else:
+                            await queue.put(("progress", {
+                                "step": "browser", "status": "error",
+                                "msg": err_msg, "supplier": sid,
+                            }))
 
             await asyncio.gather(*[fetch_one(s) for s in supplier_list])
 
@@ -548,6 +557,287 @@ async def query_stream(
 def get_parts(authorization: str | None = Header(default=None)):
     _get_username(authorization)
     return {"parts": get_all_part_numbers()}
+
+
+@app.get("/parts/search")
+def search_parts(q: str = "", authorization: str | None = Header(default=None)):
+    _get_username(authorization)
+    if not q or len(q) < 2:
+        return {"parts": []}
+    return {"parts": search_part_numbers(q, limit=20)}
+
+
+# Search URL templates used by /supplier/open for non-session suppliers
+_SUPPLIER_SEARCH_URLS: dict[str, str] = {
+    "csavarda":  "https://csavarda.hu/pest/kereso?search={part_no}",
+    "irontrade": "https://irontrade.hu/kereso?name={part_no}",
+    "fabory":    "https://www.fabory.com/hu/search?text={part_no}",
+    "fastbolt":  "https://fbonline.fastbolt.com/matrix/{part_no}",
+    "mekrs":     "https://eshop.mekrs.cz/en",
+    "hopefix":   "https://www.hopefix.cz/en",
+    "schaefer":  "https://shop.schaefer-peters.com/sp/en/login/",
+    "kingb2b":   "https://kingb2b.it/PORTAL/",
+    "wasishop":  "https://www.wasishop.de",
+}
+
+
+def _build_supplier_url(sid: str, supplier_part_no: str = "") -> str:
+    """Return the best URL for a supplier — search page if part_no available, else home."""
+    from urllib.parse import quote
+    template = _SUPPLIER_SEARCH_URLS.get(sid, SUPPLIER_META.get(sid, {}).get("url", ""))
+    if supplier_part_no and "{part_no}" in template:
+        return template.replace("{part_no}", quote(supplier_part_no, safe=""))
+    # No part_no or no placeholder → strip template vars, fall back to home
+    if "{part_no}" in template:
+        return SUPPLIER_META.get(sid, {}).get("url", template.split("{")[0])
+    return template
+
+
+@app.post("/supplier/open")
+async def supplier_open(req: Request, authorization: str | None = Header(default=None)):
+    """
+    Open a supplier's website for the buyer.
+    - koelner / reyher: launches a headed Playwright browser with saved session (logged in).
+    - others: returns the URL so the frontend can open it in a new tab.
+    """
+    _get_username(authorization)
+    data = await req.json()
+    sid              = (data.get("supplier_id") or "").strip().lower()
+    supplier_part_no = (data.get("supplier_part_no") or "").strip()
+
+    if sid not in SUPPLIER_META:
+        raise HTTPException(status_code=400, detail=f"Ismeretlen beszállító: {sid}")
+
+    if sid in ("koelner", "reyher"):
+        asyncio.create_task(_supplier_open_headed(sid, supplier_part_no))
+        return {"status": "opening"}
+
+    url = _build_supplier_url(sid, supplier_part_no)
+    return {"status": "redirect", "url": url}
+
+
+async def _supplier_open_headed(sid: str, supplier_part_no: str) -> None:
+    """Launch a headed (visible) browser for koelner or reyher, restoring session if available."""
+    from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+    import json as _json
+    from pathlib import Path as _Path
+    from datetime import datetime as _dt
+
+    SESSION_FILES = {
+        "koelner": _Path(__file__).parent / "assets" / ".koelner_session.json",
+        "reyher":  _Path(__file__).parent / "assets" / "sessions" / "reyher_session.json",
+    }
+    LOGIN_URLS = {
+        "koelner": "https://webshop.koelner.hu/belepes/",
+        "reyher":  "https://rio.reyher.de/hu/customer/account/login",
+    }
+    HOME_URLS = {
+        "koelner": "https://webshop.koelner.hu/",
+        "reyher":  "https://rio.reyher.de/hu/",
+    }
+    SEARCH_URLS = {
+        "koelner": "https://webshop.koelner.hu/termekek/?keres={part_no}",
+        "reyher":  "https://rio.reyher.de/hu/catalogsearch/advanced/result/?sku={part_no}&q=",
+    }
+
+    session_file = SESSION_FILES[sid]
+    target_url   = (
+        SEARCH_URLS[sid].format(part_no=supplier_part_no)
+        if supplier_part_no else HOME_URLS[sid]
+    )
+
+    try:
+        async with async_playwright() as pw:
+            # ── koelner uses storage_state (localStorage + cookies) ──────────
+            if sid == "koelner":
+                context = None
+                if session_file.exists():
+                    try:
+                        _json.loads(session_file.read_text())   # validate JSON
+                        browser  = await pw.chromium.launch(headless=False)
+                        context  = await browser.new_context(storage_state=str(session_file))
+                        log.info(f"[{sid}/open] Session restored from {session_file}")
+                    except Exception as exc:
+                        log.warning(f"[{sid}/open] Session unreadable, fresh login: {exc}")
+                        session_file.unlink(missing_ok=True)
+                if context is None:
+                    browser = await pw.chromium.launch(headless=False)
+                    context = await browser.new_context()
+                page = await context.new_page()
+                # Verify session
+                await page.goto(LOGIN_URLS[sid], wait_until="domcontentloaded", timeout=15000)
+                if await page.locator("#login_username").count() > 0:
+                    # Session expired — full login
+                    log.info(f"[{sid}/open] Session expired — logging in")
+                    await page.locator("#login_username").fill(os.environ.get("SUPPLIER_C_USERNAME", ""))
+                    await page.locator("#login_password").fill(os.environ.get("SUPPLIER_C_PASSWORD", ""))
+                    await page.locator("#loginbutton").click()
+                    try:
+                        await page.locator("#login_username").wait_for(state="hidden", timeout=10000)
+                        log.info(f"[{sid}/open] Login successful")
+                        state = await context.storage_state()
+                        session_file.parent.mkdir(parents=True, exist_ok=True)
+                        session_file.write_text(_json.dumps(state))
+                    except PlaywrightTimeout:
+                        log.warning(f"[{sid}/open] Login may have failed — continuing anyway")
+                await page.goto(target_url, wait_until="domcontentloaded", timeout=20000)
+
+            # ── reyher uses plain cookie list ────────────────────────────────
+            else:
+                browser = await pw.chromium.launch(headless=False)
+                context = await browser.new_context()
+                page    = await browser.new_page()
+                session_restored = False
+                if session_file.exists():
+                    try:
+                        raw      = _json.loads(session_file.read_text())
+                        cookies  = raw.get("cookies", raw) if isinstance(raw, dict) else raw
+                        await context.add_cookies(cookies)
+                        session_restored = True
+                        log.info(f"[{sid}/open] Session cookies restored")
+                    except Exception as exc:
+                        log.warning(f"[{sid}/open] Could not restore session: {exc}")
+
+                if session_restored:
+                    await page.goto(HOME_URLS[sid], wait_until="domcontentloaded", timeout=15000)
+                    try:
+                        await page.wait_for_selector("a:has-text('Quickinput')", timeout=5000)
+                        log.info(f"[{sid}/open] Session valid")
+                    except PlaywrightTimeout:
+                        session_restored = False
+                        log.info(f"[{sid}/open] Session expired — logging in")
+
+                if not session_restored:
+                    await page.goto(LOGIN_URLS[sid], wait_until="domcontentloaded", timeout=15000)
+                    for btn in ("Allow all", "Mindent engedélyez", "Accept all"):
+                        try:
+                            await page.get_by_role("button", name=btn).click(timeout=3000)
+                            break
+                        except PlaywrightTimeout:
+                            continue
+                    if "/customer/account/login" in page.url:
+                        await page.locator("#customernumber").fill(os.environ.get("SUPPLIER_F_CUSTOMER_CODE", ""))
+                        await page.locator("#userid").fill(os.environ.get("SUPPLIER_F_USERNAME", ""))
+                        await page.locator("#pass").fill(os.environ.get("SUPPLIER_F_PASSWORD", ""))
+                        await page.get_by_role("button", name="Bejelentkezés").click()
+                        try:
+                            await page.wait_for_url(HOME_URLS[sid], timeout=15000)
+                            await page.wait_for_load_state("networkidle", timeout=20000)
+                            session_file.parent.mkdir(parents=True, exist_ok=True)
+                            session_file.write_text(_json.dumps({
+                                "saved_at": _dt.now().isoformat(timespec="seconds"),
+                                "cookies":  await context.cookies(),
+                            }, indent=2))
+                        except PlaywrightTimeout:
+                            log.warning(f"[{sid}/open] Login timeout — continuing")
+
+                await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+                log.info(f"[{sid}/open] Navigated to {target_url}")
+
+            await page.wait_for_event("close", timeout=0)
+
+    except Exception as exc:
+        log.warning(f"[{sid}/open] Browser closed or error: {exc}")
+
+
+@app.post("/reyher/open")
+async def reyher_open(req: Request, authorization: str | None = Header(default=None)):
+    """
+    Launch a headed (visible) Playwright browser, log in to rio.reyher.de,
+    and navigate to the search results for the given supplier_part_no.
+    The browser stays open for the buyer to use manually.
+    Returns immediately — the browser runs in the background.
+    """
+    _get_username(authorization)
+    data = await req.json()
+    supplier_part_no = (data.get("supplier_part_no") or "").strip()
+    if not supplier_part_no:
+        raise HTTPException(status_code=400, detail="supplier_part_no kötelező.")
+    asyncio.create_task(_reyher_open_headed(supplier_part_no))
+    return {"status": "opening"}
+
+
+async def _reyher_open_headed(supplier_part_no: str) -> None:
+    """Open a headed Chromium window logged in to Reyher, searching for supplier_part_no."""
+    from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+    import os
+
+    LOGIN_URL  = "https://rio.reyher.de/hu/customer/account/login"
+    HOME_URL   = "https://rio.reyher.de/hu/"
+    SEARCH_URL = f"https://rio.reyher.de/hu/catalogsearch/advanced/result/?sku={supplier_part_no}&q="
+
+    customer_code = os.environ.get("SUPPLIER_F_CUSTOMER_CODE", "")
+    username      = os.environ.get("SUPPLIER_F_USERNAME", "")
+    password      = os.environ.get("SUPPLIER_F_PASSWORD", "")
+
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=False)
+            context = await browser.new_context()
+            page    = await context.new_page()
+
+            # Try restoring saved session first
+            from pathlib import Path
+            import json
+            SESSION_FILE = Path(__file__).parent / "assets" / "sessions" / "reyher_session.json"
+            session_restored = False
+            if SESSION_FILE.exists():
+                try:
+                    raw = json.loads(SESSION_FILE.read_text())
+                    cookies = raw.get("cookies", raw) if isinstance(raw, dict) else raw
+                    await context.add_cookies(cookies)
+                    session_restored = True
+                    log.info(f"[reyher/open] Session cookies restored from {SESSION_FILE}")
+                except Exception as exc:
+                    log.warning(f"[reyher/open] Could not restore session: {exc}")
+
+            if session_restored:
+                # Check if still valid by loading the home page
+                await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=15000)
+                try:
+                    await page.wait_for_selector("a:has-text('Quickinput')", timeout=5000)
+                    log.info("[reyher/open] Session valid — navigating to search")
+                except PlaywrightTimeout:
+                    log.info("[reyher/open] Session expired — logging in fresh")
+                    session_restored = False
+
+            if not session_restored:
+                await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=15000)
+                # Dismiss cookie banner
+                for btn_name in ("Allow all", "Mindent engedélyez", "Accept all"):
+                    try:
+                        await page.get_by_role("button", name=btn_name).click(timeout=3000)
+                        await page.wait_for_timeout(400)
+                        break
+                    except PlaywrightTimeout:
+                        continue
+                if "/customer/account/login" in page.url:
+                    await page.locator("#customernumber").fill(customer_code)
+                    await page.locator("#userid").fill(username)
+                    await page.locator("#pass").fill(password)
+                    await page.get_by_role("button", name="Bejelentkezés").click()
+                    try:
+                        await page.wait_for_url(HOME_URL, timeout=15000)
+                        await page.wait_for_load_state("networkidle", timeout=20000)
+                        log.info("[reyher/open] Login successful")
+                        # Save session
+                        from datetime import datetime
+                        SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+                        SESSION_FILE.write_text(json.dumps({
+                            "saved_at": datetime.now().isoformat(timespec="seconds"),
+                            "cookies": await context.cookies(),
+                        }, indent=2))
+                    except PlaywrightTimeout:
+                        log.warning("[reyher/open] Login timeout — opening search page anyway")
+
+            await page.goto(SEARCH_URL, wait_until="domcontentloaded", timeout=30000)
+            log.info(f"[reyher/open] Search page opened for {supplier_part_no}")
+
+            # Keep browser open until user closes it
+            await page.wait_for_event("close", timeout=0)
+
+    except Exception as exc:
+        log.warning(f"[reyher/open] Browser closed or error: {exc}")
 
 
 @app.get("/health")

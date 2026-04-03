@@ -163,6 +163,12 @@
   .badge-winner{background:var(--blue);color:#fff}
   .badge-loser{background:rgba(255,255,255,.15);color:rgba(255,255,255,.7)}
   .badge-error{background:rgba(254,26,0,.15);color:var(--red)}
+  .badge-manual{background:rgba(231,156,2,.2);color:#9b6800}
+  .badge-skipped{background:rgba(107,122,153,.18);color:var(--muted)}
+  .btn-reyher-open{display:inline-flex;align-items:center;gap:8px;padding:11px 20px;background:linear-gradient(135deg,var(--navy) 0%,var(--navy2) 100%);color:#fff;border:none;border-radius:10px;font-family:'Oswald',sans-serif;font-size:15px;font-weight:600;letter-spacing:1px;cursor:pointer;transition:opacity .2s,transform .1s;box-shadow:0 3px 10px rgba(22,27,99,.25)}
+  .btn-reyher-open:hover{opacity:.9;transform:translateY(-1px)}
+  .btn-reyher-open:active{transform:translateY(0);opacity:.85}
+  .btn-reyher-open:disabled{opacity:.5;cursor:not-allowed;transform:none}
   .sup-body{padding:20px 22px}
   .sup-err{color:var(--red);font-size:13px;background:rgba(254,26,0,.06);border:1px solid rgba(254,26,0,.15);border-radius:8px;padding:12px 14px}
 
@@ -185,6 +191,11 @@
 
   .sup-divider{height:1px;background:var(--border);margin:14px 0}
   .sup-ts{font-size:11px;color:var(--muted);text-align:right}
+  .sup-footer{padding:12px 22px 16px;border-top:1px solid var(--border)}
+  .btn-goto-supplier{width:100%;padding:9px 16px;background:var(--bg);border:1.5px solid var(--border);border-radius:10px;font-family:'Oswald',sans-serif;font-size:13px;font-weight:600;letter-spacing:.8px;color:var(--navy2);cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:6px}
+  .btn-goto-supplier:hover{background:var(--navy);color:#fff;border-color:var(--navy)}
+  .btn-goto-supplier:active{opacity:.85}
+  .btn-goto-supplier:disabled{opacity:.5;cursor:not-allowed}
 
   /* ── NOTES ── */
   .notes-wrap{background:var(--white);border-radius:var(--r);box-shadow:var(--sh);overflow:hidden;margin-top:20px;animation:slideDown .5s ease}
@@ -271,7 +282,9 @@
   /* ── SUPPLIER PASSWORD MODAL ── */
   #pw-modal{position:fixed;inset:0;background:rgba(22,27,99,.55);backdrop-filter:blur(3px);z-index:600;display:flex;align-items:center;justify-content:center;padding:24px}
   .pw-card{background:var(--white);border-radius:var(--r);box-shadow:0 8px 48px rgba(22,27,99,.22);width:100%;max-width:440px;overflow:hidden;border-top:4px solid #d97706}
-  .pw-hdr{background:linear-gradient(135deg,#92400e 0%,#b45309 100%);padding:16px 24px;color:#fff;font-family:'Oswald',sans-serif;font-size:14px;font-weight:700;letter-spacing:1.8px;text-transform:uppercase}
+  .pw-hdr{background:linear-gradient(135deg,#92400e 0%,#b45309 100%);padding:16px 24px;color:#fff;font-family:'Oswald',sans-serif;font-size:14px;font-weight:700;letter-spacing:1.8px;text-transform:uppercase;display:flex;align-items:center;justify-content:space-between}
+  .pw-close-btn{background:rgba(255,255,255,.15);border:none;color:#fff;width:28px;height:28px;border-radius:6px;font-size:18px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .15s;flex-shrink:0}
+  .pw-close-btn:hover{background:rgba(255,255,255,.3)}
   .pw-body{padding:24px 24px 20px}
   .pw-desc{font-size:13px;color:var(--muted);margin-bottom:18px;line-height:1.6}
   .pw-row{display:flex;gap:8px;align-items:center}
@@ -490,11 +503,14 @@
 </div>
 
 <!-- ══ SUPPLIER PASSWORD MODAL ══════════════════════════════════ -->
-<div id="pw-modal" class="hidden">
+<div id="pw-modal" class="hidden" onclick="if(event.target===this)closePwModal()">
   <div class="pw-card">
-    <div class="pw-hdr">Schaefer &mdash; Jelszó megváltozott</div>
+    <div class="pw-hdr">
+      <span id="pw-hdr-title">Jelszó megváltozott</span>
+      <button class="pw-close-btn" onclick="closePwModal()" title="Bezárás">&times;</button>
+    </div>
     <div class="pw-body">
-      <div class="pw-desc">A Schaefer bejelentkezés sikertelen &mdash; a jelszó valószínűleg megváltozott. Kérem adja meg az új jelszót, és a rendszer automatikusan újra lekérdezi az árat.</div>
+      <div class="pw-desc" id="pw-desc">A bejelentkezés sikertelen — a jelszó valószínűleg megváltozott. Adja meg az új jelszót, és a rendszer automatikusan újra lekérdezi az árat.</div>
       <div class="pw-row">
         <input id="pw-input" class="pw-input" type="password" placeholder="Új jelszó…" autocomplete="new-password">
         <button class="pw-btn" id="pw-save-btn">Mentés</button>
@@ -671,9 +687,11 @@
 /* ══ STATE ══════════════════════════════════════════════════════ */
 let authToken = sessionStorage.getItem('gc_token');
 let username  = sessionStorage.getItem('gc_user');
-let _pendingPartNo   = null;  // part number waiting for user confirmation
-let _searchStartTs   = null;  // timestamp when scraping started
-let _currentFilterSids = '';  // active supplier filter for the running search
+let _pendingPartNo     = null;  // part number waiting for user confirmation
+let _searchStartTs     = null;  // timestamp when scraping started
+let _currentFilterSids = '';    // active supplier filter for the running search
+let _skippedSuppliers  = new Set(); // suppliers explicitly skipped by closing pw modal
+let _pendingResults    = null;  // last result data waiting for deferred render
 
 // pipeline state per supplier: {csavarda: [s0,s1,s2,s3], irontrade: [...]}
 const BROWSER_STEPS = [
@@ -684,26 +702,26 @@ const BROWSER_STEPS = [
 ];
 let supPipeState = {}; // supplier_id → array of 4 step states
 
-// ── Autocomplete (native datalist) ──────────────────────────────
-let allParts = [];
+// ── Autocomplete (server-side debounced search) ──────────────────
+let _partsDebounceTimer = null;
 
-async function loadParts() {
+async function fetchPartSuggestions(q) {
+  if (!q || q.length < 2) {
+    document.getElementById('parts-datalist').innerHTML = '';
+    return;
+  }
   try {
-    const res = await fetch('/parts', { headers: { 'Authorization': `Bearer ${authToken}` } });
+    const res = await fetch(`/parts/search?q=${encodeURIComponent(q)}`, {
+      headers: { 'Authorization': `Bearer ${authToken}` },
+    });
     if (!res.ok) return;
-    allParts = (await res.json()).parts || [];
-    fillDatalist('');
+    const parts = (await res.json()).parts || [];
+    document.getElementById('parts-datalist').innerHTML =
+      parts.map(p => `<option value="${p}">`).join('');
   } catch(e) {}
 }
 
-function fillDatalist(q) {
-  const up = q.toUpperCase();
-  const matches = up
-    ? allParts.filter(p => p.toUpperCase().includes(up))
-    : allParts;
-  document.getElementById('parts-datalist').innerHTML =
-    matches.slice(0, 20).map(p => `<option value="${p}">`).join('');
-}
+function loadParts() { /* no-op: autocomplete is now server-side on demand */ }
 
 /* ══ DATALIST — desktop only ════════════════════════════════════ */
 function updateDatalistBinding() {
@@ -776,7 +794,10 @@ document.getElementById('btn-logout').addEventListener('click', () => {
 });
 const partInput = document.getElementById('part-input');
 
-partInput.addEventListener('input', () => fillDatalist(partInput.value.trim()));
+partInput.addEventListener('input', () => {
+  clearTimeout(_partsDebounceTimer);
+  _partsDebounceTimer = setTimeout(() => fetchPartSuggestions(partInput.value.trim()), 280);
+});
 partInput.addEventListener('keydown', e => { if (e.key === 'Enter') doQuery(); });
 
 document.getElementById('btn-query').addEventListener('click', doQuery);
@@ -927,6 +948,8 @@ async function startSearch(partNo, filterSids) {
   document.getElementById('runtime-line').classList.add('hidden');
   _searchStartTs = Date.now();
   _currentFilterSids = filterSids || '';
+  _skippedSuppliers = new Set();
+  _pendingResults = null;
   setQueryBusy(true);
 
   try {
@@ -981,9 +1004,12 @@ function parseSSE(raw) {
   else if (type==='password_required') handlePasswordRequired(data);
 }
 
-/* ══ SCHAEFER PASSWORD PROMPT ════════════════════════════════ */
+/* ══ SUPPLIER PASSWORD PROMPT ════════════════════════════════ */
+let _pwModalSupplier = null;
+
 function handlePasswordRequired(data) {
   const sid = data.supplier;
+  _pwModalSupplier = sid;
   // Mark the active pipeline step as error
   if (sid) {
     const steps = supPipeState[sid] || [];
@@ -991,6 +1017,11 @@ function handlePasswordRequired(data) {
       if (steps[i] === 'active') { setSupStep(sid, i, 'error'); break; }
     }
   }
+  const label = sid ? sid.charAt(0).toUpperCase() + sid.slice(1) : 'Beszállító';
+  document.getElementById('pw-hdr-title').textContent = `${label} — Jelszó megváltozott`;
+  document.getElementById('pw-desc').textContent =
+    `A(z) ${label} bejelentkezés sikertelen — a jelszó valószínűleg megváltozott. ` +
+    `Adja meg az új jelszót, és a rendszer automatikusan újra lekérdezi az árat.`;
   document.getElementById('pw-modal').classList.remove('hidden');
   document.getElementById('pw-input').value = '';
   document.getElementById('pw-msg').textContent = '';
@@ -999,17 +1030,29 @@ function handlePasswordRequired(data) {
 
 function closePwModal() {
   document.getElementById('pw-modal').classList.add('hidden');
+  document.getElementById('pw-save-btn').disabled = false;
+  // If closed without saving → mark supplier as explicitly skipped
+  if (_pwModalSupplier) {
+    _skippedSuppliers.add(_pwModalSupplier);
+    _pwModalSupplier = null;
+  }
+  // If results already arrived while the modal was open, render them now
+  if (_pendingResults) {
+    renderResults(_pendingResults);
+    _pendingResults = null;
+  }
 }
 
 document.getElementById('pw-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter') saveSchaeferPassword();
+  if (e.key === 'Enter') saveSupplierPassword();
 });
-document.getElementById('pw-save-btn').addEventListener('click', saveSchaeferPassword);
+document.getElementById('pw-save-btn').addEventListener('click', saveSupplierPassword);
 
-async function saveSchaeferPassword() {
+async function saveSupplierPassword() {
   const pw    = document.getElementById('pw-input').value;
   const msgEl = document.getElementById('pw-msg');
   const btn   = document.getElementById('pw-save-btn');
+  const sid   = _pwModalSupplier;
   if (!pw) {
     msgEl.style.color = 'var(--red)';
     msgEl.textContent = 'Kérjük adja meg az új jelszót.';
@@ -1022,7 +1065,7 @@ async function saveSchaeferPassword() {
     const res = await fetch('/supplier/update-password', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
-      body: JSON.stringify({ supplier_id: 'schaefer', password: pw }),
+      body: JSON.stringify({ supplier_id: sid, password: pw }),
     });
     if (!res.ok) {
       const err = await res.json();
@@ -1033,7 +1076,7 @@ async function saveSchaeferPassword() {
     const partNo = _pendingPartNo;
     setTimeout(() => {
       closePwModal();
-      if (partNo) startSearch(partNo, 'schaefer');
+      if (partNo && sid) startSearch(partNo, sid);
     }, 900);
   } catch(e) {
     msgEl.style.color = 'var(--red)';
@@ -1098,6 +1141,12 @@ function handleResult(data) {
     const elapsed = ((Date.now() - _searchStartTs) / 1000).toFixed(1).replace('.', ',');
     document.getElementById('runtime-text').textContent = `Keresés futási ideje: ${elapsed} mp`;
     document.getElementById('runtime-line').classList.remove('hidden');
+  }
+
+  // If the password modal is still open, defer rendering until it's closed
+  if (!document.getElementById('pw-modal').classList.contains('hidden')) {
+    _pendingResults = data;
+    return;
   }
 
   renderResults(data);
@@ -1177,9 +1226,26 @@ function renderResults(data) {
     const card = document.createElement('div');
     card.className = `sup-card ${isWinner?'is-winner':'is-loser'}`;
 
+    const isManual  = !hasError && r.manual === true;
+    const isSkipped = hasError && _skippedSuppliers.has(sid);
     let bodyHtml = '';
-    if (hasError) {
+    if (isSkipped) {
+      bodyHtml = `<div class="sup-err" style="background:rgba(107,122,153,.07);border-color:rgba(107,122,153,.2);color:var(--muted)">
+        A beszerző kihagyta a jelszómódosítást — ez a webshop ki lett hagyva az összehasonlításból.
+      </div>`;
+    } else if (hasError) {
       bodyHtml = `<div class="sup-err">⚠️ ${r.error}</div>`;
+    } else if (isManual) {
+      bodyHtml = `
+        <div style="font-size:13px;color:var(--muted);margin-bottom:16px;line-height:1.6">
+          Az automatikus árlekérés ennél a beszállítónál nem elérhető.<br>
+          A "Tovább a honlapra!" gombra kattintva a böngésző bejelentkezve nyílik meg és a cikkszámra keres.
+        </div>
+        <div class="sup-metric">
+          <div class="sup-metric-label">Beszállítói cikkszám</div>
+          <div class="sup-part">${r.supplier_part_no||'—'}</div>
+        </div>
+        ${r.queried_at ? `<div class="sup-ts" style="margin-top:12px">🕐 ${fmtTs(r.queried_at)}</div>` : ''}`;
     } else {
       const cur = r.currency || 'HUF';
       let ppdb, priceUnit, rawStr, fxNote;
@@ -1223,18 +1289,71 @@ function renderResults(data) {
         ${r.queried_at ? `<div class="sup-ts">🕐 ${fmtTs(r.queried_at)}</div>` : ''}`;
     }
 
+    const safePartNo = (r.supplier_part_no||'').replace(/'/g, "\\'");
     card.innerHTML = `
       <div class="sup-card-hdr">
         <div class="sup-name">${sid.toUpperCase()}</div>
-        <div class="sup-badge ${isWinner?'badge-winner':hasError?'badge-error':'badge-loser'}">
-          ${isWinner?'LEGJOBB ÁR':hasError?'HIBA':'ALTERNATÍVA'}
+        <div class="sup-badge ${isWinner?'badge-winner':isSkipped?'badge-skipped':hasError?'badge-error':isManual?'badge-manual':'badge-loser'}">
+          ${isWinner?'LEGJOBB ÁR':isSkipped?'KIHAGYVA':hasError?'HIBA':isManual?'MANUÁLIS':'ALTERNATÍVA'}
         </div>
       </div>
-      <div class="sup-body">${bodyHtml}</div>`;
+      <div class="sup-body">${bodyHtml}</div>
+      <div class="sup-footer">
+        <button class="btn-goto-supplier" onclick="openSupplierSite('${sid}','${safePartNo}',this)">
+          🌐 Tovább a honlapra!
+        </button>
+      </div>`;
     grid.appendChild(card);
   }
 
   grid.classList.remove('hidden');
+}
+
+async function openSupplierSite(sid, supplierPartNo, btn) {
+  btn.disabled = true;
+  const origText = btn.innerHTML;
+  btn.innerHTML = '⏳ Megnyitás…';
+  try {
+    const res = await fetch('/supplier/open', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json', 'Authorization': `Bearer ${authToken}`},
+      body: JSON.stringify({supplier_id: sid, supplier_part_no: supplierPartNo}),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.status === 'redirect' && data.url) {
+      window.open(data.url, '_blank', 'noopener');
+    } else {
+      // Playwright browser is opening — give brief feedback
+      btn.innerHTML = '✓ Böngésző megnyitva';
+      setTimeout(() => { btn.disabled = false; btn.innerHTML = origText; }, 4000);
+      return;
+    }
+  } catch (err) {
+    alert('Nem sikerült megnyitni: ' + err.message);
+  }
+  btn.disabled = false;
+  btn.innerHTML = origText;
+}
+
+async function openReyher(supplierPartNo) {
+  const btn = event.currentTarget;
+  btn.disabled = true;
+  btn.textContent = 'Megnyitás…';
+  try {
+    const res = await fetch('/reyher/open', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json', 'Authorization': `Bearer ${authToken}`},
+      body: JSON.stringify({supplier_part_no: supplierPartNo}),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    btn.textContent = '✓ Böngésző megnyitva';
+    setTimeout(() => { btn.disabled = false; btn.innerHTML = '🔍 Megnyitás Reyherben'; }, 5000);
+  } catch (err) {
+    btn.disabled = false;
+    btn.innerHTML = '🔍 Megnyitás Reyherben';
+    alert('Nem sikerült megnyitni a Reyher böngészőt: ' + err.message);
+  }
 }
 
 function renderStock(stock) {

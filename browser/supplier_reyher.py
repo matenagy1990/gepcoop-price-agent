@@ -2,25 +2,23 @@
 Playwright scraper for rio.reyher.de (Supplier F)
 
 Login flow:
-  1. Try to restore session from assets/sessions/reyher_session.json
-  2. If session invalid/missing: login with credentials, save new session
+  1. Load session from assets/sessions/reyher_session.json
+     - Skip restore if saved_at > 23 h old (proactive re-login before expiry)
+  2. Verify session with a positive authenticated marker:
+     look for the 'Quickinput' nav link that only appears for logged-in users
+  3. If session missing / stale / invalid: full login, save new session with timestamp
 
 Search + price flow:
-  3. Fill Cikkszám search field → press Enter → wait_for_selector("table.table tbody tr")
-  4. Click td:nth-child(2) of the first result row (part number cell) → opens detail panel
-  5. wait_for_function: body.innerText.includes('Own price')
-     — covers both panel-open AND SAP AJAX response arriving (single condition)
-  6. Text-walker extraction — anchors on label text only, no class/ID/data-bind deps:
-       find text node starting with "own price" → grandparent row → children[1] = value
-       unit qty parsed from label text "/100 Pcs" → 100
-
-Data extraction (rendered detail panel — layout-agnostic):
-  - Price:    text-walker finds "Own price…" → next numeric sibling → e.g. "27,47"
-  - Unit qty: parsed from label text "/100 Pcs" → 100
-  - Stock:    text-walker finds "Available quantity:" → next sibling value
+  4. Navigate directly to the advanced-search URL (?sku={part_no}&q=) with networkidle
+     — networkidle is required: price data is injected by a SAP AJAX call after load
+  5. Validate result count via DOM (structured), text check as fallback
+  6. Read price from div.productlist_table-column-value — already populated by networkidle
+     Format: "{pack_qty}\\n{price} EUR"  e.g. "200\\n7,50\\xa0EUR"
+  7. Parse unit qty from thead — "Katalógusár/{N}" header cell
+  8. Stock: not exposed on search results page → None
 
 Price normalisation:
-  price_raw=27.47, price_unit_qty=100 → tools.py yields price_per_db=0.2747 EUR/db
+  price_raw=7.50, price_unit_qty=100 → tools.py yields price_per_db=0.075 EUR/db
 
 Currency: EUR (German supplier)
 """
@@ -40,67 +38,140 @@ load_dotenv()
 
 log = logging.getLogger("reyher")
 
-LOGIN_URL    = "https://rio.reyher.de/hu/customer/account/login"
-HOME_URL     = "https://rio.reyher.de/hu/"
+LOGIN_URL  = "https://rio.reyher.de/hu/customer/account/login"
+HOME_URL   = "https://rio.reyher.de/hu/"
+SEARCH_URL = "https://rio.reyher.de/hu/catalogsearch/advanced/result/?sku={part_no}&q="
 SESSION_FILE = Path(__file__).parent.parent / "assets" / "sessions" / "reyher_session.json"
 
+_SESSION_MAX_AGE_HOURS = 23
 
-def _load_saved_cookies() -> list | None:
-    """Return saved cookies or None if not present / unreadable."""
+
+# ── Session helpers ────────────────────────────────────────────────────────────
+
+def _load_session() -> dict | None:
+    """Return session dict {saved_at, cookies} or None if missing / unreadable."""
     try:
         if SESSION_FILE.exists():
-            return json.loads(SESSION_FILE.read_text())
+            data = json.loads(SESSION_FILE.read_text())
+            if isinstance(data, list):           # legacy format (just cookies list)
+                return {"saved_at": None, "cookies": data}
+            return data
     except Exception:
         pass
     return None
 
 
-def _save_cookies(cookies: list) -> None:
-    """Persist cookies to disk."""
+def _save_session(cookies: list) -> None:
+    """Persist session cookies with an ISO timestamp for age-checking."""
     try:
         SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SESSION_FILE.write_text(json.dumps(cookies, indent=2))
-        log.info(f"Session saved to {SESSION_FILE}")
+        SESSION_FILE.write_text(json.dumps(
+            {"saved_at": datetime.now().isoformat(timespec="seconds"), "cookies": cookies},
+            indent=2,
+        ))
+        log.info(f"Session saved → {SESSION_FILE}")
     except Exception as exc:
         log.warning(f"Could not save session: {exc}")
 
 
+def _session_is_fresh(session: dict) -> bool:
+    """Return True if session was saved less than _SESSION_MAX_AGE_HOURS ago."""
+    saved_at = session.get("saved_at")
+    if not saved_at:
+        return False
+    try:
+        age_h = (datetime.now() - datetime.fromisoformat(saved_at)).total_seconds() / 3600
+        return age_h < _SESSION_MAX_AGE_HOURS
+    except Exception:
+        return False
+
+
+# ── Auth helpers ───────────────────────────────────────────────────────────────
+
 async def _is_logged_in(page) -> bool:
-    """Return True if the current page shows an authenticated session."""
-    body = await page.locator("body").inner_text()
-    return "Bejelentkezve" in body or "Fiókom" in body
+    """Positive auth check: look for the Quickinput nav link only shown to logged-in users."""
+    if "/customer/account/login" in page.url:
+        return False
+    try:
+        await page.wait_for_selector("a:has-text('Quickinput')", timeout=4000)
+        return True
+    except PlaywrightTimeout:
+        return False
 
 
 async def _login(page, emit) -> None:
-    """Perform a full login and wait for the home page."""
+    """Full login flow. Raises RuntimeError on failure."""
     customer_code = os.getenv("SUPPLIER_F_CUSTOMER_CODE", "")
     username      = os.getenv("SUPPLIER_F_USERNAME", "")
     password      = os.getenv("SUPPLIER_F_PASSWORD", "")
-    log.info(f"Logging in as customer {customer_code} / user {username}")
+
+    # Mask sensitive data in logs
+    log.info(
+        f"Logging in — customer ...{customer_code[-3:]}, user ...{username[-3:] if len(username) > 3 else '***'}"
+    )
 
     await page.goto(LOGIN_URL, wait_until="domcontentloaded")
     log.info(f"Login page loaded: {page.url}")
 
-    # Accept cookie banner
-    try:
-        await page.get_by_role("button", name="Allow all").click(timeout=5000)
-        await page.wait_for_timeout(800)
-        log.info("Cookie banner accepted")
-    except PlaywrightTimeout:
-        pass
+    # Already authenticated (e.g. cookie restored, redirect happened)
+    if "/customer/account/login" not in page.url:
+        log.info("Redirected away from login page — already authenticated, skipping fill")
+        return
+
+    # Dismiss cookie consent banner (try known button labels)
+    for btn_name in ("Allow all", "Mindent engedélyez", "Accept all"):
+        try:
+            await page.get_by_role("button", name=btn_name).click(timeout=3000)
+            await page.wait_for_timeout(400)
+            log.info(f"Cookie banner dismissed ({btn_name!r})")
+            break
+        except PlaywrightTimeout:
+            continue
 
     await emit("Logging in to rio.reyher.de…")
-    await page.get_by_role("textbox", name="Ügyfélszám").fill(customer_code)
-    await page.get_by_role("textbox", name="Felhasználónév").fill(username)
-    await page.get_by_role("textbox", name="Jelszó").fill(password)
+
+    # ID-based fill — more reliable than get_by_role+name when the cookie banner
+    # overlay interferes with the accessibility tree in headless mode.
+    await page.locator("#customernumber").fill(customer_code)
+    await page.locator("#userid").fill(username)
+    await page.locator("#pass").fill(password)
     await page.get_by_role("button", name="Bejelentkezés").click()
 
     try:
         await page.wait_for_url(HOME_URL, timeout=15000)
-        log.info(f"Login successful: {page.url}")
+        # Wait for networkidle on the home page so the SAP session is fully initialised
+        # before navigating to the search/results page.
+        await page.wait_for_load_state("networkidle", timeout=20000)
+        log.info("Login successful (home page fully loaded)")
     except PlaywrightTimeout:
-        raise RuntimeError("Login to rio.reyher.de failed. Please check credentials.")
+        if "/customer/account/login" in page.url:
+            raise RuntimeError("Login to rio.reyher.de failed — check credentials.")
+        log.warning("networkidle timeout on home page after login — continuing anyway")
 
+
+# ── Price helpers ──────────────────────────────────────────────────────────────
+
+def _parse_price(price_text: str) -> float:
+    """Parse a German/English formatted price string to float.
+    Examples: '7,50' → 7.50 | '1.234,56' → 1234.56 | '7.50' → 7.50
+    """
+    t = price_text.strip()
+    if "," in t and "." in t:
+        t = t.replace(".", "").replace(",", ".")   # '1.234,56' → '1234.56'
+    else:
+        t = t.replace(",", ".")
+    return float(t)
+
+
+def _parse_unit_qty(header_text: str) -> int:
+    """Extract unit quantity from a header like 'Katalógusár/100' → 100."""
+    m = re.search(r"Katalóguság[^0-9]*(\d+)|Katalógusár[^0-9]*(\d+)", header_text, re.IGNORECASE)
+    if m:
+        return int(m.group(1) or m.group(2))
+    return 100   # stated in the page footer: "per 100 pieces"
+
+
+# ── Main scraper ───────────────────────────────────────────────────────────────
 
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
     async def emit(msg: str):
@@ -116,135 +187,118 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         try:
             await emit("Opening rio.reyher.de…")
 
-            # --- 1. Restore saved session or do fresh login ---
-            saved_cookies = _load_saved_cookies()
-            if saved_cookies:
-                log.info("Restoring saved session cookies")
-                await context.add_cookies(saved_cookies)
+            # ── Step 1: restore session or do fresh login ──────────────────────
+            session = _load_session()
+
+            if session and _session_is_fresh(session):
+                log.info("Restoring session cookies (age < 23 h)")
+                await context.add_cookies(session["cookies"])
                 await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=15000)
-                # Verify the session is still valid; re-login if expired
+
                 if not await _is_logged_in(page):
-                    log.warning("Saved session is expired — performing fresh login")
+                    log.warning("Restored session is no longer valid — re-logging in")
                     SESSION_FILE.unlink(missing_ok=True)
                     await _login(page, emit)
-                    cookies = await context.cookies()
-                    _save_cookies(cookies)
+                    _save_session(await context.cookies())
                 else:
-                    log.info("Session restored successfully")
+                    log.info("Session valid (Quickinput nav link present)")
             else:
+                if session:
+                    log.info("Session is stale (> 23 h) — proactive re-login")
+                    SESSION_FILE.unlink(missing_ok=True)
+                else:
+                    log.info("No saved session — performing fresh login")
                 await _login(page, emit)
-                cookies = await context.cookies()
-                _save_cookies(cookies)
+                _save_session(await context.cookies())
 
-            # --- 3. Search ---
+            # ── Step 2: navigate to search results ────────────────────────────
             await emit(f"Searching for {supplier_part_no} on rio.reyher.de…")
-            await page.get_by_role("textbox", name="Cikkszám").fill(supplier_part_no)
-            await page.get_by_role("textbox", name="Cikkszám").press("Enter")
+            search_url = SEARCH_URL.format(part_no=supplier_part_no)
 
-            # Wait only for the results table — much faster than networkidle
-            # (networkidle blocks on analytics/SAP polling requests for 20-25s)
-            await page.wait_for_selector("table.table tbody tr", timeout=15000)
-            log.info(f"Search results table loaded: {page.url}")
+            # networkidle is required: the SAP AJAX call that injects the price
+            # fires after domcontentloaded, and networkidle ensures it has completed.
+            await page.goto(search_url, wait_until="networkidle", timeout=30000)
+            log.info(f"Search page loaded: {page.url}")
 
-            # --- 4. Check results ---
-            body_text = await page.locator("body").inner_text()
-            if "Nem található" in body_text or "0 találat" in body_text.lower():
+            # ── Step 3: validate result count (structured first) ───────────────
+            result_rows = await page.locator("table.table tbody tr").count()
+            if result_rows == 0:
                 raise RuntimeError(f"Part {supplier_part_no} was not found on rio.reyher.de.")
 
-            # Click the part number div (the cursor:pointer element inside td:nth-child(2)).
-            # Clicking the <td> itself is unreliable — the panel is opened by the inner <div>.
-            # get_by_text scoped to the table finds exactly that div.
-            await page.locator("table.table").get_by_text(supplier_part_no, exact=True).click(timeout=8000)
-            log.info(f"Clicked part number div for {supplier_part_no} — detail panel opening")
+            # Text fallback for "no results" pages that still render the table skeleton
+            body_text = await page.locator("body").inner_text()
+            if "Nem található" in body_text or "0 árucikket eredményezett" in body_text:
+                raise RuntimeError(f"Part {supplier_part_no} was not found on rio.reyher.de.")
 
-            # Wait for the SAP AJAX response to populate the "Own price" field.
-            # "Own price" only appears in body.innerText after the panel is open
-            # AND the SAP call has completed — this single wait covers both conditions.
-            await page.wait_for_function(
-                "() => document.body.innerText.includes('Own price')",
-                timeout=20000,
-            )
-            log.info("Own price visible in DOM — detail panel fully loaded")
+            log.info(f"{result_rows} result row(s) found for {supplier_part_no}")
 
+            # ── Step 4: extract price from the first result row ────────────────
             await emit("Reading price and stock from rio.reyher.de…")
 
-            # --- Price extraction ---
-            # Text-walker approach: anchors on the "Own price" label text only.
-            # Robust against CSS class / layout changes.
-            #
-            # Rendered DOM structure in the detail panel:
-            #   <div>                            ← grandparent row
-            #     <div>Own price/100 Pcs</div>   ← label  (children[0])
-            #     <div>27,47</div>               ← value  (children[1])
-            #     <div>€</div>                   ← unit   (children[2])
-            #   </div>
-            own_price_data = await page.evaluate("""() => {
-                const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-                let node;
-                while ((node = walker.nextNode())) {
-                    const text = node.textContent.trim();
-                    if (!text.toLowerCase().startsWith('own price')) continue;
+            # The SAP AJAX call that injects the price fires asynchronously.
+            # networkidle usually captures it, but not always (timing race).
+            # Strategy:
+            #   1. Wait up to 15 s for EUR to appear without any interaction
+            #   2. If still missing, click the first result row to trigger the SAP call
+            #   3. Wait another 10 s
+            _PRICE_JS = """() => {
+                const col = document.querySelector(
+                    'table.table tbody tr:first-child .productlist_table-column-value'
+                );
+                return col && col.innerText.includes('EUR');
+            }"""
 
-                    const labelEl = node.parentElement;       // div with label text
-                    const row     = labelEl.parentElement;    // parent div (the row)
-                    const siblings = Array.from(row.children);
-                    const labelIdx = siblings.indexOf(labelEl);
+            try:
+                await page.wait_for_function(_PRICE_JS, timeout=15000)
+                log.info("Price appeared without click (SAP call completed)")
+            except PlaywrightTimeout:
+                log.info("Price not yet loaded — clicking first result row to trigger SAP call")
+                await page.locator("table.table tbody tr:first-child td:nth-child(2)").click(timeout=8000)
+                try:
+                    await page.wait_for_function(_PRICE_JS, timeout=15000)
+                    log.info("Price appeared after row click")
+                except PlaywrightTimeout:
+                    log.warning("Price still absent after click — proceeding anyway")
 
-                    // Unit qty from label: "Own price/100 Pcs" → 100
-                    const qtyMatch = text.match(/\\/(\\d[\\d,]*)/);
-                    const qty = qtyMatch ? parseInt(qtyMatch[1].replace(',', '')) : 100;
-
-                    // Price: first sibling after the label whose text looks like a number
-                    for (let i = labelIdx + 1; i < siblings.length; i++) {
-                        const val = siblings[i].textContent.trim();
-                        if (/^[\\d][\\d.,]*$/.test(val)) {
-                            return { price: val, qty };
-                        }
-                    }
-                }
-                return null;
+            price_cell_text = await page.evaluate("""() => {
+                const col = document.querySelector(
+                    'table.table tbody tr:first-child .productlist_table-column-value'
+                );
+                return col ? col.innerText.trim() : null;
             }""")
 
-            log.info(f"Own price data: {own_price_data}")
+            log.info(f"Price cell raw text: {price_cell_text!r}")
 
-            if not own_price_data or not own_price_data.get("price"):
-                log.error(f"Own price not found. Body sample: {body_text[:500]}")
+            if not price_cell_text or "EUR" not in price_cell_text:
                 raise RuntimeError(
-                    "Could not read own price from rio.reyher.de. "
-                    "Check that the account has customer-specific pricing enabled."
+                    f"Price not found in search results for {supplier_part_no} on rio.reyher.de. "
+                    "The account may lack pricing access, or the page layout changed."
                 )
 
-            price_text     = own_price_data["price"]
-            price_unit_qty = own_price_data["qty"]
+            # Extract EUR amount: "200\n7,50\xa0EUR" → "7,50"
+            price_match = re.search(r"([\d,.]+)\s*\xa0?EUR", price_cell_text)
+            if not price_match:
+                raise RuntimeError(f"Could not parse EUR price from: {price_cell_text!r}")
+            price_raw = _parse_price(price_match.group(1))
 
-            if "," in price_text and "." in price_text:
-                price_text = price_text.replace(".", "").replace(",", ".")
-            elif "," in price_text:
-                price_text = price_text.replace(",", ".")
-            price_raw = float(price_text)
-
-            # --- Stock extraction ---
-            # Same text-walker pattern for "Available quantity:" label.
-            stock_data = await page.evaluate("""() => {
-                const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-                let node;
-                while ((node = walker.nextNode())) {
-                    const text = node.textContent.trim();
-                    if (!text.toLowerCase().includes('available quantity')) continue;
-
-                    const labelEl  = node.parentElement;
-                    const row      = labelEl.parentElement;
-                    const siblings = Array.from(row.children);
-                    const idx      = siblings.indexOf(labelEl);
-                    const valueEl  = siblings[idx + 1];
-                    return valueEl ? valueEl.textContent.trim() : null;
-                }
-                return null;
+            # ── Step 5: determine unit quantity from table header ──────────────
+            header_text = await page.evaluate("""() => {
+                return Array.from(document.querySelectorAll('table.table thead th'))
+                    .map(th => th.innerText.trim()).join(' ');
             }""")
-            log.info(f"Stock data: {stock_data!r}")
-            stock_value = int(re.sub(r"[^\d]", "", stock_data)) if stock_data else None
+            price_unit_qty = _parse_unit_qty(header_text)
+            log.info(f"Header text: {header_text!r} → unit_qty={price_unit_qty}")
 
-            log.info(f"Parsed — price_raw: {price_raw} EUR / {price_unit_qty} db, stock: {stock_value}")
+            # ── Step 6: stock ─────────────────────────────────────────────────
+            # Stock is not exposed on the search results page via networkidle.
+            # The stock placeholder (data-id="sp-...") requires a separate authenticated
+            # AJAX call not triggered by the page load.
+            stock_value = None
+            log.info("Stock: not available on search results page — returning None")
+
+            log.info(
+                f"Parsed — price_raw={price_raw} EUR / {price_unit_qty} db, stock={stock_value}"
+            )
 
             return {
                 "supplier_part_no": supplier_part_no,

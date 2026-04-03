@@ -214,6 +214,21 @@ def get_all_part_numbers() -> list[str]:
     return parts
 
 
+def search_part_numbers(q: str, limit: int = 20) -> list[str]:
+    """Return up to `limit` Gép-Coop part numbers whose gepcoop_part_no starts with `q` (case-insensitive)."""
+    sb = _get_supabase()
+    if sb is None:
+        raise RuntimeError("Supabase not configured (SUPABASE_URL / SUPABASE_KEY missing).")
+    res = (
+        sb.table("article_mapping")
+        .select("gepcoop_part_no")
+        .ilike("gepcoop_part_no", f"{q}%")
+        .limit(limit)
+        .execute()
+    )
+    return [r["gepcoop_part_no"] for r in res.data if r.get("gepcoop_part_no")]
+
+
 def lookup_mapping(internal_part_no: str) -> dict:
     """Return the first supplier entry (backward compatibility)."""
     results = lookup_mapping_all(internal_part_no)
@@ -255,7 +270,20 @@ async def fetch_supplier_price(supplier_id: str, supplier_part_no: str, on_progr
     elif supplier_id == "fabory":
         from browser.supplier_fabory import fetch_price
     elif supplier_id == "reyher":
-        from browser.supplier_reyher import fetch_price
+        # Automated price scraping is not reliable for Reyher due to SAP session
+        # initialisation issues in headless mode. A headed browser button is shown
+        # in the UI instead so the buyer can open the page with one click.
+        if on_progress:
+            await on_progress({
+                "step": "browser", "status": "done",
+                "msg": "Reyher: kézi megnyitás szükséges — használja a gombot a kártyán.",
+            })
+        from datetime import datetime
+        return {
+            "supplier_part_no": supplier_part_no,
+            "manual": True,
+            "queried_at": datetime.now().isoformat(timespec="seconds"),
+        }
     elif supplier_id == "hopefix":
         from browser.supplier_hopefix import fetch_price
     elif supplier_id == "fastbolt":
