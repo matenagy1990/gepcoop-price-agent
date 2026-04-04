@@ -24,7 +24,6 @@ Price column: "EUR/100 pcs" → price_unit_qty = 100
 Stock column: "Stock (100 pcs)" — raw value stored as int
 """
 
-import json
 import logging
 import os
 import re
@@ -33,6 +32,7 @@ from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
 
 load_dotenv()
 
@@ -45,43 +45,33 @@ _SESSION_FILE      = Path(__file__).parent.parent / "assets" / "sessions" / "hop
 _SESSION_MAX_AGE_H = 20
 
 
-# ── Session helpers ────────────────────────────────────────────────────────────
+async def _extract_stock_from_row(row) -> int:
+    """Prefer header-based stock lookup, fall back to the historic fixed index."""
+    stock_text = await row.evaluate("""(el) => {
+        const cells = Array.from(el.querySelectorAll('td'));
+        const table = el.closest('table');
+        if (!table) return '';
 
-def _load_session() -> dict | None:
-    try:
-        if _SESSION_FILE.exists():
-            data = json.loads(_SESSION_FILE.read_text())
-            if isinstance(data, dict) and "state" in data:
-                return data
-    except Exception:
-        pass
-    return None
+        const headers = Array.from(table.querySelectorAll('thead th'))
+            .map(th => th.textContent.trim().toLowerCase());
+        const idx = headers.findIndex(h => h.includes('stock'));
+        if (idx >= 0 && cells[idx]) return cells[idx].textContent.trim();
+        return '';
+    }""")
 
+    if not stock_text:
+        cells = row.locator("td")
+        if await cells.count() > 6:
+            stock_text = (await cells.nth(6).inner_text()).strip()
 
-def _session_is_fresh(session: dict) -> bool:
-    saved_at = session.get("saved_at")
-    if not saved_at:
-        return False
-    try:
-        age_h = (datetime.now() - datetime.fromisoformat(saved_at)).total_seconds() / 3600
-        return age_h < _SESSION_MAX_AGE_H
-    except Exception:
-        return False
+    if not stock_text:
+        return 0
 
-
-async def _save_session(context) -> None:
-    try:
-        state = await context.storage_state()
-        _SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _SESSION_FILE.write_text(json.dumps(
-            {"saved_at": datetime.now().isoformat(timespec="seconds"), "state": state},
-            indent=2,
-        ))
-        log.info(f"Session saved → {_SESSION_FILE}")
-    except Exception as exc:
-        log.warning(f"Could not save session: {exc}")
-
-
+    log.info(f"Stock cell text: {stock_text!r}")
+    m = re.search(r"[\d]+(?:[.,][\d]+)?", stock_text)
+    if not m:
+        return 0
+    return int(float(m.group().replace(",", "."))) * 100
 # ── Main scraper ───────────────────────────────────────────────────────────────
 
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
@@ -90,8 +80,8 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         if on_progress:
             await on_progress({"step": "browser", "status": "running", "msg": msg})
 
-    session     = _load_session()
-    use_session = session and _session_is_fresh(session)
+    session = load_session(_SESSION_FILE)
+    use_session = bool(session and session_is_fresh(session, _SESSION_MAX_AGE_H))
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
@@ -103,12 +93,12 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             except Exception as exc:
                 log.warning(f"Could not restore session state: {exc}")
                 use_session = False
-                _SESSION_FILE.unlink(missing_ok=True)
+                invalidate_session(_SESSION_FILE)
                 context = await browser.new_context()
         else:
             if session:
                 log.info("Session stale (> 20 h) — proactive re-login")
-                _SESSION_FILE.unlink(missing_ok=True)
+                invalidate_session(_SESSION_FILE)
             context = await browser.new_context()
 
         page = await context.new_page()
@@ -124,7 +114,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 if "/login" in page.url:
                     log.warning("Session invalid — falling back to full login")
                     use_session = False
-                    _SESSION_FILE.unlink(missing_ok=True)
+                    invalidate_session(_SESSION_FILE)
                     await browser.close()
                     browser  = await pw.chromium.launch(headless=True)
                     context  = await browser.new_context()
@@ -166,13 +156,33 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     raise RuntimeError("Login to hopefix.cz failed. Please check credentials.")
                 log.info(f"Login successful: {page.url}")
 
-                await _save_session(context)
+                await save_session(context, _SESSION_FILE)
 
             # ── Step 3: search via autocomplete ──────────────────────────────
             await emit(f"Searching for {supplier_part_no} on hopefix.cz…")
             search_box = page.locator("#search_input")
+            await search_box.wait_for(state="visible", timeout=8000)
             await search_box.click()
+            await search_box.fill("")
+            try:
+                await page.wait_for_function(
+                    "() => { const el = document.querySelector('#search_input'); return !!el && el.value === ''; }",
+                    timeout=3000,
+                )
+            except PlaywrightTimeout:
+                log.warning("Search box did not clear via fill(''); trying select-all fallback")
+                await search_box.press("Control+A")
+                await search_box.press("Backspace")
+                await page.wait_for_function(
+                    "() => { const el = document.querySelector('#search_input'); return !!el && el.value === ''; }",
+                    timeout=3000,
+                )
             await search_box.type(supplier_part_no, delay=60)
+            await page.wait_for_function(
+                "(expected) => { const el = document.querySelector('#search_input'); return !!el && el.value === expected; }",
+                arg=supplier_part_no,
+                timeout=3000,
+            )
             log.info("Typed part number, waiting for autocomplete…")
 
             try:
@@ -213,10 +223,52 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
             await toggle.click()
 
-            expander = page.locator(
-                f"form:has(input[name='product_nr'][value='{supplier_part_no}'])"
-            )
-            await expander.wait_for(timeout=8000)
+            try:
+                await page.wait_for_function(
+                    """(partNo) => {
+                        const forms = Array.from(document.querySelectorAll('form'));
+                        return forms.some((form) => {
+                            const input = form.querySelector('input[name="product_nr"]');
+                            const select = form.querySelector('select.package_type');
+                            if (!input || !select || input.value !== partNo) return false;
+                            const style = window.getComputedStyle(select);
+                            const rect = select.getBoundingClientRect();
+                            return style.display !== 'none' && style.visibility !== 'hidden' &&
+                                   rect.width > 0 && rect.height > 0;
+                        });
+                    }""",
+                    arg=supplier_part_no,
+                    timeout=8000,
+                )
+            except PlaywrightTimeout:
+                log.warning(
+                    "Visible pricing panel did not appear on hopefix.cz; trying hidden form fallback"
+                )
+
+            forms = page.locator(f"form:has(input[name='product_nr'][value='{supplier_part_no}'])")
+            expander = None
+            for idx in range(await forms.count()):
+                candidate = forms.nth(idx)
+                select = candidate.locator("select.package_type")
+                if await select.count() and await select.first.is_visible():
+                    expander = candidate
+                    break
+
+            if expander is None:
+                for idx in range(await forms.count()):
+                    candidate = forms.nth(idx)
+                    if await candidate.locator("select.package_type option").count():
+                        expander = candidate
+                        log.warning(
+                            "Pricing panel stayed hidden on hopefix.cz; falling back to matching hidden form"
+                        )
+                        break
+
+            if expander is None:
+                raise RuntimeError(
+                    f"Part {supplier_part_no} pricing panel did not open on hopefix.cz."
+                )
+
             box_option = expander.locator("select.package_type option").first
             data_price = await box_option.get_attribute("data-price")
             data_qty   = await box_option.get_attribute("data-qty")
@@ -228,14 +280,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             price_raw      = float(data_price)
             price_unit_qty = int(round(float(data_qty) * 100))
 
-            stock_value = 0
-            cells = row.locator("td")
-            if await cells.count() > 6:
-                stock_text = (await cells.nth(6).inner_text()).strip()
-                log.info(f"Stock cell text: {stock_text!r}")
-                m = re.search(r"[\d]+(?:[.,][\d]+)?", stock_text)
-                if m:
-                    stock_value = int(float(m.group().replace(",", "."))) * 100
+            stock_value = await _extract_stock_from_row(row)
 
             log.info(f"Parsed — {price_raw} EUR / {price_unit_qty} pcs, stock: {stock_value}")
 

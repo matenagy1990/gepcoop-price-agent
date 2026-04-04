@@ -478,8 +478,15 @@ async def query_stream(
                         results[sid] = {"error": err_msg, "supplier_id": sid}
                         # Any supplier login failure → prompt user to update password
                         _login_fail_keywords = (
-                            "credential", "login", "bejelentkezés", "password",
-                            "jelszó", "authentication", "unauthorized", "invalid user",
+                            "please check credentials",
+                            "check credentials",
+                            "authentication failed",
+                            "unauthorized",
+                            "invalid user",
+                            "invalid password",
+                            "wrong password",
+                            "hibás jelszó",
+                            "érvénytelen felhasználó",
                         )
                         _is_login_fail = any(kw in err_msg.lower() for kw in _login_fail_keywords)
                         if _is_login_fail:

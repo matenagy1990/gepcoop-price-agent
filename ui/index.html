@@ -1572,7 +1572,7 @@ async function admLoadRuns() {
     tbody.innerHTML = d.runs.map(r => `<tr>
       <td><code>${r.run_id ?? ''}</code></td>
       <td>${r.gepcoop_part_no ?? ''}</td>
-      <td>${r.started_at ? r.started_at.replace('T',' ').slice(0,19) : ''}</td>
+      <td>${r.started_at ? fmtTs(r.started_at) : ''}</td>
       <td>${statusIcon(r.status)} ${r.status ?? ''}</td>
       <td>${r.duration_ms ?? '—'}</td>
       <td>${(r.suppliers_ok  ?? []).join(', ') || '—'}</td>

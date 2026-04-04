@@ -29,7 +29,6 @@ Stock:
 Currency: EUR
 """
 
-import json
 import logging
 import os
 import re
@@ -38,6 +37,7 @@ from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
 
 load_dotenv()
 
@@ -48,45 +48,6 @@ HOME_URL  = "https://www.wasishop.de"
 
 _SESSION_FILE      = Path(__file__).parent.parent / "assets" / "sessions" / "wasishop_session.json"
 _SESSION_MAX_AGE_H = 20
-
-
-# ── Session helpers ────────────────────────────────────────────────────────────
-
-def _load_session() -> dict | None:
-    try:
-        if _SESSION_FILE.exists():
-            data = json.loads(_SESSION_FILE.read_text())
-            if isinstance(data, dict) and "state" in data:
-                return data
-    except Exception:
-        pass
-    return None
-
-
-def _session_is_fresh(session: dict) -> bool:
-    saved_at = session.get("saved_at")
-    if not saved_at:
-        return False
-    try:
-        age_h = (datetime.now() - datetime.fromisoformat(saved_at)).total_seconds() / 3600
-        return age_h < _SESSION_MAX_AGE_H
-    except Exception:
-        return False
-
-
-async def _save_session(context) -> None:
-    try:
-        state = await context.storage_state()
-        _SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _SESSION_FILE.write_text(json.dumps(
-            {"saved_at": datetime.now().isoformat(timespec="seconds"), "state": state},
-            indent=2,
-        ))
-        log.info(f"Session saved → {_SESSION_FILE}")
-    except Exception as exc:
-        log.warning(f"Could not save session: {exc}")
-
-
 def _parse_eur(text: str) -> float:
     """Parse a German/EUR price string: '27,15 €' or '0,79\xa0€' → 27.15"""
     clean = re.sub(r"[€\s\u00a0]", "", text).strip()
@@ -113,8 +74,8 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         if on_progress:
             await on_progress({"step": "browser", "status": "running", "msg": msg})
 
-    session     = _load_session()
-    use_session = session and _session_is_fresh(session)
+    session = load_session(_SESSION_FILE)
+    use_session = bool(session and session_is_fresh(session, _SESSION_MAX_AGE_H))
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
@@ -126,12 +87,12 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             except Exception as exc:
                 log.warning(f"Could not restore session state: {exc}")
                 use_session = False
-                _SESSION_FILE.unlink(missing_ok=True)
+                invalidate_session(_SESSION_FILE)
                 context = await browser.new_context()
         else:
             if session:
                 log.info("Session stale (> 20 h) — proactive re-login")
-                _SESSION_FILE.unlink(missing_ok=True)
+                invalidate_session(_SESSION_FILE)
             context = await browser.new_context()
 
         page = await context.new_page()
@@ -151,7 +112,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 if "login_form" in page.url:
                     log.warning("Session invalid — falling back to full login")
                     use_session = False
-                    _SESSION_FILE.unlink(missing_ok=True)
+                    invalidate_session(_SESSION_FILE)
                     await browser.close()
                     browser  = await pw.chromium.launch(headless=True)
                     context  = await browser.new_context()
@@ -191,7 +152,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     raise RuntimeError("Login to wasishop.de failed. Please check credentials.")
                 log.info(f"Login successful: {page.url}")
 
-                await _save_session(context)
+                await save_session(context, _SESSION_FILE)
 
             # ── Step 3: search ────────────────────────────────────────────────
             await emit(f"Searching for {supplier_part_no} on wasishop.de…")

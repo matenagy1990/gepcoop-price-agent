@@ -23,7 +23,6 @@ Price normalisation:
 Currency: EUR (German supplier)
 """
 
-import json
 import logging
 import os
 import re
@@ -33,6 +32,7 @@ from typing import Callable
 
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
 
 load_dotenv()
 
@@ -44,52 +44,6 @@ SEARCH_URL = "https://rio.reyher.de/hu/catalogsearch/advanced/result/?sku={part_
 SESSION_FILE = Path(__file__).parent.parent / "assets" / "sessions" / "reyher_session.json"
 
 _SESSION_MAX_AGE_HOURS = 23
-
-
-# ── Session helpers ────────────────────────────────────────────────────────────
-
-def _load_session() -> dict | None:
-    """Return session dict {saved_at, state} or None if missing / unreadable."""
-    try:
-        if SESSION_FILE.exists():
-            data = json.loads(SESSION_FILE.read_text())
-            if isinstance(data, list):           # legacy format (just cookies list) — discard
-                return None
-            if isinstance(data, dict) and "state" in data:
-                return data
-            if isinstance(data, dict) and "cookies" in data:
-                return None                      # old cookies-only format — discard
-    except Exception:
-        pass
-    return None
-
-
-async def _save_session(context) -> None:
-    """Persist full storage_state (cookies + localStorage) with an ISO timestamp."""
-    try:
-        state = await context.storage_state()
-        SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SESSION_FILE.write_text(json.dumps(
-            {"saved_at": datetime.now().isoformat(timespec="seconds"), "state": state},
-            indent=2,
-        ))
-        log.info(f"Session saved → {SESSION_FILE}")
-    except Exception as exc:
-        log.warning(f"Could not save session: {exc}")
-
-
-def _session_is_fresh(session: dict) -> bool:
-    """Return True if session was saved less than _SESSION_MAX_AGE_HOURS ago."""
-    saved_at = session.get("saved_at")
-    if not saved_at:
-        return False
-    try:
-        age_h = (datetime.now() - datetime.fromisoformat(saved_at)).total_seconds() / 3600
-        return age_h < _SESSION_MAX_AGE_HOURS
-    except Exception:
-        return False
-
-
 # ── Auth helpers ───────────────────────────────────────────────────────────────
 
 async def _is_logged_in(page) -> bool:
@@ -175,6 +129,39 @@ def _parse_unit_qty(header_text: str) -> int:
     return 100   # stated in the page footer: "per 100 pieces"
 
 
+async def _extract_price_cell_text(page) -> str | None:
+    """Structured first-row read with a JS fallback for layout quirks."""
+    locator = page.locator("table.table tbody tr:first-child .productlist_table-column-value").first
+    try:
+        text = await locator.inner_text(timeout=5000)
+        text = text.strip()
+        if text:
+            return text
+    except PlaywrightTimeout:
+        pass
+
+    return await page.evaluate("""() => {
+        const col = document.querySelector(
+            'table.table tbody tr:first-child .productlist_table-column-value'
+        );
+        return col ? col.innerText.trim() : null;
+    }""")
+
+
+async def _extract_header_text(page) -> str:
+    try:
+        headers = await page.locator("table.table thead th").all_inner_texts()
+        text = " ".join(h.strip() for h in headers if h and h.strip())
+        if text:
+            return text
+    except Exception:
+        pass
+    return await page.evaluate("""() => {
+        return Array.from(document.querySelectorAll('table.table thead th'))
+            .map(th => th.innerText.trim()).join(' ');
+    }""")
+
+
 # ── Main scraper ───────────────────────────────────────────────────────────────
 
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
@@ -183,8 +170,8 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         if on_progress:
             await on_progress({"step": "browser", "status": "running", "msg": msg})
 
-    session     = _load_session()
-    use_session = session and _session_is_fresh(session)
+    session = load_session(SESSION_FILE)
+    use_session = bool(session and session_is_fresh(session, _SESSION_MAX_AGE_HOURS))
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
@@ -196,12 +183,12 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             except Exception as exc:
                 log.warning(f"Could not restore session state: {exc}")
                 use_session = False
-                SESSION_FILE.unlink(missing_ok=True)
+                invalidate_session(SESSION_FILE)
                 context = await browser.new_context()
         else:
             if session:
                 log.info("Session stale (> 23 h) — proactive re-login")
-                SESSION_FILE.unlink(missing_ok=True)
+                invalidate_session(SESSION_FILE)
             context = await browser.new_context()
 
         page = await context.new_page()
@@ -216,7 +203,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 if not await _is_logged_in(page):
                     log.warning("Restored session is no longer valid — re-logging in")
                     use_session = False
-                    SESSION_FILE.unlink(missing_ok=True)
+                    invalidate_session(SESSION_FILE)
                     await browser.close()
                     browser  = await pw.chromium.launch(headless=True)
                     context  = await browser.new_context()
@@ -226,7 +213,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
             if not use_session:
                 await _login(page, emit)
-                await _save_session(context)
+                await save_session(context, SESSION_FILE)
 
             # ── Step 2: navigate to search results ────────────────────────────
             await emit(f"Searching for {supplier_part_no} on rio.reyher.de…")
@@ -277,12 +264,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 except PlaywrightTimeout:
                     log.warning("Price still absent after click — proceeding anyway")
 
-            price_cell_text = await page.evaluate("""() => {
-                const col = document.querySelector(
-                    'table.table tbody tr:first-child .productlist_table-column-value'
-                );
-                return col ? col.innerText.trim() : null;
-            }""")
+            price_cell_text = await _extract_price_cell_text(page)
 
             log.info(f"Price cell raw text: {price_cell_text!r}")
 
@@ -299,10 +281,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             price_raw = _parse_price(price_match.group(1))
 
             # ── Step 5: determine unit quantity from table header ──────────────
-            header_text = await page.evaluate("""() => {
-                return Array.from(document.querySelectorAll('table.table thead th'))
-                    .map(th => th.innerText.trim()).join(' ');
-            }""")
+            header_text = await _extract_header_text(page)
             price_unit_qty = _parse_unit_qty(header_text)
             log.info(f"Header text: {header_text!r} → unit_qty={price_unit_qty}")
 

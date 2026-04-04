@@ -20,7 +20,6 @@ Price format: "605 Ft" → 605 HUF per unit_qty pieces (unit_qty from "Ár /" co
 Stock format: "Készleten" = in stock, anything else = out of stock
 """
 
-import json
 import logging
 import os
 import re
@@ -29,6 +28,7 @@ from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
 
 load_dotenv()
 
@@ -41,43 +41,31 @@ _SESSION_FILE      = Path(__file__).parent.parent / "assets" / "sessions" / "fab
 _SESSION_MAX_AGE_H = 20
 
 
-# ── Session helpers ────────────────────────────────────────────────────────────
+async def _extract_price_and_unit_structured(page) -> tuple[float, int] | None:
+    """Try a DOM-scoped extraction before falling back to full-body regex."""
+    data = await page.evaluate("""() => {
+        const leaves = Array.from(document.querySelectorAll('*'))
+            .filter(el => el.childElementCount === 0)
+            .map(el => el.textContent.trim())
+            .filter(Boolean);
 
-def _load_session() -> dict | None:
-    try:
-        if _SESSION_FILE.exists():
-            data = json.loads(_SESSION_FILE.read_text())
-            if isinstance(data, dict) and "state" in data:
-                return data
-    except Exception:
-        pass
-    return None
+        const priceText = leaves.find(t => /\\b[\\d\\s\\u00a0]+\\s*Ft\\b/.test(t));
+        const unitText  = leaves.find(t => /ár\\s*\\/\\s*\\d+/i.test(t));
+        return { priceText, unitText };
+    }""")
+    price_text = (data or {}).get("priceText")
+    unit_text = (data or {}).get("unitText")
+    if not price_text or not unit_text:
+        return None
 
+    price_match = re.search(r"([\d][\d\s\u00a0]*)\s*Ft", price_text)
+    unit_match = re.search(r"ár\s*/\s*(\d+)", unit_text, re.IGNORECASE)
+    if not price_match or not unit_match:
+        return None
 
-def _session_is_fresh(session: dict) -> bool:
-    saved_at = session.get("saved_at")
-    if not saved_at:
-        return False
-    try:
-        age_h = (datetime.now() - datetime.fromisoformat(saved_at)).total_seconds() / 3600
-        return age_h < _SESSION_MAX_AGE_H
-    except Exception:
-        return False
-
-
-async def _save_session(context) -> None:
-    try:
-        state = await context.storage_state()
-        _SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _SESSION_FILE.write_text(json.dumps(
-            {"saved_at": datetime.now().isoformat(timespec="seconds"), "state": state},
-            indent=2,
-        ))
-        log.info(f"Session saved → {_SESSION_FILE}")
-    except Exception as exc:
-        log.warning(f"Could not save session: {exc}")
-
-
+    price_raw = float(re.sub(r"[\s\u00a0]", "", price_match.group(1)))
+    unit_qty = int(unit_match.group(1))
+    return price_raw, unit_qty
 # ── Main scraper ───────────────────────────────────────────────────────────────
 
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
@@ -86,8 +74,8 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         if on_progress:
             await on_progress({"step": "browser", "status": "running", "msg": msg})
 
-    session     = _load_session()
-    use_session = session and _session_is_fresh(session)
+    session = load_session(_SESSION_FILE)
+    use_session = bool(session and session_is_fresh(session, _SESSION_MAX_AGE_H))
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
@@ -99,12 +87,12 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             except Exception as exc:
                 log.warning(f"Could not restore session state: {exc}")
                 use_session = False
-                _SESSION_FILE.unlink(missing_ok=True)
+                invalidate_session(_SESSION_FILE)
                 context = await browser.new_context()
         else:
             if session:
                 log.info("Session stale (> 20 h) — proactive re-login")
-                _SESSION_FILE.unlink(missing_ok=True)
+                invalidate_session(_SESSION_FILE)
             context = await browser.new_context()
 
         page = await context.new_page()
@@ -121,7 +109,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 if "/login" in page.url:
                     log.warning("Session invalid — falling back to full login")
                     use_session = False
-                    _SESSION_FILE.unlink(missing_ok=True)
+                    invalidate_session(_SESSION_FILE)
                     await browser.close()
                     browser  = await pw.chromium.launch(headless=True)
                     context  = await browser.new_context()
@@ -155,7 +143,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     log.error(f"Login failed — URL: {page.url}")
                     raise RuntimeError("Login to fabory.com failed. Please check credentials.")
 
-                await _save_session(context)
+                await save_session(context, _SESSION_FILE)
 
                 await emit(f"Searching for {supplier_part_no} on fabory.com…")
                 await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
@@ -190,20 +178,25 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             body_text = await page.locator("body").inner_text()
             log.info(f"Page URL: {page.url}")
 
-            price_match = re.search(
-                r"([\d][\d\s\u00a0]*)\s*Ft\s*/\s*ár\s*/\s*(\d+)",
-                body_text,
-            )
-            if not price_match:
-                raise RuntimeError("Could not read price from fabory.com. Page layout may have changed.")
-
-            price_raw = float(re.sub(r"[\s\u00a0]", "", price_match.group(1)))
-            unit_qty   = int(price_match.group(2))
+            structured = await _extract_price_and_unit_structured(page)
+            if structured:
+                price_raw, unit_qty = structured
+                log.info("Price extracted via structured DOM scan")
+            else:
+                price_match = re.search(
+                    r"([\d][\d\s\u00a0]*)\s*Ft\s*/\s*ár\s*/\s*(\d+)",
+                    body_text,
+                )
+                if not price_match:
+                    raise RuntimeError("Could not read price from fabory.com. Page layout may have changed.")
+                price_raw = float(re.sub(r"[\s\u00a0]", "", price_match.group(1)))
+                unit_qty = int(price_match.group(2))
+                log.info("Price extracted via body-text fallback")
             log.info(f"Price: {price_raw} Ft / {unit_qty} db")
 
-            if "Nincs készleten" in body_text:
+            if await page.get_by_text("Nincs készleten", exact=False).count():
                 stock_value = 0
-            elif "Készleten" in body_text or "Raktáron" in body_text:
+            elif await page.get_by_text("Készleten", exact=False).count() or await page.get_by_text("Raktáron", exact=False).count():
                 stock_value = "Raktáron"
             else:
                 stock_value = None

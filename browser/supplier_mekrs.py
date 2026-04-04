@@ -29,7 +29,6 @@ Price normalisation:
   price_raw=50.63, price_unit_qty=100 → tools.py yields price_per_db=0.5063 CZK/db
 """
 
-import json
 import logging
 import os
 import re
@@ -38,6 +37,7 @@ from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
 
 load_dotenv()
 
@@ -49,49 +49,91 @@ _SESSION_FILE      = Path(__file__).parent.parent / "assets" / "sessions" / "mek
 _SESSION_MAX_AGE_H = 20
 
 
-# ── Session helpers ────────────────────────────────────────────────────────────
-
-def _load_session() -> dict | None:
-    try:
-        if _SESSION_FILE.exists():
-            data = json.loads(_SESSION_FILE.read_text())
-            if isinstance(data, dict) and "state" in data:
-                return data
-    except Exception:
-        pass
-    return None
-
-
-def _session_is_fresh(session: dict) -> bool:
-    saved_at = session.get("saved_at")
-    if not saved_at:
-        return False
-    try:
-        age_h = (datetime.now() - datetime.fromisoformat(saved_at)).total_seconds() / 3600
-        return age_h < _SESSION_MAX_AGE_H
-    except Exception:
-        return False
-
-
-async def _save_session(context) -> None:
-    try:
-        state = await context.storage_state()
-        _SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _SESSION_FILE.write_text(json.dumps(
-            {"saved_at": datetime.now().isoformat(timespec="seconds"), "state": state},
-            indent=2,
-        ))
-        log.info(f"Session saved → {_SESSION_FILE}")
-    except Exception as exc:
-        log.warning(f"Could not save session: {exc}")
-
-
 def _parse_stock(s: str) -> int:
     """Extract stock number from 'In stock 1,653,361 pcs' → 1653361"""
     if not s:
         return 0
     digit_groups = re.findall(r"\d+", s)
     return int("".join(digit_groups)) if digit_groups else 0
+
+
+def _parse_czk_price(price_str: str) -> float:
+    """Parse CZK price from either '50.63 Kč' or '50,63 Kč'."""
+    clean = re.sub(r"[^\d.,]", "", price_str).strip()
+    if not clean:
+        raise ValueError("Empty CZK price string")
+    if "," in clean and "." in clean:
+        clean = clean.replace(",", "")
+    elif "," in clean:
+        clean = clean.replace(",", ".")
+    return float(clean)
+
+
+async def _is_search_visible(page) -> bool:
+    return await page.locator("input[placeholder='Search by name, code, DIN']").first.is_visible()
+
+
+async def _is_login_visible(page) -> bool:
+    return await page.locator("input[name='username']").first.is_visible()
+
+
+async def _wait_for_auth_state(page, timeout_ms: int = 12000) -> str:
+    """Return 'search', 'login', or 'unknown' based on the visible post-login UI."""
+    try:
+        await page.wait_for_function(
+            """() => {
+                const search = document.querySelector("input[placeholder='Search by name, code, DIN']");
+                const login = document.querySelector("input[name='username']");
+                const visible = (el) => {
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    return style.display !== 'none' && style.visibility !== 'hidden' &&
+                           rect.width > 0 && rect.height > 0;
+                };
+                return visible(search) || visible(login);
+            }""",
+            timeout=timeout_ms,
+        )
+    except PlaywrightTimeout:
+        return "unknown"
+
+    if await _is_search_visible(page):
+        return "search"
+    if await _is_login_visible(page):
+        return "login"
+    return "unknown"
+
+
+async def _extract_price_block(container):
+    return await container.evaluate("""(root) => {
+        const leaves = Array.from(root.querySelectorAll('*'))
+            .filter(el => el.childElementCount === 0);
+
+        for (const unitEl of leaves) {
+            const ut = unitEl.textContent.trim();
+            if (!/\\/\\s*\\d[\\d,]*\\s*pcs/.test(ut)) continue;
+
+            let ancestor = unitEl.parentElement;
+            for (let i = 0; i < 8; i++) {
+                if (!ancestor) break;
+                const priceEl = Array.from(ancestor.querySelectorAll('*'))
+                    .find(el =>
+                        el.childElementCount === 0 &&
+                        /[\\d][\\d.,]*\\s*Kč/.test(el.textContent.trim())
+                    );
+                if (priceEl) {
+                    return [
+                        priceEl.textContent.trim(),
+                        ut,
+                        priceEl.outerHTML,
+                    ];
+                }
+                ancestor = ancestor.parentElement;
+            }
+        }
+        return [null, null, null];
+    }""")
 
 
 # ── Main scraper ───────────────────────────────────────────────────────────────
@@ -102,8 +144,8 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         if on_progress:
             await on_progress({"step": "browser", "status": "running", "msg": msg})
 
-    session     = _load_session()
-    use_session = session and _session_is_fresh(session)
+    session = load_session(_SESSION_FILE)
+    use_session = bool(session and session_is_fresh(session, _SESSION_MAX_AGE_H))
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
@@ -115,12 +157,12 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             except Exception as exc:
                 log.warning(f"Could not restore session state: {exc}")
                 use_session = False
-                _SESSION_FILE.unlink(missing_ok=True)
+                invalidate_session(_SESSION_FILE)
                 context = await browser.new_context()
         else:
             if session:
                 log.info("Session stale (> 20 h) — proactive re-login")
-                _SESSION_FILE.unlink(missing_ok=True)
+                invalidate_session(_SESSION_FILE)
             context = await browser.new_context()
 
         page = await context.new_page()
@@ -137,24 +179,34 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             # ── Step 1: try session restore ───────────────────────────────────
             if use_session:
                 await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=20000)
-                try:
-                    await page.wait_for_selector("input[name='username'], input[placeholder='Search by name, code, DIN']", timeout=8000)
-                except PlaywrightTimeout:
-                    log.warning("No login/search marker appeared after session restore — continuing check")
+                state = await _wait_for_auth_state(page, timeout_ms=8000)
                 log.info(f"After session restore, URL: {page.url}")
 
-                login_form_visible = await page.locator("input[name='username']").first.is_visible()
-                if login_form_visible:
+                if state == "login":
                     log.warning("Session invalid (login form visible) — falling back to full login")
                     use_session = False
-                    _SESSION_FILE.unlink(missing_ok=True)
+                    invalidate_session(_SESSION_FILE)
                     await browser.close()
                     browser  = await pw.chromium.launch(headless=True)
                     context  = await browser.new_context()
                     page     = await context.new_page()
                     page.on("dialog", handle_dialog)
-                else:
+                elif state == "search":
                     log.info("Session valid — login skipped")
+                else:
+                    log.warning("Session restore ended in unknown state — retrying home page before login fallback")
+                    await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=20000)
+                    state = await _wait_for_auth_state(page, timeout_ms=8000)
+                    if state != "search":
+                        use_session = False
+                        invalidate_session(_SESSION_FILE)
+                        await browser.close()
+                        browser  = await pw.chromium.launch(headless=True)
+                        context  = await browser.new_context()
+                        page     = await context.new_page()
+                        page.on("dialog", handle_dialog)
+                    else:
+                        log.info("Session valid after retry — login skipped")
 
             # ── Step 2: full login (if needed) ───────────────────────────────
             if not use_session:
@@ -169,41 +221,82 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 await page.locator("input[name='username']").fill(username)
                 await page.locator("input[name='password']").fill(os.getenv("SUPPLIER_D_PASSWORD", ""))
                 await page.locator("[data-testid='login-button']").click()
-                try:
-                    await page.wait_for_selector("input[placeholder='Search by name, code, DIN']", timeout=12000)
-                except PlaywrightTimeout:
-                    pass
+                state = await _wait_for_auth_state(page, timeout_ms=12000)
+                if state == "unknown":
+                    log.warning("Login did not resolve to search/login state — retrying homepage")
+                    await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=20000)
+                    state = await _wait_for_auth_state(page, timeout_ms=8000)
 
-                if await page.locator("input[name='username']").first.is_visible():
+                if state == "login":
                     raise RuntimeError("Login to eshop.mekrs.cz failed. Please check credentials.")
+                if state != "search":
+                    raise RuntimeError(
+                        "eshop.mekrs.cz login completed, but the search page did not become available."
+                    )
 
                 log.info(f"Login successful — URL: {page.url}")
-                await _save_session(context)
+                await save_session(context, _SESSION_FILE)
 
             # ── Step 3: search via autocomplete ──────────────────────────────
             await emit(f"Searching for part {supplier_part_no} on eshop.mekrs.cz…")
             search_inp = page.locator("input[placeholder='Search by name, code, DIN']").first
+            await search_inp.wait_for(state="visible", timeout=8000)
             await search_inp.click()
+            await search_inp.fill("")
+            try:
+                await page.wait_for_function(
+                    "() => { const el = document.querySelector(\"input[placeholder='Search by name, code, DIN']\"); return !!el && el.value === ''; }",
+                    timeout=3000,
+                )
+            except PlaywrightTimeout:
+                log.warning("Mekrs search box did not clear via fill(''); trying select-all fallback")
+                await search_inp.press("Control+A")
+                await search_inp.press("Backspace")
             await search_inp.type(supplier_part_no, delay=50)
             log.info(f"Typed '{supplier_part_no}' into search box, waiting for autocomplete…")
             try:
-                await page.wait_for_selector("text=Show all results", timeout=8000)
+                await page.wait_for_function(
+                    """(partNo) => {
+                        const items = Array.from(document.querySelectorAll('li, [role="option"], a, button'));
+                        return items.some(el => (el.textContent || '').includes(partNo)) ||
+                               items.some(el => (el.textContent || '').includes('Show all results'));
+                    }""",
+                    arg=supplier_part_no,
+                    timeout=8000,
+                )
             except PlaywrightTimeout:
                 raise RuntimeError(
                     f"Part {supplier_part_no} was not found on eshop.mekrs.cz "
                     "(autocomplete returned no results)."
                 )
 
-            show_all = page.locator("text=Show all results").first
-            show_all_count = await show_all.count()
-            if show_all_count == 0:
-                raise RuntimeError(
-                    f"Part {supplier_part_no} was not found on eshop.mekrs.cz "
-                    "(autocomplete returned no results)."
-                )
-            await show_all.click()
+            exact_suggestion = page.locator("li, [role='option'], a, button").filter(
+                has_text=supplier_part_no
+            ).first
+            if await exact_suggestion.count():
+                await exact_suggestion.click()
+                log.info("Clicked exact Mekrs autocomplete suggestion")
+            else:
+                show_all = page.locator("text=Show all results").first
+                show_all_count = await show_all.count()
+                if show_all_count == 0:
+                    raise RuntimeError(
+                        f"Part {supplier_part_no} was not found on eshop.mekrs.cz "
+                        "(autocomplete returned no results)."
+                    )
+                await show_all.click()
+                log.info("Clicked Mekrs 'Show all results' fallback")
+
             try:
-                await page.wait_for_selector("[data-testid='product-card']", timeout=10000)
+                await page.wait_for_function(
+                    """(partNo) => {
+                        return !!document.querySelector("[data-testid='product-card']") ||
+                               document.body.innerText.includes(partNo) ||
+                               document.body.innerText.includes('Kč');
+                    }""",
+                    arg=supplier_part_no,
+                    timeout=10000,
+                )
             except PlaywrightTimeout:
                 raise RuntimeError(f"Part {supplier_part_no} was not found on eshop.mekrs.cz.")
             try:
@@ -216,17 +309,27 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 log.warning("Kč not found in DOM after 10s — attempting extraction anyway")
             log.info(f"Results page loaded: {page.url}")
 
-            card_count = await page.locator("[data-testid='product-card']").count()
+            cards = page.locator("[data-testid='product-card']")
+            card_count = await cards.count()
             log.info(f"Product cards on results page: {card_count}")
-            if card_count == 0:
-                raise RuntimeError(f"Part {supplier_part_no} was not found on eshop.mekrs.cz.")
 
             # ── Step 4: extract data ──────────────────────────────────────────
             await emit("Reading price and stock from eshop.mekrs.cz…")
-            first_card = page.locator("[data-testid='product-card']").first
+            if card_count > 0:
+                target_card = cards.filter(has_text=supplier_part_no).first
+                if await target_card.count() == 0:
+                    raise RuntimeError(
+                        f"Part {supplier_part_no} was not found on eshop.mekrs.cz "
+                        "(results page did not contain an exact matching product card)."
+                    )
+            else:
+                target_card = page.locator("main").first
+                if await target_card.count() == 0:
+                    target_card = page.locator("body").first
+                log.info("No Mekrs product-card found; falling back to detail-page extraction")
 
             try:
-                stock_str = await first_card.locator(
+                stock_str = await target_card.locator(
                     "div.text-sm.font-medium.text-primaryGreen"
                 ).inner_text(timeout=5000)
                 stock_str = stock_str.strip()
@@ -234,51 +337,21 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 stock_str = ""
                 log.warning("Stock element not found — assuming out of stock")
 
-            price_str, unit_str, price_elem_html = await page.evaluate("""() => {
-                const leaves = Array.from(document.querySelectorAll('*'))
-                    .filter(el => el.childElementCount === 0);
-
-                for (const unitEl of leaves) {
-                    const ut = unitEl.textContent.trim();
-                    if (!/\\/\\s*\\d[\\d,]*\\s*pcs/.test(ut)) continue;
-
-                    let ancestor = unitEl.parentElement;
-                    for (let i = 0; i < 6; i++) {
-                        if (!ancestor) break;
-                        const priceEl = Array.from(ancestor.querySelectorAll('*'))
-                            .find(el =>
-                                el.childElementCount === 0 &&
-                                /[\\d][\\d.,]*\\s*Kč/.test(el.textContent.trim())
-                            );
-                        if (priceEl) {
-                            return [
-                                priceEl.textContent.trim(),
-                                ut,
-                                priceEl.outerHTML,
-                            ];
-                        }
-                        ancestor = ancestor.parentElement;
-                    }
-                }
-                return [null, null, null];
-            }""")
+            price_str, unit_str, price_elem_html = await _extract_price_block(target_card)
 
             log.info(f"Price element HTML: {price_elem_html}")
             log.info(f"Raw — price: '{price_str}', unit: '{unit_str}', stock: '{stock_str}'")
 
             if not price_str:
-                body_snippet = await page.evaluate(
-                    "() => document.body.innerHTML.slice(0, 3000)"
+                card_snippet = await target_card.evaluate(
+                    "(card) => card.innerHTML.slice(0, 3000)"
                 )
-                log.error(f"Price not found — body HTML snippet:\n{body_snippet}")
+                log.error(f"Price not found in target card — card HTML snippet:\n{card_snippet}")
                 raise RuntimeError(
-                    "Could not read price from eshop.mekrs.cz. Page layout may have changed."
+                    f"Part {supplier_part_no} has no visible price on eshop.mekrs.cz."
                 )
 
-            price_clean = re.sub(r"[^\d.,]", "", price_str)
-            if "," in price_clean:
-                price_clean = price_clean.replace(",", "")
-            price_raw = float(price_clean)
+            price_raw = _parse_czk_price(price_str)
 
             qty_match = re.search(r"([\d,]+)\s*pcs", unit_str)
             if qty_match:
