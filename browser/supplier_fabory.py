@@ -26,6 +26,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
+from urllib.parse import quote
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
@@ -39,6 +40,38 @@ SEARCH_URL = "https://www.fabory.com/hu/search?text={part_no}"
 
 _SESSION_FILE      = Path(__file__).parent.parent / "assets" / "sessions" / "fabory_session.json"
 _SESSION_MAX_AGE_H = 20
+
+
+async def _extract_top_variant_price(page) -> tuple[float, int] | None:
+    """Read the exact product detail price block at the top of the Fabory variant page."""
+    data = await page.evaluate("""() => {
+        const block =
+            document.querySelector('.product-variant.price-call-triggered.stock-call-triggered') ||
+            document.querySelector('.product-variant');
+        if (!block) return null;
+
+        const priceText = (block.querySelector('b.price')?.textContent || '').trim();
+        const unitText =
+            (block.querySelector('[data-product-price-unitquantity]')?.textContent || '').trim() ||
+            (block.querySelector('#unitQuantity [data-product-price-unitquantity]')?.textContent || '').trim();
+        return { priceText, unitText };
+    }""")
+    if not data:
+        return None
+
+    price_text = (data.get("priceText") or "").strip()
+    unit_text = (data.get("unitText") or "").strip()
+    if not price_text or not unit_text:
+        return None
+
+    price_match = re.search(r"([\d][\d\s\u00a0]*)\s*Ft", price_text)
+    unit_match = re.search(r"(\d+)", unit_text)
+    if not price_match or not unit_match:
+        return None
+
+    price_raw = float(re.sub(r"[\s\u00a0]", "", price_match.group(1)))
+    unit_qty = int(unit_match.group(1))
+    return price_raw, unit_qty
 
 
 async def _extract_price_and_unit_structured(page) -> tuple[float, int] | None:
@@ -99,7 +132,8 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
         try:
             await emit("Opening fabory.com…")
-            search_url = SEARCH_URL.format(part_no=supplier_part_no)
+            search_url = SEARCH_URL.format(part_no=quote(supplier_part_no, safe=""))
+            log.info("Fabory search uses supplier_part_no=%r", supplier_part_no)
 
             # ── Step 1: try session restore ───────────────────────────────────
             if use_session:
@@ -153,7 +187,15 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
             log.info(f"Search page loaded: {page.url}")
             try:
-                await page.wait_for_selector("a[href*='/p/'], text=/0 találat|no results/i", timeout=8000)
+                await page.wait_for_function(
+                    """() => {
+                        const hasProductLink = !!document.querySelector("a[href*='/p/']");
+                        const txt = (document.body.innerText || '').toLowerCase();
+                        const hasNoResults = txt.includes('0 találat') || txt.includes('no results');
+                        return hasProductLink || hasNoResults;
+                    }""",
+                    timeout=8000,
+                )
             except PlaywrightTimeout:
                 log.warning("No explicit search result marker appeared after 8s — continuing anyway")
 
@@ -173,25 +215,44 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     log.info(f"Product page: {page.url}")
                 except PlaywrightTimeout:
                     raise RuntimeError(f"No product links found for {supplier_part_no} on fabory.com.")
+
+            try:
+                await page.wait_for_function(
+                    """() => {
+                        const price = document.querySelector(".product-variant b.price");
+                        const unit = document.querySelector(".product-variant [data-product-price-unitquantity]");
+                        return !!price && !!unit &&
+                               !!(price.textContent || '').trim() &&
+                               !!(unit.textContent || '').trim();
+                    }""",
+                    timeout=10000,
+                )
+            except PlaywrightTimeout:
+                log.warning("Fabory top variant pricing block did not fully load within 10s")
             await emit("Reading price and stock from fabory.com…")
 
             body_text = await page.locator("body").inner_text()
             log.info(f"Page URL: {page.url}")
 
-            structured = await _extract_price_and_unit_structured(page)
-            if structured:
-                price_raw, unit_qty = structured
-                log.info("Price extracted via structured DOM scan")
+            top_variant = await _extract_top_variant_price(page)
+            if top_variant:
+                price_raw, unit_qty = top_variant
+                log.info("Price extracted from Fabory top variant block")
             else:
-                price_match = re.search(
-                    r"([\d][\d\s\u00a0]*)\s*Ft\s*/\s*ár\s*/\s*(\d+)",
-                    body_text,
-                )
-                if not price_match:
-                    raise RuntimeError("Could not read price from fabory.com. Page layout may have changed.")
-                price_raw = float(re.sub(r"[\s\u00a0]", "", price_match.group(1)))
-                unit_qty = int(price_match.group(2))
-                log.info("Price extracted via body-text fallback")
+                structured = await _extract_price_and_unit_structured(page)
+                if structured:
+                    price_raw, unit_qty = structured
+                    log.info("Price extracted via structured DOM scan")
+                else:
+                    price_match = re.search(
+                        r"([\d][\d\s\u00a0]*)\s*Ft\s*/\s*ár\s*/\s*(\d+)",
+                        body_text,
+                    )
+                    if not price_match:
+                        raise RuntimeError("Could not read price from fabory.com. Page layout may have changed.")
+                    price_raw = float(re.sub(r"[\s\u00a0]", "", price_match.group(1)))
+                    unit_qty = int(price_match.group(2))
+                    log.info("Price extracted via body-text fallback")
             log.info(f"Price: {price_raw} Ft / {unit_qty} db")
 
             if await page.get_by_text("Nincs készleten", exact=False).count():

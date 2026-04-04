@@ -270,20 +270,7 @@ async def fetch_supplier_price(supplier_id: str, supplier_part_no: str, on_progr
     elif supplier_id == "fabory":
         from browser.supplier_fabory import fetch_price
     elif supplier_id == "reyher":
-        # Automated price scraping is not reliable for Reyher due to SAP session
-        # initialisation issues in headless mode. A headed browser button is shown
-        # in the UI instead so the buyer can open the page with one click.
-        if on_progress:
-            await on_progress({
-                "step": "browser", "status": "done",
-                "msg": "Reyher: kézi megnyitás szükséges — használja a gombot a kártyán.",
-            })
-        from datetime import datetime
-        return {
-            "supplier_part_no": supplier_part_no,
-            "manual": True,
-            "queried_at": datetime.now().isoformat(timespec="seconds"),
-        }
+        from browser.supplier_reyher import fetch_price
     elif supplier_id == "hopefix":
         from browser.supplier_hopefix import fetch_price
     elif supplier_id == "fastbolt":
@@ -300,7 +287,25 @@ async def fetch_supplier_price(supplier_id: str, supplier_part_no: str, on_progr
             f"Create browser/supplier_{supplier_id}.py to enable it."
         )
 
-    raw = await fetch_price(supplier_part_no, on_progress=on_progress)
+    if supplier_id == "reyher":
+        try:
+            raw = await fetch_price(supplier_part_no, on_progress=on_progress)
+        except RuntimeError as exc:
+            log.warning(f"Reyher automation failed, falling back to manual open: {exc}")
+            if on_progress:
+                await on_progress({
+                    "step": "browser",
+                    "status": "done",
+                    "msg": "Reyher: az automata lekérdezés nem sikerült, használja a kézi megnyitás gombot.",
+                })
+            from datetime import datetime
+            return {
+                "supplier_part_no": supplier_part_no,
+                "manual": True,
+                "queried_at": datetime.now().isoformat(timespec="seconds"),
+            }
+    else:
+        raw = await fetch_price(supplier_part_no, on_progress=on_progress)
 
     # Normalise: price per 1 db
     raw["price_per_db"] = round(raw["price_raw"] / raw["price_unit_qty"], 6)

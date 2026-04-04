@@ -630,6 +630,7 @@ async def _supplier_open_headed(sid: str, supplier_part_no: str) -> None:
     """Launch a headed (visible) browser, restoring saved session if available."""
     from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
     from pathlib import Path as _Path
+    from urllib.parse import quote as _quote
     from browser.session_utils import invalidate_session as _invalidate_session
     from browser.session_utils import load_session as _load_session
     from browser.session_utils import save_session as _save_session
@@ -662,6 +663,17 @@ async def _supplier_open_headed(sid: str, supplier_part_no: str) -> None:
         "schaefer":  "https://shop.schaefer-peters.com/b2b/en/search/?query={part_no}",
         "kingb2b":   "https://kingb2b.it/PORTAL/",
     }
+    STORAGE_HOME_URLS = {
+        "csavarda":  "https://csavarda.hu/",
+        "irontrade": "https://irontrade.hu/",
+        "fabory":    "https://www.fabory.com/hu",
+        "mekrs":     "https://eshop.mekrs.cz/en",
+        "hopefix":   "https://www.hopefix.cz/en",
+        "wasishop":  "https://www.wasishop.de",
+        "fastbolt":  "https://fbonline.fastbolt.com",
+        "schaefer":  "https://shop.schaefer-peters.com/b2b/en/",
+        "kingb2b":   "https://kingb2b.it/PORTAL/",
+    }
     LOGIN_URLS = {
         "koelner": "https://webshop.koelner.hu/belepes/",
         "reyher":  "https://rio.reyher.de/hu/customer/account/login",
@@ -680,10 +692,12 @@ async def _supplier_open_headed(sid: str, supplier_part_no: str) -> None:
     # ── Generic storage_state suppliers (csavarda, irontrade, fabory, mekrs, hopefix, wasishop)
     if sid in _STORAGE_STATE_SEARCH_URLS:
         url_tpl = _STORAGE_STATE_SEARCH_URLS[sid]
-        target_url = (
-            url_tpl.replace("{part_no}", supplier_part_no)
-            if supplier_part_no and "{part_no}" in url_tpl else url_tpl
-        )
+        if supplier_part_no and "{part_no}" in url_tpl:
+            target_url = url_tpl.replace("{part_no}", _quote(supplier_part_no, safe=""))
+        elif "{part_no}" in url_tpl:
+            target_url = STORAGE_HOME_URLS.get(sid, url_tpl.split("{")[0])
+        else:
+            target_url = url_tpl
         try:
             async with async_playwright() as pw:
                 browser = await pw.chromium.launch(headless=False)
@@ -700,6 +714,12 @@ async def _supplier_open_headed(sid: str, supplier_part_no: str) -> None:
                 page = await context.new_page()
                 await page.goto(target_url, wait_until="domcontentloaded", timeout=20000)
                 log.info(f"[{sid}/open] Navigated to {target_url}")
+                if sid == "fabory":
+                    try:
+                        await page.get_by_role("button", name="Összes elfogadása").click(timeout=5000)
+                        log.info("[fabory/open] Cookie banner accepted")
+                    except PlaywrightTimeout:
+                        log.info("[fabory/open] No cookie banner appeared")
                 await page.wait_for_event("close", timeout=0)
         except Exception as exc:
             log.warning(f"[{sid}/open] Browser closed or error: {exc}")

@@ -9,11 +9,11 @@ Login flow:
   5. Confirmed when DOCUMENTI / TRACKING buttons become visible
 
 Search flow:
-  6. Fill #header-search with part number → press Enter
-  7. Wait for "Attendere prego..." to disappear and div.singola-famiglia to appear
-  8. Click div.singola-famiglia (family header) → expands product table
-  9. Wait for tr.articoli-row[id="PART_NO"] to appear
-  10. Wait for td[data-cell="PREZZO"] to be non-empty (only shown when logged in)
+  6. Fill #header-search with part number → click the search icon
+  7. Wait for "LA TUA RICERCA: ..." to appear and family results to load
+  8. Click the matching family result
+  9. Wait for tr.articoli-row elements to appear
+  10. Resolve row by id="PART_NO", fall back to an exact-text row match
 
 Price structure:
   - td[data-cell="PREZZO"] contains e.g. "0,60 %" or "7,68 %"
@@ -65,6 +65,59 @@ def _parse_stock(text: str) -> int:
     return int(m.group().replace(".", ""))
 
 
+async def _log_results_state(page, supplier_part_no: str, prefix: str = "KingB2B") -> None:
+    data = await page.evaluate(
+        """(partNo) => {
+            const txt = document.body.innerText || '';
+            return {
+                url: location.href,
+                search_text_visible: txt.includes(`LA TUA RICERCA: "${partNo}"`) || txt.includes(`La tua ricerca: "${partNo}"`),
+                has_family: !!document.querySelector('div.singola-famiglia'),
+                family_count: document.querySelectorAll('div.singola-famiglia').length,
+                old_row_count: document.querySelectorAll('tr.articoli-row').length,
+                article_table_rows: document.querySelectorAll('table.tabella-articoli tr').length,
+                article_headers_visible: txt.includes('PREZZO') && txt.includes('STOCK') && txt.includes('DESCRIZIONE'),
+                loading_text: txt.includes('Attendere prego'),
+                no_results_1: txt.toLowerCase().includes('nessun risultato'),
+                no_results_2: txt.toLowerCase().includes('nessun articolo'),
+                body_snippet: txt.slice(650, 2600),
+            };
+        }""",
+        supplier_part_no,
+    )
+    log.info(
+        "%s state: url=%s, search_text=%r, has_family=%r(%s), old_rows=%s, article_rows=%s, "
+        "article_headers=%r, loading=%r, no_results=%r/%r",
+        prefix,
+        data["url"],
+        data["search_text_visible"],
+        data["has_family"],
+        data["family_count"],
+        data["old_row_count"],
+        data["article_table_rows"],
+        data["article_headers_visible"],
+        data["loading_text"],
+        data["no_results_1"],
+        data["no_results_2"],
+    )
+    log.info("%s body snippet: %s", prefix, data["body_snippet"])
+
+
+async def _wait_for_search_results(page, supplier_part_no: str) -> None:
+    await page.wait_for_function(
+        """(partNo) => {
+            const txt = (document.body.innerText || '').toLowerCase();
+            const hasQuery = txt.includes(`la tua ricerca: "${partNo.toLowerCase()}"`);
+            const hasFamily = !!document.querySelector('div.singola-famiglia');
+            const hasExactRow = !!document.querySelector(`tr.articoli-row[id="${partNo}"]`);
+            const noResults = txt.includes('nessun risultato') || txt.includes('nessun articolo');
+            return hasQuery && (hasFamily || hasExactRow || noResults);
+        }""",
+        arg=supplier_part_no,
+        timeout=15000,
+    )
+
+
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
     async def emit(msg: str):
         log.info(msg)
@@ -72,7 +125,10 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             await on_progress({"step": "browser", "status": "running", "msg": msg})
 
     session = load_session(SESSION_FILE)
-    use_session = bool(session and session_is_fresh(session, SESSION_MAX_AGE_HOURS))
+    # KingB2B keeps enough UI/search state in the portal that restored sessions
+    # can leave the search flow inconsistent. A fresh login is slower, but much
+    # more reliable than reusing a cached session here.
+    use_session = False
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
@@ -94,7 +150,10 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
         try:
             await emit("Opening kingb2b.it…")
-            await page.goto(PORTAL_URL, wait_until="domcontentloaded")
+            # networkidle is required when restoring a session so the SPA fully
+            # initialises its search API state before we type a query.
+            wait_until = "networkidle" if use_session else "domcontentloaded"
+            await page.goto(PORTAL_URL, wait_until=wait_until, timeout=30000)
             # Wait for SPA to fully initialise
             await page.wait_for_selector("#header-search", timeout=15000)
             await page.wait_for_function(
@@ -148,37 +207,99 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             else:
                 log.info("Already logged in")
 
+            # ── Clear any lingering filters from previous searches ──────
+            # The SPA stores active filters in the server-side ASP.NET session.
+            # A fresh navigation to the portal resets the filter state.
+            if use_session:
+                await page.goto(PORTAL_URL, wait_until="domcontentloaded", timeout=20000)
+                await page.wait_for_selector("#header-search", timeout=10000)
+                log.info("Filter state cleared via portal reload")
+
             # ── Search ────────────────────────────────────────────────
             await emit(f"Searching for {supplier_part_no} on kingb2b.it…")
             search_box = page.locator("#header-search")
-            await search_box.fill(supplier_part_no)
-            await search_box.press("Enter")
+            await search_box.click()
+            await search_box.press("Control+A")
+            await search_box.press("Backspace")
+            await search_box.type(supplier_part_no, delay=40)
 
-            # Wait for loading to finish and results to appear
-            await page.wait_for_selector("div.singola-famiglia", timeout=12000)
-            await page.wait_for_function(
-                "() => !document.body.innerText.includes('Attendere prego')",
-                timeout=10000,
-            )
-            log.info("Search results loaded")
+            search_started = False
+            for attempt in (1, 2):
+                if attempt == 1:
+                    await page.locator("div.bottone-esegui-ricerca").click()
+                else:
+                    log.info("KingB2B: retrying search submission via bottoneEseguiRicerca()")
+                    await page.evaluate(
+                        """() => {
+                            if (typeof bottoneEseguiRicerca === 'function') {
+                                bottoneEseguiRicerca();
+                            }
+                        }"""
+                    )
+
+                try:
+                    await _wait_for_search_results(page, supplier_part_no)
+                    search_started = True
+                    break
+                except PlaywrightTimeout:
+                    log.warning("KingB2B: search attempt %s did not stabilise", attempt)
+
+            if not search_started:
+                await _log_results_state(page, supplier_part_no, prefix="KingB2B query-timeout")
+                raise RuntimeError(
+                    "Search results did not stabilise on kingb2b.it after clicking the search icon. "
+                    "The search workflow may have changed."
+                )
+            log.info("Search query confirmed")
 
             # Check for "not found"
             body_text = await page.locator("body").inner_text()
             if "nessun risultato" in body_text.lower() or "nessun articolo" in body_text.lower():
                 raise RuntimeError(f"Part {supplier_part_no} was not found on kingb2b.it.")
 
-            # ── Expand family row ──────────────────────────────────────
-            family_row = page.locator("div.singola-famiglia").first
-            await family_row.click()
-
-            # Wait for the specific article row to appear
             article_row = page.locator(f'tr.articoli-row[id="{supplier_part_no}"]')
-            try:
-                await article_row.wait_for(timeout=10000)
-            except PlaywrightTimeout:
-                raise RuntimeError(
-                    f"Part {supplier_part_no} not found in the expanded product table on kingb2b.it."
-                )
+
+            if await article_row.count() == 0:
+                family_rows = page.locator("div.singola-famiglia")
+                family_count = await family_rows.count()
+                if family_count == 0:
+                    await _log_results_state(page, supplier_part_no, prefix="KingB2B no-family-no-row")
+                    raise RuntimeError(f"Part {supplier_part_no} was not found on kingb2b.it.")
+
+                log.info("Opening KingB2B family result")
+                await family_rows.first.click()
+                try:
+                    await page.wait_for_function(
+                        """(partNo) => {
+                            const row = document.querySelector(`tr.articoli-row[id="${partNo}"]`);
+                            if (row) return true;
+                            return [...document.querySelectorAll('tr.articoli-row')]
+                                .some(r => (r.innerText || '').includes(partNo));
+                        }""",
+                        arg=supplier_part_no,
+                        timeout=12000,
+                    )
+                except PlaywrightTimeout:
+                    await _log_results_state(page, supplier_part_no, prefix="KingB2B family-expand-timeout")
+                    raise RuntimeError(
+                        f"Part {supplier_part_no} article row did not appear after opening the matching family result on kingb2b.it."
+                    )
+
+            # Resolve row locator
+            article_row = page.locator(f'tr.articoli-row[id="{supplier_part_no}"]')
+            if await article_row.count() > 0:
+                row_locator = article_row
+                log.info("KingB2B: matched article row by ID")
+            else:
+                exact_text_row = page.locator("tr.articoli-row").filter(has_text=supplier_part_no).first
+                if await exact_text_row.count() > 0:
+                    row_locator = exact_text_row
+                    log.info("KingB2B: matched article row by text")
+                else:
+                    await _log_results_state(page, supplier_part_no, prefix="KingB2B no-row-found")
+                    raise RuntimeError(
+                        f"Part {supplier_part_no} did not populate as a visible article row on kingb2b.it."
+                    )
 
             # ── Wait for price to be injected (requires login) ─────────
             await emit("Reading price and stock from kingb2b.it…")
@@ -186,19 +307,33 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 await page.wait_for_function(
                     f"""() => {{
                         const row = document.querySelector('tr.articoli-row[id="{supplier_part_no}"]');
-                        return row && row.querySelector('td[data-cell="PREZZO"]')?.innerText.trim() !== '';
+                        if (row) return row.querySelector('td[data-cell="PREZZO"]')?.innerText.trim() !== '';
+                        const rows = [...document.querySelectorAll('table.tabella-articoli tr')];
+                        const generic = rows.find(r => (r.innerText || '').includes("{supplier_part_no}"));
+                        return !!generic && /\\d+[,.]?\\d*\\s*(%|N)/.test((generic.innerText || '').trim());
                     }}""",
                     timeout=8000,
                 )
             except PlaywrightTimeout:
+                await _log_results_state(page, supplier_part_no, prefix="KingB2B price-timeout")
                 raise RuntimeError(
                     "Could not read price from kingb2b.it — PREZZO cell did not populate. "
                     "Check login status."
                 )
 
             # ── Extract price ──────────────────────────────────────────
-            prezzo_text = await article_row.locator('td[data-cell="PREZZO"]').inner_text()
-            prezzo_text = prezzo_text.strip()
+            if await row_locator.locator('td[data-cell="PREZZO"]').count():
+                prezzo_text = await row_locator.locator('td[data-cell="PREZZO"]').inner_text()
+                prezzo_text = prezzo_text.strip()
+            else:
+                row_text = (await row_locator.inner_text()).strip()
+                m = re.search(r'(\d+[,.]\d+)\s*(%|N)\b', row_text)
+                if not m:
+                    raise RuntimeError(
+                        "Could not parse PREZZO from kingb2b.it article row. "
+                        "The row rendered, but the price format was unexpected."
+                    )
+                prezzo_text = f"{m.group(1)} {m.group(2)}"
             log.info(f"PREZZO cell: {prezzo_text!r}")
 
             # Parse price value (Italian decimal comma)
@@ -211,7 +346,8 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 price_unit_qty = 1
             else:
                 # Fallback: use BOX column quantity
-                box_text = await article_row.locator('td[data-cell="BOX"]').inner_text()
+                box_locator = row_locator.locator('td[data-cell="BOX"]')
+                box_text = await box_locator.inner_text() if await box_locator.count() else ""
                 box_text = box_text.strip().replace(".", "")
                 try:
                     price_unit_qty = int(box_text)
@@ -221,14 +357,22 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
             # ── Extract stock ──────────────────────────────────────────
             stock_value = 0
-            stock_cell = article_row.locator('td[data-cell="STOCK"]')
+            stock_cell = row_locator.locator('td[data-cell="STOCK"]')
 
-            for cls in ["dispo-ok", "dispo-incoming"]:
-                div_text = (await stock_cell.locator(f".{cls}").inner_text()).strip()
-                if div_text:
-                    stock_value = _parse_stock(div_text)
-                    log.info(f"Stock from .{cls}: {div_text!r} → {stock_value}")
-                    break
+            if await stock_cell.count():
+                for cls in ["dispo-ok", "dispo-incoming"]:
+                    locator = stock_cell.locator(f".{cls}")
+                    if await locator.count():
+                        div_text = (await locator.inner_text()).strip()
+                        if div_text:
+                            stock_value = _parse_stock(div_text)
+                            log.info(f"Stock from .{cls}: {div_text!r} → {stock_value}")
+                            break
+            else:
+                row_text = (await row_locator.inner_text()).strip()
+                stock_match = re.search(r'(\d[\d.]*)\s+(?:STOCK|NOTA|VS CODICE|$)', row_text)
+                if stock_match:
+                    stock_value = _parse_stock(stock_match.group(1))
 
             log.info(f"Parsed — {price_raw} EUR / {price_unit_qty} pcs, stock: {stock_value}")
 
