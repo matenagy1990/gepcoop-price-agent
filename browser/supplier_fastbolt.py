@@ -30,16 +30,21 @@ import logging
 import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
 
 load_dotenv()
 
 log = logging.getLogger("fastbolt")
 
 LOGIN_URL  = "https://fbonline.fastbolt.com/login"
+HOME_URL = "https://fbonline.fastbolt.com/"
 MATRIX_URL = "https://fbonline.fastbolt.com/matrix/{part_no}"
+SESSION_FILE = Path(__file__).parent.parent / "assets" / "sessions" / "fastbolt_session.json"
+SESSION_MAX_AGE_HOURS = 20
 
 
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
@@ -48,34 +53,66 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         if on_progress:
             await on_progress({"step": "browser", "status": "running", "msg": msg})
 
+    session = load_session(SESSION_FILE)
+    use_session = bool(session and session_is_fresh(session, SESSION_MAX_AGE_HOURS))
+
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
-        context = await browser.new_context()
-        page    = await context.new_page()
+        if use_session:
+            try:
+                context = await browser.new_context(storage_state=session["state"])
+                log.info("Restored saved session (age < 20 h)")
+            except Exception as exc:
+                log.warning(f"Could not restore saved session: {exc}")
+                invalidate_session(SESSION_FILE)
+                use_session = False
+                context = await browser.new_context()
+        else:
+            if session:
+                log.info("Session stale (> 20 h) — proactive re-login")
+                invalidate_session(SESSION_FILE)
+            context = await browser.new_context()
+        page = await context.new_page()
 
         try:
             await emit("Opening fbonline.fastbolt.com…")
-            await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-            log.info(f"Loaded login page: {page.url}")
 
-            # Login — 3 fields: Shortname, Loginname, Password
-            await emit("Logging in to fbonline.fastbolt.com…")
-            shortname = os.getenv("SUPPLIER_H_SHORTNAME", "")
-            username  = os.getenv("SUPPLIER_H_USERNAME", "")
-            password  = os.getenv("SUPPLIER_H_PASSWORD", "")
-            log.info(f"Logging in — shortname: {shortname}, user: {username}")
+            if use_session:
+                await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=20000)
+                if "/login" in page.url:
+                    log.warning("Saved session is no longer valid — performing fresh login")
+                    invalidate_session(SESSION_FILE)
+                    await context.close()
+                    context = await browser.new_context()
+                    page = await context.new_page()
+                    use_session = False
+                else:
+                    log.info("Session valid — login skipped")
 
-            await page.get_by_role("searchbox", name="Shortname:").fill(shortname)
-            await page.get_by_role("searchbox", name="Loginname:").fill(username)
-            await page.get_by_role("textbox", name="Password:").fill(password)
-            await page.get_by_role("button", name="Sign in").click()
+            if not use_session:
+                await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+                log.info(f"Loaded login page: {page.url}")
 
-            await page.wait_for_load_state("domcontentloaded")
-            await page.wait_for_timeout(2000)
+                await emit("Logging in to fbonline.fastbolt.com…")
+                shortname = os.getenv("SUPPLIER_H_SHORTNAME", "")
+                username  = os.getenv("SUPPLIER_H_USERNAME", "")
+                password  = os.getenv("SUPPLIER_H_PASSWORD", "")
+                log.info(f"Logging in — shortname: {shortname}, user: {username}")
 
-            if "/login" in page.url:
-                raise RuntimeError("Login to fbonline.fastbolt.com failed. Please check credentials.")
-            log.info(f"Login successful: {page.url}")
+                await page.get_by_role("searchbox", name="Shortname:").fill(shortname)
+                await page.get_by_role("searchbox", name="Loginname:").fill(username)
+                await page.get_by_role("textbox", name="Password:").fill(password)
+                await page.get_by_role("button", name="Sign in").click()
+
+                try:
+                    await page.wait_for_function("() => !location.pathname.includes('/login')", timeout=12000)
+                except PlaywrightTimeout:
+                    raise RuntimeError("Login to fbonline.fastbolt.com failed. Please check credentials.")
+                log.info(f"Login successful: {page.url}")
+                try:
+                    await save_session(context, SESSION_FILE)
+                except Exception as exc:
+                    log.warning(f"Could not persist session: {exc}")
 
             # Navigate to the product matrix page
             await emit(f"Searching for {supplier_part_no} on fastbolt…")

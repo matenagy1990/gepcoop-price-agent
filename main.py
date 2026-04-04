@@ -5,7 +5,7 @@ import json
 import logging
 import os
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, File, HTTPException, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -610,7 +610,7 @@ async def supplier_open(req: Request, authorization: str | None = Header(default
 
     # Suppliers with saved Playwright sessions → headed browser (logged in)
     _SESSION_OPEN_SIDS = {"koelner", "reyher", "csavarda", "irontrade", "fabory",
-                          "hopefix", "wasishop", "mekrs"}
+                          "hopefix", "wasishop", "mekrs", "fastbolt", "schaefer", "kingb2b"}
     if sid in _SESSION_OPEN_SIDS:
         asyncio.create_task(_supplier_open_headed(sid, supplier_part_no))
         return {"status": "opening"}
@@ -622,14 +622,15 @@ async def supplier_open(req: Request, authorization: str | None = Header(default
 async def _supplier_open_headed(sid: str, supplier_part_no: str) -> None:
     """Launch a headed (visible) browser, restoring saved session if available."""
     from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
-    import json as _json
     from pathlib import Path as _Path
-    from datetime import datetime as _dt
+    from browser.session_utils import invalidate_session as _invalidate_session
+    from browser.session_utils import load_session as _load_session
+    from browser.session_utils import save_session as _save_session
 
     _SESSIONS_DIR = _Path(__file__).parent / "assets" / "sessions"
 
     SESSION_FILES = {
-        "koelner":  _Path(__file__).parent / "assets" / ".koelner_session.json",
+        "koelner":  _SESSIONS_DIR / "koelner_session.json",
         "reyher":   _SESSIONS_DIR / "reyher_session.json",
         "csavarda": _SESSIONS_DIR / "csavarda_session.json",
         "irontrade":_SESSIONS_DIR / "irontrade_session.json",
@@ -637,6 +638,9 @@ async def _supplier_open_headed(sid: str, supplier_part_no: str) -> None:
         "hopefix":  _SESSIONS_DIR / "hopefix_session.json",
         "wasishop": _SESSIONS_DIR / "wasishop_session.json",
         "mekrs":    _SESSIONS_DIR / "mekrs_session.json",
+        "fastbolt": _SESSIONS_DIR / "fastbolt_session.json",
+        "schaefer": _SESSIONS_DIR / "schaefer_session.json",
+        "kingb2b":  _SESSIONS_DIR / "kingb2b_session.json",
     }
 
     # Search URLs for storage_state suppliers (opened directly after session restore)
@@ -647,6 +651,9 @@ async def _supplier_open_headed(sid: str, supplier_part_no: str) -> None:
         "mekrs":     "https://eshop.mekrs.cz/en/products?nazev={part_no}&onStock=false",
         "hopefix":   "https://www.hopefix.cz/en",
         "wasishop":  "https://www.wasishop.de",
+        "fastbolt":  "https://fbonline.fastbolt.com/matrix/{part_no}",
+        "schaefer":  "https://shop.schaefer-peters.com/b2b/en/search/?query={part_no}",
+        "kingb2b":   "https://kingb2b.it/PORTAL/",
     }
     LOGIN_URLS = {
         "koelner": "https://webshop.koelner.hu/belepes/",
@@ -674,11 +681,10 @@ async def _supplier_open_headed(sid: str, supplier_part_no: str) -> None:
             async with async_playwright() as pw:
                 browser = await pw.chromium.launch(headless=False)
                 context = None
-                if session_file.exists():
+                session = _load_session(session_file)
+                if session:
                     try:
-                        raw = _json.loads(session_file.read_text())
-                        state = raw.get("state", raw)
-                        context = await browser.new_context(storage_state=state)
+                        context = await browser.new_context(storage_state=session["state"])
                         log.info(f"[{sid}/open] Session restored from {session_file}")
                     except Exception as exc:
                         log.warning(f"[{sid}/open] Session unreadable: {exc}")
@@ -702,15 +708,15 @@ async def _supplier_open_headed(sid: str, supplier_part_no: str) -> None:
             # ── koelner uses storage_state (localStorage + cookies) ──────────
             if sid == "koelner":
                 context = None
-                if session_file.exists():
+                session = _load_session(session_file)
+                if session:
                     try:
-                        _json.loads(session_file.read_text())   # validate JSON
                         browser  = await pw.chromium.launch(headless=False)
-                        context  = await browser.new_context(storage_state=str(session_file))
+                        context  = await browser.new_context(storage_state=session["state"])
                         log.info(f"[{sid}/open] Session restored from {session_file}")
                     except Exception as exc:
                         log.warning(f"[{sid}/open] Session unreadable, fresh login: {exc}")
-                        session_file.unlink(missing_ok=True)
+                        _invalidate_session(session_file)
                 if context is None:
                     browser = await pw.chromium.launch(headless=False)
                     context = await browser.new_context()
@@ -726,26 +732,25 @@ async def _supplier_open_headed(sid: str, supplier_part_no: str) -> None:
                     try:
                         await page.locator("#login_username").wait_for(state="hidden", timeout=10000)
                         log.info(f"[{sid}/open] Login successful")
-                        state = await context.storage_state()
-                        session_file.parent.mkdir(parents=True, exist_ok=True)
-                        session_file.write_text(_json.dumps(state))
+                        await _save_session(context, session_file)
                     except PlaywrightTimeout:
                         log.warning(f"[{sid}/open] Login may have failed — continuing anyway")
                 await page.goto(target_url, wait_until="domcontentloaded", timeout=20000)
 
-            # ── reyher uses plain cookie list ────────────────────────────────
+            # ── reyher uses shared storage_state session format ──────────────
             else:
                 browser = await pw.chromium.launch(headless=False)
                 context = await browser.new_context()
-                page    = await browser.new_page()
+                page    = await context.new_page()
                 session_restored = False
-                if session_file.exists():
+                session = _load_session(session_file)
+                if session:
                     try:
-                        raw      = _json.loads(session_file.read_text())
-                        cookies  = raw.get("cookies", raw) if isinstance(raw, dict) else raw
-                        await context.add_cookies(cookies)
+                        await context.close()
+                        context = await browser.new_context(storage_state=session["state"])
+                        page = await context.new_page()
                         session_restored = True
-                        log.info(f"[{sid}/open] Session cookies restored")
+                        log.info(f"[{sid}/open] Session restored from {session_file}")
                     except Exception as exc:
                         log.warning(f"[{sid}/open] Could not restore session: {exc}")
 
@@ -774,11 +779,7 @@ async def _supplier_open_headed(sid: str, supplier_part_no: str) -> None:
                         try:
                             await page.wait_for_url(HOME_URLS[sid], timeout=15000)
                             await page.wait_for_load_state("networkidle", timeout=20000)
-                            session_file.parent.mkdir(parents=True, exist_ok=True)
-                            session_file.write_text(_json.dumps({
-                                "saved_at": _dt.now().isoformat(timespec="seconds"),
-                                "cookies":  await context.cookies(),
-                            }, indent=2))
+                            await _save_session(context, session_file)
                         except PlaywrightTimeout:
                             log.warning(f"[{sid}/open] Login timeout — continuing")
 
@@ -810,85 +811,7 @@ async def reyher_open(req: Request, authorization: str | None = Header(default=N
 
 async def _reyher_open_headed(supplier_part_no: str) -> None:
     """Open a headed Chromium window logged in to Reyher, searching for supplier_part_no."""
-    from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
-    import os
-
-    LOGIN_URL  = "https://rio.reyher.de/hu/customer/account/login"
-    HOME_URL   = "https://rio.reyher.de/hu/"
-    SEARCH_URL = f"https://rio.reyher.de/hu/catalogsearch/advanced/result/?sku={supplier_part_no}&q="
-
-    customer_code = os.environ.get("SUPPLIER_F_CUSTOMER_CODE", "")
-    username      = os.environ.get("SUPPLIER_F_USERNAME", "")
-    password      = os.environ.get("SUPPLIER_F_PASSWORD", "")
-
-    try:
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=False)
-            context = await browser.new_context()
-            page    = await context.new_page()
-
-            # Try restoring saved session first
-            from pathlib import Path
-            import json
-            SESSION_FILE = Path(__file__).parent / "assets" / "sessions" / "reyher_session.json"
-            session_restored = False
-            if SESSION_FILE.exists():
-                try:
-                    raw = json.loads(SESSION_FILE.read_text())
-                    cookies = raw.get("cookies", raw) if isinstance(raw, dict) else raw
-                    await context.add_cookies(cookies)
-                    session_restored = True
-                    log.info(f"[reyher/open] Session cookies restored from {SESSION_FILE}")
-                except Exception as exc:
-                    log.warning(f"[reyher/open] Could not restore session: {exc}")
-
-            if session_restored:
-                # Check if still valid by loading the home page
-                await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=15000)
-                try:
-                    await page.wait_for_selector("a:has-text('Quickinput')", timeout=5000)
-                    log.info("[reyher/open] Session valid — navigating to search")
-                except PlaywrightTimeout:
-                    log.info("[reyher/open] Session expired — logging in fresh")
-                    session_restored = False
-
-            if not session_restored:
-                await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=15000)
-                # Dismiss cookie banner
-                for btn_name in ("Allow all", "Mindent engedélyez", "Accept all"):
-                    try:
-                        await page.get_by_role("button", name=btn_name).click(timeout=3000)
-                        await page.wait_for_timeout(400)
-                        break
-                    except PlaywrightTimeout:
-                        continue
-                if "/customer/account/login" in page.url:
-                    await page.locator("#customernumber").fill(customer_code)
-                    await page.locator("#userid").fill(username)
-                    await page.locator("#pass").fill(password)
-                    await page.get_by_role("button", name="Bejelentkezés").click()
-                    try:
-                        await page.wait_for_url(HOME_URL, timeout=15000)
-                        await page.wait_for_load_state("networkidle", timeout=20000)
-                        log.info("[reyher/open] Login successful")
-                        # Save session
-                        from datetime import datetime
-                        SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-                        SESSION_FILE.write_text(json.dumps({
-                            "saved_at": datetime.now().isoformat(timespec="seconds"),
-                            "cookies": await context.cookies(),
-                        }, indent=2))
-                    except PlaywrightTimeout:
-                        log.warning("[reyher/open] Login timeout — opening search page anyway")
-
-            await page.goto(SEARCH_URL, wait_until="domcontentloaded", timeout=30000)
-            log.info(f"[reyher/open] Search page opened for {supplier_part_no}")
-
-            # Keep browser open until user closes it
-            await page.wait_for_event("close", timeout=0)
-
-    except Exception as exc:
-        log.warning(f"[reyher/open] Browser closed or error: {exc}")
+    await _supplier_open_headed("reyher", supplier_part_no)
 
 
 @app.get("/health")
@@ -1129,6 +1052,49 @@ def admin_get_runs():
     except Exception as exc:
         log.warning(f"admin_get_runs hiba: {exc}")
         return {"runs": []}
+
+
+@app.get("/admin/runs/chart")
+def admin_get_runs_chart(range: str = "week"):
+    sb = _get_supabase_main()
+    if sb is None:
+        return {"range": range, "runs": []}
+
+    try:
+        query = (
+            sb.table("query_runs")
+            .select("run_id,gepcoop_part_no,started_at,status,duration_ms")
+            .order("started_at", desc=False)
+        )
+
+        now_utc = datetime.now(timezone.utc)
+        if range == "week":
+            query = query.gte("started_at", (now_utc - timedelta(days=7)).isoformat())
+        elif range == "month":
+            query = query.gte("started_at", (now_utc - timedelta(days=30)).isoformat())
+        elif range != "all":
+            raise HTTPException(status_code=400, detail="Érvénytelen időintervallum.")
+
+        res = query.limit(500).execute()
+        runs = []
+        for row in res.data or []:
+            duration_ms = row.get("duration_ms")
+            if duration_ms is None:
+                continue
+            runs.append({
+                "run_id": row.get("run_id"),
+                "gepcoop_part_no": row.get("gepcoop_part_no"),
+                "started_at": row.get("started_at"),
+                "status": row.get("status"),
+                "duration_ms": duration_ms,
+                "duration_sec": round(float(duration_ms) / 1000, 2),
+            })
+        return {"range": range, "runs": runs}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.warning(f"admin_get_runs_chart hiba: {exc}")
+        return {"range": range, "runs": []}
 
 
 @app.get("/admin/suppliers")

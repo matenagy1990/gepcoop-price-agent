@@ -136,7 +136,6 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
                 try:
                     await page.get_by_role("button", name="Összes elfogadása").click(timeout=5000)
-                    await page.wait_for_timeout(800)
                     log.info("Cookie banner accepted")
                 except PlaywrightTimeout:
                     log.info("No cookie banner appeared")
@@ -165,7 +164,10 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 await emit(f"Searching for {supplier_part_no} on fabory.com…")
 
             log.info(f"Search page loaded: {page.url}")
-            await page.wait_for_timeout(2000)
+            try:
+                await page.wait_for_selector("a[href*='/p/'], text=/0 találat|no results/i", timeout=8000)
+            except PlaywrightTimeout:
+                log.warning("No explicit search result marker appeared after 8s — continuing anyway")
 
             body_text = await page.locator("body").inner_text()
             if "0 találat" in body_text or "no results" in body_text.lower():
@@ -176,11 +178,13 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 try:
                     await page.locator("a[href*='/p/']").first.click(timeout=8000)
                     await page.wait_for_load_state("domcontentloaded")
+                    await page.wait_for_function(
+                        "() => document.body.innerText.includes('Ft') || document.body.innerText.includes('Készleten') || document.body.innerText.includes('Nincs készleten')",
+                        timeout=10000,
+                    )
                     log.info(f"Product page: {page.url}")
                 except PlaywrightTimeout:
                     raise RuntimeError(f"No product links found for {supplier_part_no} on fabory.com.")
-
-            await page.wait_for_timeout(2000)
             await emit("Reading price and stock from fabory.com…")
 
             body_text = await page.locator("body").inner_text()

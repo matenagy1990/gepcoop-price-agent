@@ -20,7 +20,7 @@ Search flow:
   6. Extract Nettó ár, Készlet
 """
 
-import json
+import asyncio
 import logging
 import os
 from datetime import datetime
@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
 
 load_dotenv()
 
@@ -47,46 +48,6 @@ _JS_NEXT_SIBLING = """
     return null;
 }
 """
-
-
-# ── Session helpers ────────────────────────────────────────────────────────────
-
-def _load_session() -> dict | None:
-    """Return {saved_at, state} or None if missing / unreadable."""
-    try:
-        if _SESSION_FILE.exists():
-            data = json.loads(_SESSION_FILE.read_text())
-            if isinstance(data, dict) and "state" in data:
-                return data
-    except Exception:
-        pass
-    return None
-
-
-def _session_is_fresh(session: dict) -> bool:
-    """Return True if session was saved less than _SESSION_MAX_AGE_H hours ago."""
-    saved_at = session.get("saved_at")
-    if not saved_at:
-        return False
-    try:
-        age_h = (datetime.now() - datetime.fromisoformat(saved_at)).total_seconds() / 3600
-        return age_h < _SESSION_MAX_AGE_H
-    except Exception:
-        return False
-
-
-async def _save_session(context) -> None:
-    """Persist Playwright storage_state (cookies + localStorage) with a timestamp."""
-    try:
-        state = await context.storage_state()
-        _SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _SESSION_FILE.write_text(json.dumps(
-            {"saved_at": datetime.now().isoformat(timespec="seconds"), "state": state},
-            indent=2,
-        ))
-        log.info(f"Session saved → {_SESSION_FILE}")
-    except Exception as exc:
-        log.warning(f"Could not save session: {exc}")
 
 
 async def _is_logged_in(page) -> bool:
@@ -110,21 +71,21 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         browser = await pw.chromium.launch(headless=True)
 
         # ── Step 1: try to restore saved session ──────────────────────────────
-        session  = _load_session()
+        session  = load_session(_SESSION_FILE)
         context  = None
         skip_login = False
 
-        if session and _session_is_fresh(session):
+        if session and session_is_fresh(session, _SESSION_MAX_AGE_H):
             try:
                 context = await browser.new_context(storage_state=session["state"])
                 log.info("Session restored (age < 20 h) — will verify after navigation")
             except Exception as exc:
                 log.warning(f"Could not restore session state: {exc}")
-                _SESSION_FILE.unlink(missing_ok=True)
+                invalidate_session(_SESSION_FILE)
                 context = None
         elif session:
             log.info("Session stale (> 20 h) — proactive re-login")
-            _SESSION_FILE.unlink(missing_ok=True)
+            invalidate_session(_SESSION_FILE)
 
         if context is None:
             context = await browser.new_context()
@@ -141,7 +102,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             await emit("Opening irontrade.hu…")
 
             # ── Step 2: verify session by navigating to search and checking auth ─
-            if session and _session_is_fresh(session):
+            if session and session_is_fresh(session, _SESSION_MAX_AGE_H):
                 search_url = SEARCH_URL.format(part_no=supplier_part_no)
                 await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
                 if await _is_logged_in(page):
@@ -149,12 +110,10 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     skip_login = True
                 else:
                     log.warning("Session invalid — falling back to full login")
-                    _SESSION_FILE.unlink(missing_ok=True)
-                    # Re-create context without stale cookies
-                    await browser.close()
-                    browser  = await pw.chromium.launch(headless=True)
-                    context  = await browser.new_context()
-                    page     = await context.new_page()
+                    invalidate_session(_SESSION_FILE)
+                    await context.close()
+                    context = await browser.new_context()
+                    page = await context.new_page()
                     page.on("dialog", handle_dialog)
 
             # ── Step 3: full login (if session missing or invalid) ────────────
@@ -213,7 +172,10 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                                     log.error(f"Page error text: {line}")
                             raise RuntimeError("Login to irontrade.hu failed. Please check credentials.")
 
-                await _save_session(context)
+                try:
+                    await save_session(context, _SESSION_FILE)
+                except Exception as exc:
+                    log.warning(f"Could not save session: {exc}")
 
                 # ── Step 4: navigate to search after login ────────────────────
                 search_url = SEARCH_URL.format(part_no=supplier_part_no)
@@ -226,7 +188,20 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 await emit(f"Searching for part {supplier_part_no} on irontrade.hu…")
 
             log.info(f"Search page loaded: {page.url}")
-            await page.wait_for_timeout(1500)
+            try:
+                done, pending = await asyncio.wait(
+                    [
+                        asyncio.ensure_future(page.wait_for_selector("table tbody tr", timeout=8000)),
+                        asyncio.ensure_future(page.wait_for_selector("text=Találat: 0", timeout=8000)),
+                    ],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
+                    task.cancel()
+                for task in done:
+                    task.result()
+            except Exception:
+                log.warning("No explicit search result marker appeared after 8s — continuing with body inspection")
 
             body_text = await page.locator("body").inner_text(timeout=10000)
             log.info(f"Search page body (first 300): {body_text[:300]}")

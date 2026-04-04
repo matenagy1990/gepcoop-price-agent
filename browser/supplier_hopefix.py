@@ -139,12 +139,10 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
                 try:
                     await page.get_by_role("button", name="Vše přijmout").click(timeout=5000)
-                    await page.wait_for_timeout(600)
                     log.info("Cookie banner accepted")
                 except PlaywrightTimeout:
                     try:
                         await page.get_by_role("button", name="Accept all").click(timeout=3000)
-                        await page.wait_for_timeout(600)
                     except PlaywrightTimeout:
                         log.info("No cookie banner")
 
@@ -156,9 +154,13 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 await page.get_by_role("textbox", name="E-mail").fill(username)
                 await page.get_by_role("textbox", name="Password").fill(password)
                 await page.get_by_role("button", name="Login").click()
-
-                await page.wait_for_load_state("domcontentloaded")
-                await page.wait_for_timeout(1500)
+                try:
+                    await page.wait_for_function(
+                        "() => !location.pathname.includes('/login') && !!document.querySelector('#search_input')",
+                        timeout=12000,
+                    )
+                except PlaywrightTimeout:
+                    pass
 
                 if "/login" in page.url:
                     raise RuntimeError("Login to hopefix.cz failed. Please check credentials.")
@@ -190,7 +192,10 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 await page.wait_for_load_state("networkidle", timeout=20000)
             except PlaywrightTimeout:
                 log.warning("networkidle timeout — continuing anyway")
-            await page.wait_for_timeout(500)
+            try:
+                await page.locator("tr").filter(has_text=supplier_part_no).first.wait_for(timeout=8000)
+            except PlaywrightTimeout:
+                raise RuntimeError(f"Part {supplier_part_no} row not found on hopefix.cz.")
             log.info(f"Product page: {page.url}")
 
             await emit("Reading price and stock from hopefix.cz…")
@@ -207,11 +212,11 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 )
 
             await toggle.click()
-            await page.wait_for_timeout(500)
 
             expander = page.locator(
                 f"form:has(input[name='product_nr'][value='{supplier_part_no}'])"
             )
+            await expander.wait_for(timeout=8000)
             box_option = expander.locator("select.package_type option").first
             data_price = await box_option.get_attribute("data-price")
             data_qty   = await box_option.get_attribute("data-qty")

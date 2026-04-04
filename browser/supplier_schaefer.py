@@ -23,15 +23,21 @@ import logging
 import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
 
 load_dotenv()
 
 log = logging.getLogger("schaefer")
 
 LOGIN_URL = "https://shop.schaefer-peters.com/sp/en/login/"
+HOME_URL = "https://shop.schaefer-peters.com/b2b/en/"
+SEARCH_URL = "https://shop.schaefer-peters.com/b2b/en/search/?query={part_no}"
+SESSION_FILE = Path(__file__).parent.parent / "assets" / "sessions" / "schaefer_session.json"
+SESSION_MAX_AGE_HOURS = 20
 
 
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
@@ -40,46 +46,83 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         if on_progress:
             await on_progress({"step": "browser", "status": "running", "msg": msg})
 
+    session = load_session(SESSION_FILE)
+    use_session = bool(session and session_is_fresh(session, SESSION_MAX_AGE_HOURS))
+
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
-        ctx = await browser.new_context()
+        if use_session:
+            try:
+                ctx = await browser.new_context(storage_state=session["state"])
+                log.info("Restored saved session (age < 20 h)")
+            except Exception as exc:
+                log.warning(f"Could not restore saved session: {exc}")
+                invalidate_session(SESSION_FILE)
+                use_session = False
+                ctx = await browser.new_context()
+        else:
+            if session:
+                log.info("Session stale (> 20 h) — proactive re-login")
+                invalidate_session(SESSION_FILE)
+            ctx = await browser.new_context()
         page = await ctx.new_page()
 
         try:
             await emit("Opening shop.schaefer-peters.com…")
-            await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-            log.info(f"Login page: {page.url}")
+            search_url = SEARCH_URL.format(part_no=supplier_part_no)
 
-            # Login
-            await emit("Logging in to shop.schaefer-peters.com…")
-            username = os.getenv("SUPPLIER_I_USERNAME", "")
-            password = os.getenv("SUPPLIER_I_PASSWORD", "")
-            log.info(f"Logging in as: {username}")
+            if use_session:
+                await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
+                if "/login" in page.url:
+                    log.warning("Saved session is no longer valid — performing fresh login")
+                    invalidate_session(SESSION_FILE)
+                    await ctx.close()
+                    ctx = await browser.new_context()
+                    page = await ctx.new_page()
+                    use_session = False
+                else:
+                    log.info("Session valid — login skipped")
 
-            await page.locator("input[name='input_login']").first.fill(username)
-            await page.locator("input[name='input_password']").first.fill(password)
-            await page.locator("button:has-text('Log in')").first.click()
+            if not use_session:
+                await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+                log.info(f"Login page: {page.url}")
 
-            await page.wait_for_load_state("domcontentloaded")
-            await page.wait_for_timeout(2000)
+                await emit("Logging in to shop.schaefer-peters.com…")
+                username = os.getenv("SUPPLIER_I_USERNAME", "")
+                password = os.getenv("SUPPLIER_I_PASSWORD", "")
+                log.info(f"Logging in as: {username}")
 
-            if "/login" in page.url and "action=shop_login" not in page.url:
-                raise RuntimeError(
-                    "Login to shop.schaefer-peters.com failed. Please check credentials."
-                )
-            log.info(f"Login successful: {page.url}")
+                await page.locator("input[name='input_login']").first.fill(username)
+                await page.locator("input[name='input_password']").first.fill(password)
+                await page.locator("button:has-text('Log in')").first.click()
+
+                try:
+                    await page.wait_for_function(
+                        "() => !location.pathname.includes('/login') && !!document.querySelector(\"input[type='search']\")",
+                        timeout=12000,
+                    )
+                except PlaywrightTimeout:
+                    raise RuntimeError(
+                        "Login to shop.schaefer-peters.com failed. Please check credentials."
+                    )
+                log.info(f"Login successful: {page.url}")
+                try:
+                    await save_session(ctx, SESSION_FILE)
+                except Exception as exc:
+                    log.warning(f"Could not persist session: {exc}")
+
+                await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
 
             # Search — use the search box and press Enter
             await emit(f"Searching for {supplier_part_no} on schaefer-peters…")
-            search_box = page.locator("input[type='search']").first
-            await search_box.fill(supplier_part_no)
-            await search_box.press("Enter")
-            await page.wait_for_load_state("domcontentloaded")
-            await page.wait_for_timeout(2000)
             log.info(f"After search: {page.url}")
 
             # If still on a search results page, click the first product link
             if "/search/" in page.url or "/b2b/en/art-" not in page.url:
+                try:
+                    await page.wait_for_selector("a[href*='/b2b/en/art-'], text=/no result|0 article/i", timeout=8000)
+                except PlaywrightTimeout:
+                    pass
                 body_text = await page.locator("body").inner_text()
                 if "no result" in body_text.lower() or "0 article" in body_text.lower():
                     raise RuntimeError(
@@ -89,7 +132,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     first_link = page.locator("a[href*='/b2b/en/art-']").first
                     await first_link.click(timeout=8000)
                     await page.wait_for_load_state("domcontentloaded")
-                    await page.wait_for_timeout(1500)
+                    await page.wait_for_selector("span[itemprop='price']", timeout=8000)
                     log.info(f"Product page: {page.url}")
                 except PlaywrightTimeout:
                     raise RuntimeError(

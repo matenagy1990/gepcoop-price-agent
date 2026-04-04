@@ -36,15 +36,19 @@ import logging
 import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
 
 load_dotenv()
 
 log = logging.getLogger("kingb2b")
 
 PORTAL_URL = "https://kingb2b.it/PORTAL/"
+SESSION_FILE = Path(__file__).parent.parent / "assets" / "sessions" / "kingb2b_session.json"
+SESSION_MAX_AGE_HOURS = 20
 
 
 def _parse_eur(text: str) -> float:
@@ -67,9 +71,25 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         if on_progress:
             await on_progress({"step": "browser", "status": "running", "msg": msg})
 
+    session = load_session(SESSION_FILE)
+    use_session = bool(session and session_is_fresh(session, SESSION_MAX_AGE_HOURS))
+
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
-        ctx = await browser.new_context()
+        if use_session:
+            try:
+                ctx = await browser.new_context(storage_state=session["state"])
+                log.info("Restored saved session (age < 20 h)")
+            except Exception as exc:
+                log.warning(f"Could not restore saved session: {exc}")
+                invalidate_session(SESSION_FILE)
+                use_session = False
+                ctx = await browser.new_context()
+        else:
+            if session:
+                log.info("Session stale (> 20 h) — proactive re-login")
+                invalidate_session(SESSION_FILE)
+            ctx = await browser.new_context()
         page = await ctx.new_page()
 
         try:
@@ -77,7 +97,10 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             await page.goto(PORTAL_URL, wait_until="domcontentloaded")
             # Wait for SPA to fully initialise
             await page.wait_for_selector("#header-search", timeout=15000)
-            await page.wait_for_timeout(1000)
+            await page.wait_for_function(
+                "() => document.querySelector('#header-search')?.offsetParent !== null",
+                timeout=5000,
+            )
             log.info("Portal loaded")
 
             # ── Check if login is required ─────────────────────────────
@@ -87,6 +110,14 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             )
 
             if is_hidden:
+                if use_session:
+                    log.warning("Saved session is no longer valid — performing fresh login")
+                    invalidate_session(SESSION_FILE)
+                    await ctx.close()
+                    ctx = await browser.new_context()
+                    page = await ctx.new_page()
+                    await page.goto(PORTAL_URL, wait_until="domcontentloaded")
+                    await page.wait_for_selector("#header-search", timeout=15000)
                 await emit("Logging in to kingb2b.it…")
                 username = os.getenv("SUPPLIER_J_USERNAME", "")
                 password = os.getenv("SUPPLIER_J_PASSWORD", "")
@@ -110,6 +141,10 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     raise RuntimeError("Login to kingb2b.it failed. Please check credentials.")
 
                 log.info("Login successful")
+                try:
+                    await save_session(ctx, SESSION_FILE)
+                except Exception as exc:
+                    log.warning(f"Could not persist session: {exc}")
             else:
                 log.info("Already logged in")
 
@@ -121,7 +156,10 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
             # Wait for loading to finish and results to appear
             await page.wait_for_selector("div.singola-famiglia", timeout=12000)
-            await page.wait_for_timeout(500)
+            await page.wait_for_function(
+                "() => !document.body.innerText.includes('Attendere prego')",
+                timeout=10000,
+            )
             log.info("Search results loaded")
 
             # Check for "not found"

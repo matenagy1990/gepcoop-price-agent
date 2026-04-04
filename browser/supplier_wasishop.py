@@ -142,7 +142,10 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             # ── Step 1: try session restore ───────────────────────────────────
             if use_session:
                 await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=20000)
-                await page.wait_for_timeout(1000)
+                try:
+                    await page.wait_for_selector("input[name='search'], input[name='name']", timeout=8000)
+                except PlaywrightTimeout:
+                    log.warning("No login/search marker appeared after session restore — continuing URL check")
                 log.info(f"After session restore, URL: {page.url}")
 
                 if "login_form" in page.url:
@@ -159,12 +162,11 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             # ── Step 2: full login (if needed) ───────────────────────────────
             if not use_session:
                 await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-                await page.wait_for_timeout(1500)
+                await page.wait_for_selector("input[name='name'], input[name='password']", timeout=8000)
                 log.info(f"Login page: {page.url}")
 
                 try:
                     await page.locator("button[aria-label='dismiss cookie message']").click(timeout=4000)
-                    await page.wait_for_timeout(500)
                     log.info("Cookie banner dismissed")
                 except PlaywrightTimeout:
                     log.info("No cookie banner")
@@ -177,8 +179,13 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 await page.get_by_role("textbox", name="Name").fill(username)
                 await page.get_by_role("textbox", name="Passwort").fill(password)
                 await page.get_by_role("button", name="Anmelden").click()
-                await page.wait_for_load_state("domcontentloaded")
-                await page.wait_for_timeout(1500)
+                try:
+                    await page.wait_for_function(
+                        "() => !location.href.includes('login_form') && !!document.querySelector(\"input[name='search']\")",
+                        timeout=12000,
+                    )
+                except PlaywrightTimeout:
+                    pass
 
                 if "login_form" in page.url:
                     raise RuntimeError("Login to wasishop.de failed. Please check credentials.")
@@ -192,7 +199,13 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             await search.fill(supplier_part_no)
             await search.press("Enter")
             await page.wait_for_load_state("networkidle")
-            await page.wait_for_timeout(3000)   # prices are injected after page load
+            try:
+                await page.wait_for_function(
+                    "() => { const t = document.body.innerText; return t.includes('€') || t.includes('keine Artikel') || t.includes('momentan keine Artikel'); }",
+                    timeout=10000,
+                )
+            except PlaywrightTimeout:
+                log.warning("Price / empty-state text did not appear after 10s — attempting extraction anyway")
             log.info(f"Search results: {page.url}")
 
             body_text = await page.locator("body").inner_text()

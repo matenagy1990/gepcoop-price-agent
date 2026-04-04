@@ -137,7 +137,10 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             # ── Step 1: try session restore ───────────────────────────────────
             if use_session:
                 await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=20000)
-                await page.wait_for_timeout(2000)
+                try:
+                    await page.wait_for_selector("input[name='username'], input[placeholder='Search by name, code, DIN']", timeout=8000)
+                except PlaywrightTimeout:
+                    log.warning("No login/search marker appeared after session restore — continuing check")
                 log.info(f"After session restore, URL: {page.url}")
 
                 login_form_visible = await page.locator("input[name='username']").first.is_visible()
@@ -156,7 +159,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             # ── Step 2: full login (if needed) ───────────────────────────────
             if not use_session:
                 await page.goto(HOME_URL, wait_until="domcontentloaded")
-                await page.wait_for_timeout(2000)
+                await page.wait_for_selector("input[name='username']", timeout=8000)
                 log.info(f"Loaded: {page.url}")
 
                 await emit("Logging in to eshop.mekrs.cz…")
@@ -166,7 +169,10 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 await page.locator("input[name='username']").fill(username)
                 await page.locator("input[name='password']").fill(os.getenv("SUPPLIER_D_PASSWORD", ""))
                 await page.locator("[data-testid='login-button']").click()
-                await page.wait_for_timeout(3000)
+                try:
+                    await page.wait_for_selector("input[placeholder='Search by name, code, DIN']", timeout=12000)
+                except PlaywrightTimeout:
+                    pass
 
                 if await page.locator("input[name='username']").first.is_visible():
                     raise RuntimeError("Login to eshop.mekrs.cz failed. Please check credentials.")
@@ -180,7 +186,13 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             await search_inp.click()
             await search_inp.type(supplier_part_no, delay=50)
             log.info(f"Typed '{supplier_part_no}' into search box, waiting for autocomplete…")
-            await page.wait_for_timeout(2000)
+            try:
+                await page.wait_for_selector("text=Show all results", timeout=8000)
+            except PlaywrightTimeout:
+                raise RuntimeError(
+                    f"Part {supplier_part_no} was not found on eshop.mekrs.cz "
+                    "(autocomplete returned no results)."
+                )
 
             show_all = page.locator("text=Show all results").first
             show_all_count = await show_all.count()

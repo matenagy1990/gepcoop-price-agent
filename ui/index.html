@@ -252,6 +252,23 @@
   .adm-table tr:last-child td{border-bottom:none}
   .adm-table tr:hover td{background:rgba(0,159,230,.04)}
   .adm-empty{text-align:center;padding:32px;color:var(--muted);font-size:14px}
+  .adm-runs-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+  .adm-range-group{display:flex;gap:8px;flex-wrap:wrap}
+  .adm-range-btn{padding:7px 12px;border:1.5px solid var(--border);background:#fff;border-radius:999px;font-family:'Inter',sans-serif;font-size:12px;font-weight:600;color:var(--muted);cursor:pointer;transition:all .15s}
+  .adm-range-btn:hover{border-color:var(--blue);color:var(--navy)}
+  .adm-range-btn.active{background:var(--navy);border-color:var(--navy);color:#fff}
+  .adm-chart-card{border:1px solid var(--border);border-radius:12px;background:linear-gradient(180deg,#fbfdff 0%, #f4f8fb 100%);padding:14px 16px}
+  .adm-chart-meta{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+  .adm-chart-summary{font-size:12px;color:var(--muted)}
+  .adm-chart-wrap{position:relative}
+  .adm-chart-svg{display:block;width:100%;height:240px}
+  .adm-chart-axis{stroke:#bfd0dd;stroke-width:1}
+  .adm-chart-grid{stroke:#dfe8ef;stroke-width:1}
+  .adm-chart-line{fill:none;stroke:var(--blue);stroke-width:3;stroke-linecap:round;stroke-linejoin:round}
+  .adm-chart-line-avg{fill:none;stroke:var(--red);stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:7 5}
+  .adm-chart-point{fill:var(--navy);stroke:#fff;stroke-width:2}
+  .adm-chart-label{font-family:'Inter',sans-serif;font-size:11px;fill:#64748b}
+  .adm-chart-empty{padding:48px 12px;text-align:center;color:var(--muted);font-size:13px}
 
   /* ── SUPPLIER ROWS ── */
   .adm-supplier-row{background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:16px 20px;margin-bottom:12px}
@@ -657,6 +674,25 @@
                 <span>Utolsó 10 futás</span>
                 <button class="btn-upload" id="adm-btn-refresh-runs" style="font-size:13px;padding:6px 16px">↻ Frissítés</button>
               </div>
+              <div class="adm-runs-toolbar">
+                <div class="adm-range-group">
+                  <button class="adm-range-btn active" data-range="week">1 hét</button>
+                  <button class="adm-range-btn" data-range="month">1 hónap</button>
+                  <button class="adm-range-btn" data-range="all">Összes</button>
+                </div>
+                <div id="adm-chart-summary" class="adm-chart-summary">Diagram betöltése…</div>
+              </div>
+              <div class="adm-chart-card">
+                <div class="adm-chart-meta">
+                  <strong style="font-family:'Oswald',sans-serif;font-size:13px;letter-spacing:.8px;color:var(--navy)">Lekérdezési idő másodpercben</strong>
+                </div>
+                <div id="adm-runs-chart-wrap" class="adm-chart-wrap">
+                  <div class="adm-chart-empty">Betöltés…</div>
+                </div>
+              </div>
+            </div>
+            <div class="adm-section">
+              <div class="adm-section-title">Részletes futáslista</div>
               <div class="adm-table-wrap">
                 <table class="adm-table">
                   <thead>
@@ -1423,6 +1459,7 @@ function resetUI(){
 
 /* ══ ADMIN ══════════════════════════════════════════════════════ */
 let adminToken = null;
+let admRunsRange = 'week';
 
 // ── open / close overlay ─────────────────────────────────────────
 function openAdminOverlay() {
@@ -1441,7 +1478,10 @@ document.getElementById('btn-admin').addEventListener('click', openAdminOverlay)
 function admSwitchTab(tab) {
   document.querySelectorAll('.adm-nav-item').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('.adm-tab').forEach(p => p.classList.toggle('hidden', p.id !== `adm-tab-${tab}`));
-  if (tab === 'runs') admLoadRuns();
+  if (tab === 'runs') {
+    admLoadRuns();
+    admLoadRunsChart(admRunsRange);
+  }
 }
 document.querySelectorAll('.adm-nav-item').forEach(btn => {
   btn.addEventListener('click', () => admSwitchTab(btn.dataset.tab));
@@ -1544,6 +1584,121 @@ async function admLoadRuns() {
   }
 }
 document.getElementById('adm-btn-refresh-runs').addEventListener('click', admLoadRuns);
+document.getElementById('adm-btn-refresh-runs').addEventListener('click', () => admLoadRunsChart(admRunsRange));
+
+async function admLoadRunsChart(range = 'week') {
+  admRunsRange = range;
+  document.querySelectorAll('.adm-range-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.range === range);
+  });
+
+  const wrap = document.getElementById('adm-runs-chart-wrap');
+  const summary = document.getElementById('adm-chart-summary');
+  wrap.innerHTML = '<div class="adm-chart-empty">Betöltés…</div>';
+  summary.textContent = 'Diagram betöltése…';
+
+  try {
+    const res = await fetch(`/admin/runs/chart?range=${encodeURIComponent(range)}`);
+    const d = await res.json();
+    const runs = Array.isArray(d.runs) ? d.runs : [];
+    admRenderRunsChart(runs);
+  } catch (err) {
+    wrap.innerHTML = `<div class="adm-chart-empty">⚠ ${err.message}</div>`;
+    summary.textContent = 'Nem sikerült betölteni a diagramot.';
+  }
+}
+
+function admRenderRunsChart(runs) {
+  const wrap = document.getElementById('adm-runs-chart-wrap');
+  const summary = document.getElementById('adm-chart-summary');
+  if (!runs.length) {
+    wrap.innerHTML = '<div class="adm-chart-empty">Nincs megjeleníthető futás ebben az időszakban.</div>';
+    summary.textContent = '0 futás';
+    return;
+  }
+
+  const width = 860;
+  const height = 240;
+  const pad = { top: 20, right: 18, bottom: 38, left: 54 };
+  const innerW = width - pad.left - pad.right;
+  const innerH = height - pad.top - pad.bottom;
+  const maxSec = Math.max(...runs.map(r => Number(r.duration_sec) || 0), 1);
+  const minSec = 0;
+  const avgSec = runs.reduce((sum, r) => sum + (Number(r.duration_sec) || 0), 0) / runs.length;
+
+  const points = runs.map((r, idx) => {
+    const sec = Number(r.duration_sec) || 0;
+    const x = pad.left + (runs.length === 1 ? innerW / 2 : (idx / (runs.length - 1)) * innerW);
+    const y = pad.top + innerH - ((sec - minSec) / (maxSec - minSec || 1)) * innerH;
+    return {
+      ...r,
+      sec,
+      x: Number(x.toFixed(2)),
+      y: Number(y.toFixed(2)),
+      label: fmtTs(r.started_at),
+    };
+  });
+
+  const linePath = points.map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
+  let rollingSum = 0;
+  const avgPoints = points.map((p, idx) => {
+    rollingSum += p.sec;
+    const avg = rollingSum / (idx + 1);
+    const y = pad.top + innerH - ((avg - minSec) / (maxSec - minSec || 1)) * innerH;
+    return {
+      ...p,
+      avg,
+      avgY: Number(y.toFixed(2)),
+    };
+  });
+  const avgLinePath = avgPoints.map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.x} ${p.avgY}`).join(' ');
+  const gridValues = Array.from({ length: 5 }, (_, i) => Number((maxSec / 4 * i).toFixed(1)));
+  const grid = gridValues.map(v => {
+    const y = pad.top + innerH - ((v - minSec) / (maxSec - minSec || 1)) * innerH;
+    return { v, y: Number(y.toFixed(2)) };
+  });
+
+  const tickIndexes = runs.length <= 6
+    ? runs.map((_, idx) => idx)
+    : Array.from(new Set([0, Math.floor((runs.length - 1) * 0.25), Math.floor((runs.length - 1) * 0.5), Math.floor((runs.length - 1) * 0.75), runs.length - 1]));
+
+  wrap.innerHTML = `
+    <svg class="adm-chart-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="Lekérdezési idők diagram">
+      ${grid.map(g => `
+        <line class="adm-chart-grid" x1="${pad.left}" y1="${g.y}" x2="${width - pad.right}" y2="${g.y}"></line>
+        <text class="adm-chart-label" x="${pad.left - 8}" y="${g.y + 4}" text-anchor="end">${g.v}s</text>
+      `).join('')}
+      <line class="adm-chart-axis" x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${height - pad.bottom}"></line>
+      <line class="adm-chart-axis" x1="${pad.left}" y1="${height - pad.bottom}" x2="${width - pad.right}" y2="${height - pad.bottom}"></line>
+      <path class="adm-chart-line-avg" d="${avgLinePath}"></path>
+      <path class="adm-chart-line" d="${linePath}"></path>
+      ${points.map((p, idx) => `
+        <circle class="adm-chart-point" cx="${p.x}" cy="${p.y}" r="4">
+          <title>${p.label} • futás: ${p.sec}s • gördülő átlag: ${avgPoints[idx].avg.toFixed(2)}s • ${p.gepcoop_part_no || '—'} • ${p.status || '—'}</title>
+        </circle>
+      `).join('')}
+      ${tickIndexes.map(idx => {
+        const p = points[idx];
+        const short = new Date(p.started_at).toLocaleDateString('hu-HU', { month: '2-digit', day: '2-digit' });
+        return `<text class="adm-chart-label" x="${p.x}" y="${height - 12}" text-anchor="middle">${short}</text>`;
+      }).join('')}
+      <g transform="translate(${width - 220}, 16)">
+        <line class="adm-chart-line" x1="0" y1="0" x2="26" y2="0"></line>
+        <text class="adm-chart-label" x="34" y="4">Futási idő</text>
+        <line class="adm-chart-line-avg" x1="96" y1="0" x2="122" y2="0"></line>
+        <text class="adm-chart-label" x="130" y="4">Gördülő átlag</text>
+      </g>
+    </svg>
+  `;
+
+  const maxText = `${maxSec.toFixed(2)} s`;
+  const avgText = `${avgSec.toFixed(2)} s`;
+  summary.textContent = `${runs.length} futás • átlag: ${avgText} • max: ${maxText}`;
+}
+
+document.querySelectorAll('.adm-range-btn').forEach(btn => {
+  btn.addEventListener('click', () => admLoadRunsChart(btn.dataset.range));
+});
 
 // ── load and render current mapping ─────────────────────────────
 async function admLoadMapping() {

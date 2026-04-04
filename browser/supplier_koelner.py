@@ -16,7 +16,6 @@ Search flow:
   6. Read price from td.NETTO, stock from td.KESZLET .keszlet span
 """
 
-import json
 import re
 import logging
 import os
@@ -25,6 +24,7 @@ from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from browser.session_utils import invalidate_session, load_session, save_session
 
 load_dotenv()
 
@@ -32,7 +32,7 @@ log = logging.getLogger("koelner")
 
 LOGIN_URL    = "https://webshop.koelner.hu/belepes/"
 SEARCH_URL   = "https://webshop.koelner.hu/termekek/?keres={part_no}"
-_SESSION_FILE = Path(__file__).parent.parent / "assets" / ".koelner_session.json"
+_SESSION_FILE = Path(__file__).parent.parent / "assets" / "sessions" / "koelner_session.json"
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -58,27 +58,16 @@ def _parse_hu_price(price_str: str) -> float:
     return float(clean)
 
 
-async def _save_session(context) -> None:
-    """Persist browser cookies/localStorage to disk for reuse on the next call."""
-    try:
-        state = await context.storage_state()
-        _SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(_SESSION_FILE, "w", encoding="utf-8") as f:
-            json.dump(state, f)
-        log.info(f"Session saved → {_SESSION_FILE}")
-    except Exception as exc:
-        log.warning(f"Could not save session: {exc}")
-
-
 async def _log_login_failure(page, filled_user: str, filled_pass: str,
                               still_on_login: bool, login_form_present: bool) -> None:
-    """Dump full diagnostics to the log when a login attempt fails."""
+    """Dump concise diagnostics to the log when a login attempt fails."""
     log.error("═" * 60)
     log.error("KOELNER LOGIN FAILED — diagnostic dump")
     log.error(f"  URL after submit  : {page.url}")
     log.error(f"  still_on_login    : {still_on_login}")
     log.error(f"  login_form_present: {login_form_present}")
-    log.error(f"  username used     : '{filled_user}'")
+    masked_user = f"...{filled_user[-3:]}" if filled_user else "<empty>"
+    log.error(f"  username used     : '{masked_user}'")
     log.error(f"  password length   : {len(filled_pass)} chars "
               f"({'EMPTY — credential not set' if len(filled_pass) == 0 else 'set'})")
 
@@ -88,22 +77,13 @@ async def _log_login_failure(page, filled_user: str, filled_pass: str,
         pass
 
     try:
-        body_text = await page.locator("body").inner_text(timeout=5000)
-        log.error("  --- page body text ---")
+        body_text = await page.locator("body").inner_text(timeout=3000)
         for line in body_text.splitlines():
             line = line.strip()
-            if line:
-                log.error(f"  | {line}")
-    except Exception as exc:
-        log.error(f"  (could not read body text: {exc})")
-
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    screenshot_path = f"/tmp/koelner_login_fail_{ts}.png"
-    try:
-        await page.screenshot(path=screenshot_path, full_page=True)
-        log.error(f"  screenshot saved  : {screenshot_path}")
-    except Exception as exc:
-        log.error(f"  (screenshot failed: {exc})")
+            if line and any(w in line.lower() for w in ["hiba", "error", "sikertelen", "érvénytelen"]):
+                log.error(f"  page error text   : {line}")
+    except Exception:
+        pass
 
     log.error("═" * 60)
 
@@ -121,15 +101,14 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
         # Load saved session cookies if available
         context = None
-        if _SESSION_FILE.exists():
+        session = load_session(_SESSION_FILE)
+        if session:
             try:
-                with open(_SESSION_FILE, encoding="utf-8") as f:
-                    json.load(f)          # validate JSON before passing to Playwright
-                context = await browser.new_context(storage_state=str(_SESSION_FILE))
+                context = await browser.new_context(storage_state=session["state"])
                 log.info(f"Loaded saved session from {_SESSION_FILE}")
             except Exception as exc:
                 log.warning(f"Session file unreadable, starting fresh: {exc}")
-                _SESSION_FILE.unlink(missing_ok=True)
+                invalidate_session(_SESSION_FILE)
 
         if context is None:
             context = await browser.new_context()
@@ -206,7 +185,10 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     )
 
                 log.info(f"Login successful — login form gone, url={page.url}")
-                await _save_session(context)
+                try:
+                    await save_session(context, _SESSION_FILE)
+                except Exception as exc:
+                    log.warning(f"Could not save session: {exc}")
 
             # ── Step 3: search ────────────────────────────────────────────────
             search_url = SEARCH_URL.format(part_no=supplier_part_no)
