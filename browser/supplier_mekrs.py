@@ -50,9 +50,12 @@ _SESSION_MAX_AGE_H = 20
 
 
 def _parse_stock(s: str) -> int:
-    """Extract stock number from 'In stock 1,653,361 pcs' → 1653361"""
+    """Extract stock in pcs, preferring the explicit pcs quantity when packaging is also shown."""
     if not s:
         return 0
+    pcs_match = re.search(r"([\d.,]+)\s*pcs", s, flags=re.IGNORECASE)
+    if pcs_match:
+        return int(re.sub(r"[^\d]", "", pcs_match.group(1)) or "0")
     digit_groups = re.findall(r"\d+", s)
     return int("".join(digit_groups)) if digit_groups else 0
 
@@ -105,35 +108,142 @@ async def _wait_for_auth_state(page, timeout_ms: int = 12000) -> str:
     return "unknown"
 
 
+async def _capture_auth_signals(page) -> dict:
+    data = await page.evaluate(
+        """() => {
+            const visible = (selector) => {
+                const el = document.querySelector(selector);
+                if (!el) return false;
+                const s = window.getComputedStyle(el);
+                const r = el.getBoundingClientRect();
+                return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0;
+            };
+            const txt = document.body.innerText || '';
+            return {
+                login_visible: visible("input[name='username']"),
+                login_button_visible: visible("[data-testid='login-button']"),
+                search_visible: visible("input[placeholder='Search by name, code, DIN']"),
+                body_has_login_prompt: txt.includes('To add an item to the cart, you need to log in'),
+                body_has_without_vat: txt.includes('without VAT'),
+                body_has_with_vat: txt.includes('with VAT'),
+                body_snippet: txt.slice(0, 1200),
+            };
+        }"""
+    )
+    log.info(
+        "Mekrs auth signals: login_visible=%r, login_button_visible=%r, search_visible=%r, "
+        "login_prompt=%r, without_vat=%r, with_vat=%r",
+        data["login_visible"],
+        data["login_button_visible"],
+        data["search_visible"],
+        data["body_has_login_prompt"],
+        data["body_has_without_vat"],
+        data["body_has_with_vat"],
+    )
+    return data
+
+
 async def _extract_price_block(container):
     return await container.evaluate("""(root) => {
         const leaves = Array.from(root.querySelectorAll('*'))
-            .filter(el => el.childElementCount === 0);
+            .filter(el => el.childElementCount === 0)
+            .map(el => ({ el, text: (el.textContent || '').trim() }))
+            .filter(item => item.text);
 
-        for (const unitEl of leaves) {
-            const ut = unitEl.textContent.trim();
-            if (!/\\/\\s*\\d[\\d,]*\\s*pcs/.test(ut)) continue;
+        const isPrice = (text) => /[\\d][\\d.,]*\\s*Kč/.test(text);
+        const isPcsUnit = (text) => /\\/\\s*\\d[\\d,]*\\s*pcs/i.test(text);
 
-            let ancestor = unitEl.parentElement;
-            for (let i = 0; i < 8; i++) {
-                if (!ancestor) break;
-                const priceEl = Array.from(ancestor.querySelectorAll('*'))
-                    .find(el =>
-                        el.childElementCount === 0 &&
-                        /[\\d][\\d.,]*\\s*Kč/.test(el.textContent.trim())
-                    );
-                if (priceEl) {
-                    return [
-                        priceEl.textContent.trim(),
-                        ut,
-                        priceEl.outerHTML,
-                    ];
-                }
-                ancestor = ancestor.parentElement;
+        const pairs = [];
+        for (let i = 0; i < leaves.length; i++) {
+            if (!isPrice(leaves[i].text)) continue;
+            for (let j = i + 1; j <= Math.min(i + 4, leaves.length - 1); j++) {
+                if (!isPcsUnit(leaves[j].text)) continue;
+                const qtyMatch = leaves[j].text.match(/\\/\\s*(\\d[\\d,]*)\\s*pcs/i);
+                const qty = qtyMatch ? parseInt(qtyMatch[1].replace(/,/g, ''), 10) : 0;
+                pairs.push({
+                    price: leaves[i].text,
+                    unit: leaves[j].text,
+                    html: leaves[i].el.outerHTML,
+                    qty,
+                });
+                break;
             }
         }
-        return [null, null, null];
+
+        if (!pairs.length) return [null, null, null];
+
+        pairs.sort((a, b) => b.qty - a.qty);
+        return [pairs[0].price, pairs[0].unit, pairs[0].html];
     }""")
+
+
+async def _extract_results_page_data(page):
+    """Extract the first priced B2B result from the authenticated results page text."""
+    return await page.evaluate(
+        """() => {
+            const body = (document.body.innerText || '').replace(/\\s+/g, ' ').trim();
+            const stockMatch = body.match(/In stock\\s+([\\d.,\\s]+)\\s*pcs/i);
+            const unitPriceMatch = body.match(/([\\d][\\d.,]*)\\s*Kč\\s*\\/\\s*(\\d[\\d,]*)\\s*pcs\\s*without VAT/i);
+            if (!unitPriceMatch) return null;
+
+            return {
+                price_str: `${unitPriceMatch[1]} Kč`,
+                unit_str: `/ ${unitPriceMatch[2]} pcs`,
+                price_html: null,
+                stock_str: stockMatch ? `In stock ${stockMatch[1]} pcs` : '',
+                block_html: body.slice(0, 3000),
+                text: body.slice(0, 3000),
+            };
+        }"""
+    )
+
+
+async def _extract_detail_data(page, supplier_part_no: str):
+    """Extract price and qty from the checked Mekrs variant row on detail pages."""
+    return await page.evaluate(
+        """(partNo) => {
+            const checked = document.querySelector('input[name="variant"]:checked');
+            const row = checked ? checked.closest('.relative') || checked.parentElement : null;
+            if (!row) return null;
+
+            const text = (row.textContent || '').trim().replace(/\\s+/g, ' ');
+            const title = (row.querySelector('h3')?.textContent || '').trim();
+            const stockText = (row.querySelector('div.text-sm.font-medium.text-primaryGreen')?.textContent || '').trim();
+
+            const packagingQtyMatch = title.match(/\\((\\d[\\d,]*)\\s*pcs\\)/i);
+            const packagingQty = packagingQtyMatch ? parseInt(packagingQtyMatch[1].replace(/,/g, ''), 10) : null;
+
+            const lines = Array.from(row.querySelectorAll('div.grid.grid-flow-col.items-baseline'))
+                .map(line => {
+                    const priceNode = Array.from(line.querySelectorAll('*'))
+                        .find(node => /[\\d][\\d.,]*\\s*Kč/.test((node.textContent || '').trim()));
+                    const unitNode = Array.from(line.querySelectorAll('*'))
+                        .find(node => /\\/\\s*(packaging|pcs)/i.test((node.textContent || '').trim()));
+                    return {
+                        price: priceNode ? (priceNode.textContent || '').trim() : null,
+                        unit: unitNode ? (unitNode.textContent || '').trim() : null,
+                        html: priceNode ? priceNode.outerHTML : null,
+                    };
+                })
+                .filter(item => item.price && item.unit);
+
+            const packagingLine = lines.find(item => /\\/\\s*packaging/i.test(item.unit));
+            const pcsLine = lines.find(item => /\\/\\s*pcs/i.test(item.unit));
+
+            return {
+                part_present_on_page: document.body.innerText.includes(partNo),
+                title,
+                stock_str: stockText,
+                packaging_qty: packagingQty,
+                packaging_price_str: packagingLine ? packagingLine.price : null,
+                pcs_price_str: pcsLine ? pcsLine.price : null,
+                pcs_unit_str: pcsLine ? pcsLine.unit : null,
+                price_html: packagingLine?.html || pcsLine?.html || null,
+                block_html: row.innerHTML.slice(0, 3000),
+            };
+        }""",
+        supplier_part_no,
+    )
 
 
 # ── Main scraper ───────────────────────────────────────────────────────────────
@@ -180,9 +290,10 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             if use_session:
                 await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=20000)
                 state = await _wait_for_auth_state(page, timeout_ms=8000)
+                signals = await _capture_auth_signals(page)
                 log.info(f"After session restore, URL: {page.url}")
 
-                if state == "login":
+                if state == "login" or signals["login_visible"] or signals["login_button_visible"]:
                     log.warning("Session invalid (login form visible) — falling back to full login")
                     use_session = False
                     invalidate_session(_SESSION_FILE)
@@ -218,17 +329,29 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 username = os.getenv("SUPPLIER_D_USERNAME", "")
                 log.info(f"Logging in as: {username}")
 
-                await page.locator("input[name='username']").fill(username)
-                await page.locator("input[name='password']").fill(os.getenv("SUPPLIER_D_PASSWORD", ""))
-                await page.locator("[data-testid='login-button']").click()
+                user_input = page.locator("input[name='username']")
+                pass_input = page.locator("input[name='password']")
+                await user_input.click()
+                await user_input.fill("")
+                await user_input.type(username, delay=20)
+                await pass_input.click()
+                await pass_input.fill("")
+                await pass_input.type(os.getenv("SUPPLIER_D_PASSWORD", ""), delay=20)
+                log.info("Submitting Mekrs login with Enter on password field")
+                await pass_input.press("Enter")
+                await page.wait_for_timeout(3000)
                 state = await _wait_for_auth_state(page, timeout_ms=12000)
+                signals = await _capture_auth_signals(page)
                 if state == "unknown":
                     log.warning("Login did not resolve to search/login state — retrying homepage")
                     await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=20000)
                     state = await _wait_for_auth_state(page, timeout_ms=8000)
+                    signals = await _capture_auth_signals(page)
 
-                if state == "login":
-                    raise RuntimeError("Login to eshop.mekrs.cz failed. Please check credentials.")
+                if state == "login" or signals["login_visible"] or signals["login_button_visible"]:
+                    raise RuntimeError(
+                        "Login to eshop.mekrs.cz did not establish an authenticated session."
+                    )
                 if state != "search":
                     raise RuntimeError(
                         "eshop.mekrs.cz login completed, but the search page did not become available."
@@ -253,7 +376,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 await search_inp.press("Control+A")
                 await search_inp.press("Backspace")
             await search_inp.type(supplier_part_no, delay=50)
-            log.info(f"Typed '{supplier_part_no}' into search box, waiting for autocomplete…")
+            log.info(f"Typed '{supplier_part_no}' into search box, waiting for Mekrs search suggestions…")
             try:
                 await page.wait_for_function(
                     """(partNo) => {
@@ -270,35 +393,40 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     "(autocomplete returned no results)."
                 )
 
-            exact_suggestion = page.locator("li, [role='option'], a, button").filter(
-                has_text=supplier_part_no
-            ).first
-            if await exact_suggestion.count():
-                await exact_suggestion.click()
-                log.info("Clicked exact Mekrs autocomplete suggestion")
-            else:
-                show_all = page.locator("text=Show all results").first
-                show_all_count = await show_all.count()
-                if show_all_count == 0:
-                    raise RuntimeError(
-                        f"Part {supplier_part_no} was not found on eshop.mekrs.cz "
-                        "(autocomplete returned no results)."
-                    )
-                await show_all.click()
-                log.info("Clicked Mekrs 'Show all results' fallback")
+            current_value = await search_inp.input_value()
+            if current_value != supplier_part_no:
+                log.warning(
+                    "Mekrs search input drifted from %r to %r; correcting before submit",
+                    supplier_part_no,
+                    current_value,
+                )
+                await search_inp.fill(supplier_part_no)
+                await page.wait_for_function(
+                    """(expected) => {
+                        const el = document.querySelector("input[placeholder='Search by name, code, DIN']");
+                        return !!el && el.value === expected;
+                    }""",
+                    arg=supplier_part_no,
+                    timeout=3000,
+                )
+
+            log.info("Submitting Mekrs product search with Enter")
+            await search_inp.press("Enter")
 
             try:
                 await page.wait_for_function(
-                    """(partNo) => {
-                        return !!document.querySelector("[data-testid='product-card']") ||
-                               document.body.innerText.includes(partNo) ||
-                               document.body.innerText.includes('Kč');
-                    }""",
-                    arg=supplier_part_no,
+                    "() => location.pathname.includes('/products') && document.body.innerText.includes('Kč')",
                     timeout=10000,
                 )
             except PlaywrightTimeout:
                 raise RuntimeError(f"Part {supplier_part_no} was not found on eshop.mekrs.cz.")
+            try:
+                await page.wait_for_function(
+                    "() => document.body.innerText.includes('without VAT')",
+                    timeout=8000,
+                )
+            except PlaywrightTimeout:
+                log.warning("Mekrs results page did not show 'without VAT' in time")
             try:
                 await page.wait_for_function(
                     "() => document.body.innerText.includes('Kč')",
@@ -308,6 +436,13 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             except PlaywrightTimeout:
                 log.warning("Kč not found in DOM after 10s — attempting extraction anyway")
             log.info(f"Results page loaded: {page.url}")
+            signals = await _capture_auth_signals(page)
+            if signals["body_has_login_prompt"] or (
+                signals["body_has_with_vat"] and not signals["body_has_without_vat"]
+            ):
+                raise RuntimeError(
+                    "eshop.mekrs.cz is showing public prices only; authenticated B2B pricing is not active."
+                )
 
             cards = page.locator("[data-testid='product-card']")
             card_count = await cards.count()
@@ -315,37 +450,28 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
             # ── Step 4: extract data ──────────────────────────────────────────
             await emit("Reading price and stock from eshop.mekrs.cz…")
-            if card_count > 0:
-                target_card = cards.filter(has_text=supplier_part_no).first
-                if await target_card.count() == 0:
-                    raise RuntimeError(
-                        f"Part {supplier_part_no} was not found on eshop.mekrs.cz "
-                        "(results page did not contain an exact matching product card)."
-                    )
-            else:
-                target_card = page.locator("main").first
-                if await target_card.count() == 0:
-                    target_card = page.locator("body").first
-                log.info("No Mekrs product-card found; falling back to detail-page extraction")
-
-            try:
-                stock_str = await target_card.locator(
-                    "div.text-sm.font-medium.text-primaryGreen"
-                ).inner_text(timeout=5000)
-                stock_str = stock_str.strip()
-            except PlaywrightTimeout:
-                stock_str = ""
-                log.warning("Stock element not found — assuming out of stock")
-
-            price_str, unit_str, price_elem_html = await _extract_price_block(target_card)
+            results_data = await _extract_results_page_data(page)
+            if not results_data:
+                raise RuntimeError(
+                    f"Part {supplier_part_no} was not found on eshop.mekrs.cz "
+                    "(authenticated results page did not expose a priced result block)."
+                )
+            price_str = results_data["price_str"]
+            unit_str = results_data["unit_str"]
+            price_elem_html = results_data["price_html"]
+            stock_str = results_data["stock_str"] or ""
+            card_snippet = results_data["block_html"]
+            log.info(
+                "Mekrs results block: stock=%r, price=%r, unit=%r",
+                stock_str,
+                price_str,
+                unit_str,
+            )
 
             log.info(f"Price element HTML: {price_elem_html}")
             log.info(f"Raw — price: '{price_str}', unit: '{unit_str}', stock: '{stock_str}'")
 
             if not price_str:
-                card_snippet = await target_card.evaluate(
-                    "(card) => card.innerHTML.slice(0, 3000)"
-                )
                 log.error(f"Price not found in target card — card HTML snippet:\n{card_snippet}")
                 raise RuntimeError(
                     f"Part {supplier_part_no} has no visible price on eshop.mekrs.cz."
