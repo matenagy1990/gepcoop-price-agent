@@ -1,19 +1,33 @@
 """
 Playwright scraper for csavarda.hu
 
-Login flow:
-  1. GET /bejelentkezes → fill #email + #password by id → submit
+Session flow:
+  1. Try to restore saved session from assets/sessions/csavarda_session.json
+     - Skip restore if saved_at > 20 h old
+  2. Navigate to search URL and verify session:
+     - Redirected to /bejelentkezes → session invalid
+     - Redirected to /telephely-valasztasa → logged in but location needs re-selection
+     - Otherwise → session valid, skip login
+  3. If session missing / stale / invalid: full login, save new session with timestamp
+
+Login flow (fallback):
+  1. GET /bejelentkezes → fill #email + #password → submit
   2. Redirected to /telephely-valasztasa → select Budapest (/pest)
-  3. Search: /pest/kereso?search={supplier_part_no}
-  4. Click first product link → side drawer opens
-  5. Extract Nettó egységár, Készlet (Budapest + Vecsés)
+  3. Save session here (location is now selected in cookies)
+
+Search flow:
+  4. /pest/kereso?search={supplier_part_no}
+  5. Click first product link → side drawer opens
+  6. Extract Nettó egységár, Készlet (Budapest + Vecsés)
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
@@ -24,6 +38,9 @@ log = logging.getLogger("csavarda")
 
 LOGIN_URL  = "https://csavarda.hu/bejelentkezes"
 SEARCH_URL = "https://csavarda.hu/pest/kereso?search={part_no}"
+
+_SESSION_FILE      = Path(__file__).parent.parent / "assets" / "sessions" / "csavarda_session.json"
+_SESSION_MAX_AGE_H = 20
 
 _JS_NEXT_SIBLING = """
 (labelText) => {
@@ -46,74 +63,174 @@ _JS_CONTAINS = """
 """
 
 
+# ── Session helpers ────────────────────────────────────────────────────────────
+
+def _load_session() -> dict | None:
+    try:
+        if _SESSION_FILE.exists():
+            data = json.loads(_SESSION_FILE.read_text())
+            if isinstance(data, dict) and "state" in data:
+                return data
+    except Exception:
+        pass
+    return None
+
+
+def _session_is_fresh(session: dict) -> bool:
+    saved_at = session.get("saved_at")
+    if not saved_at:
+        return False
+    try:
+        age_h = (datetime.now() - datetime.fromisoformat(saved_at)).total_seconds() / 3600
+        return age_h < _SESSION_MAX_AGE_H
+    except Exception:
+        return False
+
+
+async def _save_session(context) -> None:
+    try:
+        state = await context.storage_state()
+        _SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _SESSION_FILE.write_text(json.dumps(
+            {"saved_at": datetime.now().isoformat(timespec="seconds"), "state": state},
+            indent=2,
+        ))
+        log.info(f"Session saved → {_SESSION_FILE}")
+    except Exception as exc:
+        log.warning(f"Could not save session: {exc}")
+
+
+# ── Main scraper ───────────────────────────────────────────────────────────────
+
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
     async def emit(msg: str):
         log.info(msg)
         if on_progress:
             await on_progress({"step": "browser", "status": "running", "msg": msg})
 
+    session    = _load_session()
+    use_session = session and _session_is_fresh(session)
+
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
-        context = await browser.new_context()
-        page    = await context.new_page()
+
+        if use_session:
+            log.info("Restoring saved session (age < 20 h)")
+            try:
+                context = await browser.new_context(storage_state=session["state"])
+            except Exception as exc:
+                log.warning(f"Could not restore session state: {exc}")
+                use_session = False
+                _SESSION_FILE.unlink(missing_ok=True)
+                context = await browser.new_context()
+        else:
+            if session:
+                log.info("Session stale (> 20 h) — proactive re-login")
+                _SESSION_FILE.unlink(missing_ok=True)
+            context = await browser.new_context()
+
+        page = await context.new_page()
         page.on("dialog", lambda d: (log.info(f"Dialog dismissed: {d.message}"), d.accept()))
 
         try:
-            # 1. Open login page
             await emit("Opening csavarda.hu…")
-            await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-            log.info(f"Loaded login page: {page.url}")
-
-            # Accept cookie banner if present
-            try:
-                await page.get_by_role("button", name="Összes elfogadása").click(timeout=4000)
-                await page.wait_for_timeout(800)
-                log.info("Cookie banner accepted")
-            except PlaywrightTimeout:
-                log.info("No cookie banner appeared")
-
-            # 2. Fill login form using stable id selectors
-            await emit("Logging in to csavarda.hu…")
-            username = os.getenv("SUPPLIER_A_USERNAME", "")
-            log.info(f"Filling login form for user: {username}")
-
-            await page.locator("#email").fill(username)
-            await page.locator("#password").fill(os.getenv("SUPPLIER_A_PASSWORD", ""))
-
-            # Verify fields were actually filled
-            filled_email = await page.locator("#email").input_value()
-            filled_pass  = await page.locator("#password").input_value()
-            log.info(f"Form filled — email: {filled_email}, password length: {len(filled_pass)}")
-
-            await page.locator("button:has-text('Bejelentkezés')").click()
-            log.info("Login button clicked, waiting for redirect…")
-
-            try:
-                await page.wait_for_url("**/telephely-valasztasa", timeout=12000)
-                log.info(f"Login successful, redirected to: {page.url}")
-            except PlaywrightTimeout:
-                current_url = page.url
-                log.error(f"Login failed — still on: {current_url}")
-                # Grab any visible error message on the page
-                body_text = await page.locator("body").inner_text()
-                for line in body_text.splitlines():
-                    line = line.strip()
-                    if line and any(w in line.lower() for w in ["hiba", "error", "sikertelen", "érvénytelen", "helytelen"]):
-                        log.error(f"Page error text: {line}")
-                raise RuntimeError("Login to csavarda.hu failed. Please check credentials.")
-
-            # 3. Select Budapest location
-            log.info("Selecting Budapest location…")
-            await page.get_by_role("link", name=re.compile("Budapesti telephely")).click()
-            await page.wait_for_url("**/pest", timeout=10000)
-            log.info(f"Location selected, now at: {page.url}")
-
-            # 4. Search for part
             search_url = SEARCH_URL.format(part_no=supplier_part_no)
-            await emit(f"Searching for part {supplier_part_no} on csavarda.hu…")
-            log.info(f"Navigating to search URL: {search_url}")
-            await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
-            # Wait for search results to render (product links or zero-results text)
+
+            # ── Step 1: try session restore ───────────────────────────────────
+            if use_session:
+                await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
+                log.info(f"After session restore, URL: {page.url}")
+
+                if "/bejelentkezes" in page.url:
+                    log.warning("Session invalid — falling back to full login")
+                    use_session = False
+                    _SESSION_FILE.unlink(missing_ok=True)
+                    await browser.close()
+                    browser  = await pw.chromium.launch(headless=True)
+                    context  = await browser.new_context()
+                    page     = await context.new_page()
+                    page.on("dialog", lambda d: (log.info(f"Dialog dismissed: {d.message}"), d.accept()))
+
+                elif "/telephely-valasztasa" in page.url:
+                    # Logged in but location not stored — select Budapest and continue
+                    log.info("Session valid but location not set — selecting Budapest")
+                    await page.get_by_role("link", name=re.compile("Budapesti telephely")).click()
+                    await page.wait_for_url("**/pest", timeout=10000)
+                    await _save_session(context)
+                    await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
+
+                else:
+                    # URL check passed, but csavarda serves the search page to
+                    # guests too — prices are only visible to authenticated users.
+                    # Extra check: wait briefly, then verify "Ft" is in the body
+                    # (prices appear only when logged in).
+                    await page.wait_for_timeout(1500)
+                    body_snapshot = await page.locator("body").inner_text()
+                    zero_results = "0 találat" in body_snapshot
+                    prices_visible = "Ft" in body_snapshot
+                    if not prices_visible and not zero_results:
+                        log.warning("Session expired server-side (prices not visible) — falling back to full login")
+                        use_session = False
+                        _SESSION_FILE.unlink(missing_ok=True)
+                        await browser.close()
+                        browser  = await pw.chromium.launch(headless=True)
+                        context  = await browser.new_context()
+                        page     = await context.new_page()
+                        page.on("dialog", lambda d: (log.info(f"Dialog dismissed: {d.message}"), d.accept()))
+                    else:
+                        log.info("Session valid — login skipped")
+
+            # ── Step 2: full login (if needed) ───────────────────────────────
+            if not use_session:
+                await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+                log.info(f"Loaded login page: {page.url}")
+
+                try:
+                    await page.get_by_role("button", name="Összes elfogadása").click(timeout=4000)
+                    await page.wait_for_timeout(800)
+                    log.info("Cookie banner accepted")
+                except PlaywrightTimeout:
+                    log.info("No cookie banner appeared")
+
+                await emit("Logging in to csavarda.hu…")
+                username = os.getenv("SUPPLIER_A_USERNAME", "")
+                log.info(f"Filling login form for user: {username}")
+                await page.locator("#email").fill(username)
+                await page.locator("#password").fill(os.getenv("SUPPLIER_A_PASSWORD", ""))
+                filled_email = await page.locator("#email").input_value()
+                filled_pass  = await page.locator("#password").input_value()
+                log.info(f"Form filled — email: {filled_email}, password length: {len(filled_pass)}")
+
+                await page.locator("button:has-text('Bejelentkezés')").click()
+                log.info("Login button clicked, waiting for redirect…")
+
+                try:
+                    await page.wait_for_url("**/telephely-valasztasa", timeout=12000)
+                    log.info(f"Login successful, redirected to: {page.url}")
+                except PlaywrightTimeout:
+                    current_url = page.url
+                    log.error(f"Login failed — still on: {current_url}")
+                    body_text = await page.locator("body").inner_text()
+                    for line in body_text.splitlines():
+                        line = line.strip()
+                        if line and any(w in line.lower() for w in ["hiba", "error", "sikertelen", "érvénytelen", "helytelen"]):
+                            log.error(f"Page error text: {line}")
+                    raise RuntimeError("Login to csavarda.hu failed. Please check credentials.")
+
+                log.info("Selecting Budapest location…")
+                await page.get_by_role("link", name=re.compile("Budapesti telephely")).click()
+                await page.wait_for_url("**/pest", timeout=10000)
+                log.info(f"Location selected, now at: {page.url}")
+
+                await _save_session(context)
+
+                await emit(f"Searching for part {supplier_part_no} on csavarda.hu…")
+                await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
+
+            else:
+                await emit(f"Searching for part {supplier_part_no} on csavarda.hu…")
+
+            # ── Step 3: wait for results ──────────────────────────────────────
             try:
                 done, pending = await asyncio.wait(
                     [
@@ -125,34 +242,30 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 for task in pending:
                     task.cancel()
             except Exception:
-                pass  # will be caught below by zero_results / product_links checks
+                pass
+
             log.info(f"Search page loaded: {page.url}")
 
             zero_results = await page.locator("text=0 találat").count()
-            log.info(f"Zero-results indicator count: {zero_results}")
             if zero_results > 0:
                 raise RuntimeError(f"Part {supplier_part_no} was not found on csavarda.hu.")
 
-            # Count product links found
             product_links = await page.locator("a[href*='/pest/termek/']").count()
-            log.info(f"Product links found on search page: {product_links}")
+            log.info(f"Product links found: {product_links}")
             if product_links == 0:
                 raise RuntimeError(f"No product links found for part {supplier_part_no} on csavarda.hu.")
 
-            # 5. Open product drawer
-            log.info("Clicking first product link to open drawer…")
+            # ── Step 4: open product drawer ───────────────────────────────────
+            log.info("Clicking first product link…")
             await page.locator("a[href*='/pest/termek/']").first.click()
 
             try:
-                await page.wait_for_selector("text=Nettó egységár:", timeout=8000)
+                await page.wait_for_selector("text=Nettó egységár:", timeout=15000)
                 log.info("Product drawer opened — 'Nettó egységár:' label found")
             except PlaywrightTimeout:
-                log.error("Price label 'Nettó egységár:' not found after clicking product")
-                raise RuntimeError(
-                    "csavarda.hu page layout may have changed — price selector not found."
-                )
+                raise RuntimeError("csavarda.hu page layout may have changed — price selector not found.")
 
-            # 6. Extract price and stock
+            # ── Step 5: extract price and stock ──────────────────────────────
             await emit("Reading price and stock from csavarda.hu…")
             price_str = await page.evaluate(_JS_NEXT_SIBLING, "Nettó egységár:")
             buda_str  = await page.evaluate(_JS_CONTAINS, "Budapest:")
@@ -161,9 +274,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             log.info(f"Raw extracted values — price: '{price_str}', budapest: '{buda_str}', vecsés: '{vecs_str}'")
 
             if not price_str:
-                raise RuntimeError(
-                    "Could not read price from csavarda.hu. Page layout may have changed."
-                )
+                raise RuntimeError("Could not read price from csavarda.hu. Page layout may have changed.")
 
             from agent.tools import parse_price_string, parse_stock_string
             price_raw, price_unit_qty, unit = parse_price_string(price_str)

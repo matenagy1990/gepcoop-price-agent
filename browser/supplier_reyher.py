@@ -49,24 +49,28 @@ _SESSION_MAX_AGE_HOURS = 23
 # ── Session helpers ────────────────────────────────────────────────────────────
 
 def _load_session() -> dict | None:
-    """Return session dict {saved_at, cookies} or None if missing / unreadable."""
+    """Return session dict {saved_at, state} or None if missing / unreadable."""
     try:
         if SESSION_FILE.exists():
             data = json.loads(SESSION_FILE.read_text())
-            if isinstance(data, list):           # legacy format (just cookies list)
-                return {"saved_at": None, "cookies": data}
-            return data
+            if isinstance(data, list):           # legacy format (just cookies list) — discard
+                return None
+            if isinstance(data, dict) and "state" in data:
+                return data
+            if isinstance(data, dict) and "cookies" in data:
+                return None                      # old cookies-only format — discard
     except Exception:
         pass
     return None
 
 
-def _save_session(cookies: list) -> None:
-    """Persist session cookies with an ISO timestamp for age-checking."""
+async def _save_session(context) -> None:
+    """Persist full storage_state (cookies + localStorage) with an ISO timestamp."""
     try:
+        state = await context.storage_state()
         SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
         SESSION_FILE.write_text(json.dumps(
-            {"saved_at": datetime.now().isoformat(timespec="seconds"), "cookies": cookies},
+            {"saved_at": datetime.now().isoformat(timespec="seconds"), "state": state},
             indent=2,
         ))
         log.info(f"Session saved → {SESSION_FILE}")
@@ -179,37 +183,50 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         if on_progress:
             await on_progress({"step": "browser", "status": "running", "msg": msg})
 
+    session     = _load_session()
+    use_session = session and _session_is_fresh(session)
+
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
-        context = await browser.new_context()
-        page    = await context.new_page()
+
+        if use_session:
+            log.info("Restoring saved session (age < 23 h)")
+            try:
+                context = await browser.new_context(storage_state=session["state"])
+            except Exception as exc:
+                log.warning(f"Could not restore session state: {exc}")
+                use_session = False
+                SESSION_FILE.unlink(missing_ok=True)
+                context = await browser.new_context()
+        else:
+            if session:
+                log.info("Session stale (> 23 h) — proactive re-login")
+                SESSION_FILE.unlink(missing_ok=True)
+            context = await browser.new_context()
+
+        page = await context.new_page()
 
         try:
             await emit("Opening rio.reyher.de…")
 
             # ── Step 1: restore session or do fresh login ──────────────────────
-            session = _load_session()
-
-            if session and _session_is_fresh(session):
-                log.info("Restoring session cookies (age < 23 h)")
-                await context.add_cookies(session["cookies"])
+            if use_session:
                 await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=15000)
 
                 if not await _is_logged_in(page):
                     log.warning("Restored session is no longer valid — re-logging in")
+                    use_session = False
                     SESSION_FILE.unlink(missing_ok=True)
-                    await _login(page, emit)
-                    _save_session(await context.cookies())
+                    await browser.close()
+                    browser  = await pw.chromium.launch(headless=True)
+                    context  = await browser.new_context()
+                    page     = await context.new_page()
                 else:
                     log.info("Session valid (Quickinput nav link present)")
-            else:
-                if session:
-                    log.info("Session is stale (> 23 h) — proactive re-login")
-                    SESSION_FILE.unlink(missing_ok=True)
-                else:
-                    log.info("No saved session — performing fresh login")
+
+            if not use_session:
                 await _login(page, emit)
-                _save_session(await context.cookies())
+                await _save_session(context)
 
             # ── Step 2: navigate to search results ────────────────────────────
             await emit(f"Searching for {supplier_part_no} on rio.reyher.de…")

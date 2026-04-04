@@ -1,27 +1,35 @@
 """
 Playwright scraper for hopefix.cz (Supplier G)
 
-Login flow:
+Session flow:
+  1. Try to restore saved session from assets/sessions/hopefix_session.json
+     - Skip restore if saved_at > 20 h old
+  2. Navigate to /en — if redirected to /en/login → session invalid
+  3. If session missing / stale / invalid: full login, save new session
+
+Login flow (fallback):
   1. GET /en/login → accept cookie banner → fill E-mail + Password → "Login"
   2. Redirects to /en/products on success
 
 Search flow:
-  3. Type part number into the autocomplete search box (#search_input)
-  4. Wait for the jQuery UI autocomplete dropdown (#ui-id-1) to appear
-  5. Click the suggestion that matches the part number
+  4. Type part number into the autocomplete search box (#search_input)
+  5. Wait for the jQuery UI autocomplete dropdown (#ui-id-1) to appear
+  6. Click the suggestion that matches the part number
      → navigates to /en/products/{slug}#{part_no}
-  6. Find the table row whose text contains the part number
-  7. Extract EUR price from the cell containing '€' and stock from the cell before it
+  7. Find the table row whose text contains the part number
+  8. Extract EUR price from the cell containing '€' and stock from the cell before it
 
 Currency: EUR
 Price column: "EUR/100 pcs" → price_unit_qty = 100
 Stock column: "Stock (100 pcs)" — raw value stored as int
 """
 
+import json
 import logging
 import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
@@ -30,8 +38,51 @@ load_dotenv()
 
 log = logging.getLogger("hopefix")
 
-LOGIN_URL = "https://www.hopefix.cz/en/login"
+LOGIN_URL  = "https://www.hopefix.cz/en/login"
+HOME_URL   = "https://www.hopefix.cz/en"
 
+_SESSION_FILE      = Path(__file__).parent.parent / "assets" / "sessions" / "hopefix_session.json"
+_SESSION_MAX_AGE_H = 20
+
+
+# ── Session helpers ────────────────────────────────────────────────────────────
+
+def _load_session() -> dict | None:
+    try:
+        if _SESSION_FILE.exists():
+            data = json.loads(_SESSION_FILE.read_text())
+            if isinstance(data, dict) and "state" in data:
+                return data
+    except Exception:
+        pass
+    return None
+
+
+def _session_is_fresh(session: dict) -> bool:
+    saved_at = session.get("saved_at")
+    if not saved_at:
+        return False
+    try:
+        age_h = (datetime.now() - datetime.fromisoformat(saved_at)).total_seconds() / 3600
+        return age_h < _SESSION_MAX_AGE_H
+    except Exception:
+        return False
+
+
+async def _save_session(context) -> None:
+    try:
+        state = await context.storage_state()
+        _SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _SESSION_FILE.write_text(json.dumps(
+            {"saved_at": datetime.now().isoformat(timespec="seconds"), "state": state},
+            indent=2,
+        ))
+        log.info(f"Session saved → {_SESSION_FILE}")
+    except Exception as exc:
+        log.warning(f"Could not save session: {exc}")
+
+
+# ── Main scraper ───────────────────────────────────────────────────────────────
 
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
     async def emit(msg: str):
@@ -39,52 +90,89 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         if on_progress:
             await on_progress({"step": "browser", "status": "running", "msg": msg})
 
+    session     = _load_session()
+    use_session = session and _session_is_fresh(session)
+
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
-        ctx = await browser.new_context()
-        page = await ctx.new_page()
+
+        if use_session:
+            log.info("Restoring saved session (age < 20 h)")
+            try:
+                context = await browser.new_context(storage_state=session["state"])
+            except Exception as exc:
+                log.warning(f"Could not restore session state: {exc}")
+                use_session = False
+                _SESSION_FILE.unlink(missing_ok=True)
+                context = await browser.new_context()
+        else:
+            if session:
+                log.info("Session stale (> 20 h) — proactive re-login")
+                _SESSION_FILE.unlink(missing_ok=True)
+            context = await browser.new_context()
+
+        page = await context.new_page()
 
         try:
             await emit("Opening hopefix.cz…")
-            await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-            log.info(f"Login page: {page.url}")
 
-            # Accept cookie banner
-            try:
-                await page.get_by_role("button", name="Vše přijmout").click(timeout=5000)
-                await page.wait_for_timeout(600)
-                log.info("Cookie banner accepted")
-            except PlaywrightTimeout:
+            # ── Step 1: try session restore ───────────────────────────────────
+            if use_session:
+                await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=20000)
+                log.info(f"After session restore, URL: {page.url}")
+
+                if "/login" in page.url:
+                    log.warning("Session invalid — falling back to full login")
+                    use_session = False
+                    _SESSION_FILE.unlink(missing_ok=True)
+                    await browser.close()
+                    browser  = await pw.chromium.launch(headless=True)
+                    context  = await browser.new_context()
+                    page     = await context.new_page()
+                else:
+                    log.info("Session valid — login skipped")
+
+            # ── Step 2: full login (if needed) ───────────────────────────────
+            if not use_session:
+                await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+                log.info(f"Login page: {page.url}")
+
                 try:
-                    await page.get_by_role("button", name="Accept all").click(timeout=3000)
+                    await page.get_by_role("button", name="Vše přijmout").click(timeout=5000)
                     await page.wait_for_timeout(600)
+                    log.info("Cookie banner accepted")
                 except PlaywrightTimeout:
-                    log.info("No cookie banner")
+                    try:
+                        await page.get_by_role("button", name="Accept all").click(timeout=3000)
+                        await page.wait_for_timeout(600)
+                    except PlaywrightTimeout:
+                        log.info("No cookie banner")
 
-            # Login
-            await emit("Logging in to hopefix.cz…")
-            username = os.getenv("SUPPLIER_G_USERNAME", "")
-            password = os.getenv("SUPPLIER_G_PASSWORD", "")
-            log.info(f"Logging in as: {username}")
+                await emit("Logging in to hopefix.cz…")
+                username = os.getenv("SUPPLIER_G_USERNAME", "")
+                password = os.getenv("SUPPLIER_G_PASSWORD", "")
+                log.info(f"Logging in as: {username}")
 
-            await page.get_by_role("textbox", name="E-mail").fill(username)
-            await page.get_by_role("textbox", name="Password").fill(password)
-            await page.get_by_role("button", name="Login").click()
+                await page.get_by_role("textbox", name="E-mail").fill(username)
+                await page.get_by_role("textbox", name="Password").fill(password)
+                await page.get_by_role("button", name="Login").click()
 
-            await page.wait_for_load_state("domcontentloaded")
-            await page.wait_for_timeout(1500)
+                await page.wait_for_load_state("domcontentloaded")
+                await page.wait_for_timeout(1500)
 
-            if "/login" in page.url:
-                raise RuntimeError("Login to hopefix.cz failed. Please check credentials.")
-            log.info(f"Login successful: {page.url}")
+                if "/login" in page.url:
+                    raise RuntimeError("Login to hopefix.cz failed. Please check credentials.")
+                log.info(f"Login successful: {page.url}")
 
-            # Search via autocomplete search box
+                await _save_session(context)
+
+            # ── Step 3: search via autocomplete ──────────────────────────────
             await emit(f"Searching for {supplier_part_no} on hopefix.cz…")
             search_box = page.locator("#search_input")
-            await search_box.fill(supplier_part_no)
+            await search_box.click()
+            await search_box.type(supplier_part_no, delay=60)
             log.info("Typed part number, waiting for autocomplete…")
 
-            # Wait for autocomplete dropdown to appear with a matching suggestion
             try:
                 await page.wait_for_selector(
                     f"#ui-id-1 li:has-text('{supplier_part_no}')",
@@ -96,10 +184,8 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     "(no autocomplete suggestion appeared)."
                 )
 
-            # Click the suggestion
             suggestion = page.locator("#ui-id-1 li").filter(has_text=supplier_part_no).first
             await suggestion.click(timeout=5000)
-            # Wait for AJAX to complete so table cells and toggle buttons are populated
             try:
                 await page.wait_for_load_state("networkidle", timeout=20000)
             except PlaywrightTimeout:
@@ -109,14 +195,10 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
             await emit("Reading price and stock from hopefix.cz…")
 
-            # Find the row for this part number
             row = page.locator("tr").filter(has_text=supplier_part_no).first
             if await row.count() == 0:
-                raise RuntimeError(
-                    f"Part {supplier_part_no} row not found on hopefix.cz."
-                )
+                raise RuntimeError(f"Part {supplier_part_no} row not found on hopefix.cz.")
 
-            # --- Check toggle-expander button exists (only appears when pricing is available) ---
             toggle = row.locator(".toggle-expander")
             if await toggle.count() == 0:
                 raise RuntimeError(
@@ -124,12 +206,9 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     "(product may be out of stock or not offered to this account)."
                 )
 
-            # Click toggle to open the expander row
             await toggle.click()
             await page.wait_for_timeout(500)
 
-            # --- Price: read data-price / data-qty from the Box (first) select option ---
-            # These attributes are server-rendered inside the expander form
             expander = page.locator(
                 f"form:has(input[name='product_nr'][value='{supplier_part_no}'])"
             )
@@ -139,15 +218,11 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             log.info(f"Expander data-price={data_price!r}, data-qty={data_qty!r}")
 
             if not data_price or not data_qty or float(data_price) == 0:
-                raise RuntimeError(
-                    f"Part {supplier_part_no} has no pricing available on hopefix.cz."
-                )
+                raise RuntimeError(f"Part {supplier_part_no} has no pricing available on hopefix.cz.")
 
             price_raw      = float(data_price)
-            price_unit_qty = int(round(float(data_qty) * 100))  # data-qty is in units of 100 pcs
+            price_unit_qty = int(round(float(data_qty) * 100))
 
-            # --- Stock: table column index 6 "Stock (100 pcs)" — loaded after networkidle ---
-            # Columns: [0]DIN [1]IDcode [2]Dim [3]ISO [4]Material [5]YourNr [6]Stock(100pcs) [7]EUR
             stock_value = 0
             cells = row.locator("td")
             if await cells.count() > 6:

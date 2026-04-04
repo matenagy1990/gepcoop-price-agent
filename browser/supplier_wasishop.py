@@ -1,13 +1,19 @@
 """
 Playwright scraper for wasishop.de (Supplier K)
 
-Login flow:
+Session flow:
+  1. Try to restore saved session from assets/sessions/wasishop_session.json
+     - Skip restore if saved_at > 20 h old
+  2. Navigate to / — if URL contains 'login_form' → session invalid
+  3. If session missing / stale / invalid: full login, save new session
+
+Login flow (fallback):
   1. GET /login_form.php → dismiss cookie → fill Name + Passwort → Anmelden
   2. Redirects to /de/handel/index.php on success
 
 Search flow:
-  3. Fill input[name='search'] → press Enter → lands on Artikelliste.php
-  4. Wait for networkidle (prices are JS-injected after page load)
+  4. Fill input[name='search'] → press Enter → lands on Artikelliste.php
+  5. Wait for networkidle (prices are JS-injected after page load)
 
 Price structure — two cases:
   a) Tiered ("Staffelpreis"): art_popup_infobox with "Mindestmenge" header contains
@@ -23,10 +29,12 @@ Stock:
 Currency: EUR
 """
 
+import json
 import logging
 import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
@@ -36,6 +44,47 @@ load_dotenv()
 log = logging.getLogger("wasishop")
 
 LOGIN_URL = "https://www.wasishop.de/login_form.php"
+HOME_URL  = "https://www.wasishop.de"
+
+_SESSION_FILE      = Path(__file__).parent.parent / "assets" / "sessions" / "wasishop_session.json"
+_SESSION_MAX_AGE_H = 20
+
+
+# ── Session helpers ────────────────────────────────────────────────────────────
+
+def _load_session() -> dict | None:
+    try:
+        if _SESSION_FILE.exists():
+            data = json.loads(_SESSION_FILE.read_text())
+            if isinstance(data, dict) and "state" in data:
+                return data
+    except Exception:
+        pass
+    return None
+
+
+def _session_is_fresh(session: dict) -> bool:
+    saved_at = session.get("saved_at")
+    if not saved_at:
+        return False
+    try:
+        age_h = (datetime.now() - datetime.fromisoformat(saved_at)).total_seconds() / 3600
+        return age_h < _SESSION_MAX_AGE_H
+    except Exception:
+        return False
+
+
+async def _save_session(context) -> None:
+    try:
+        state = await context.storage_state()
+        _SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _SESSION_FILE.write_text(json.dumps(
+            {"saved_at": datetime.now().isoformat(timespec="seconds"), "state": state},
+            indent=2,
+        ))
+        log.info(f"Session saved → {_SESSION_FILE}")
+    except Exception as exc:
+        log.warning(f"Could not save session: {exc}")
 
 
 def _parse_eur(text: str) -> float:
@@ -56,48 +105,88 @@ def _parse_stock(text: str) -> int:
     return int(m.group().replace(".", ""))
 
 
+# ── Main scraper ───────────────────────────────────────────────────────────────
+
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
     async def emit(msg: str):
         log.info(msg)
         if on_progress:
             await on_progress({"step": "browser", "status": "running", "msg": msg})
 
+    session     = _load_session()
+    use_session = session and _session_is_fresh(session)
+
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
-        ctx = await browser.new_context()
-        page = await ctx.new_page()
+
+        if use_session:
+            log.info("Restoring saved session (age < 20 h)")
+            try:
+                context = await browser.new_context(storage_state=session["state"])
+            except Exception as exc:
+                log.warning(f"Could not restore session state: {exc}")
+                use_session = False
+                _SESSION_FILE.unlink(missing_ok=True)
+                context = await browser.new_context()
+        else:
+            if session:
+                log.info("Session stale (> 20 h) — proactive re-login")
+                _SESSION_FILE.unlink(missing_ok=True)
+            context = await browser.new_context()
+
+        page = await context.new_page()
 
         try:
             await emit("Opening wasishop.de…")
-            await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-            await page.wait_for_timeout(1500)
-            log.info(f"Login page: {page.url}")
 
-            # Dismiss cookie banner — use exact aria-label to avoid strict-mode violation
-            try:
-                await page.locator("button[aria-label='dismiss cookie message']").click(timeout=4000)
-                await page.wait_for_timeout(500)
-                log.info("Cookie banner dismissed")
-            except PlaywrightTimeout:
-                log.info("No cookie banner")
+            # ── Step 1: try session restore ───────────────────────────────────
+            if use_session:
+                await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=20000)
+                await page.wait_for_timeout(1000)
+                log.info(f"After session restore, URL: {page.url}")
 
-            # Login
-            await emit("Logging in to wasishop.de…")
-            username = os.getenv("SUPPLIER_K_USERNAME", "")
-            password = os.getenv("SUPPLIER_K_PASSWORD", "")
-            log.info(f"Logging in as: {username}")
+                if "login_form" in page.url:
+                    log.warning("Session invalid — falling back to full login")
+                    use_session = False
+                    _SESSION_FILE.unlink(missing_ok=True)
+                    await browser.close()
+                    browser  = await pw.chromium.launch(headless=True)
+                    context  = await browser.new_context()
+                    page     = await context.new_page()
+                else:
+                    log.info("Session valid — login skipped")
 
-            await page.get_by_role("textbox", name="Name").fill(username)
-            await page.get_by_role("textbox", name="Passwort").fill(password)
-            await page.get_by_role("button", name="Anmelden").click()
-            await page.wait_for_load_state("domcontentloaded")
-            await page.wait_for_timeout(1500)
+            # ── Step 2: full login (if needed) ───────────────────────────────
+            if not use_session:
+                await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+                await page.wait_for_timeout(1500)
+                log.info(f"Login page: {page.url}")
 
-            if "login_form" in page.url:
-                raise RuntimeError("Login to wasishop.de failed. Please check credentials.")
-            log.info(f"Login successful: {page.url}")
+                try:
+                    await page.locator("button[aria-label='dismiss cookie message']").click(timeout=4000)
+                    await page.wait_for_timeout(500)
+                    log.info("Cookie banner dismissed")
+                except PlaywrightTimeout:
+                    log.info("No cookie banner")
 
-            # Search
+                await emit("Logging in to wasishop.de…")
+                username = os.getenv("SUPPLIER_K_USERNAME", "")
+                password = os.getenv("SUPPLIER_K_PASSWORD", "")
+                log.info(f"Logging in as: {username}")
+
+                await page.get_by_role("textbox", name="Name").fill(username)
+                await page.get_by_role("textbox", name="Passwort").fill(password)
+                await page.get_by_role("button", name="Anmelden").click()
+                await page.wait_for_load_state("domcontentloaded")
+                await page.wait_for_timeout(1500)
+
+                if "login_form" in page.url:
+                    raise RuntimeError("Login to wasishop.de failed. Please check credentials.")
+                log.info(f"Login successful: {page.url}")
+
+                await _save_session(context)
+
+            # ── Step 3: search ────────────────────────────────────────────────
             await emit(f"Searching for {supplier_part_no} on wasishop.de…")
             search = page.locator("input[name='search']")
             await search.fill(supplier_part_no)
@@ -153,13 +242,12 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
             log.info(f"Raw data: {raw_data}")
 
-            tiers   = raw_data.get("tiers", [])
-            singles = raw_data.get("singles", [])
+            tiers      = raw_data.get("tiers", [])
+            singles    = raw_data.get("singles", [])
             stock_text = raw_data.get("stock", "")
 
             if tiers:
-                # Take the middle tier (index len//2)
-                middle = tiers[len(tiers) // 2]
+                middle    = tiers[len(tiers) // 2]
                 price_raw = _parse_eur(middle)
                 log.info(f"Tiered prices: {tiers} → using middle: {middle!r} → {price_raw}")
             elif singles:
@@ -170,12 +258,10 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     "Could not read price from wasishop.de. Page layout may have changed."
                 )
 
-            # Price is always per 100 pcs ("Preis / 100" column)
-            price_unit_qty = 100
+            price_unit_qty = 100  # always per 100 pcs
 
             stock_value = _parse_stock(stock_text)
             log.info(f"Stock text: {stock_text!r} → {stock_value}")
-
             log.info(f"Parsed — {price_raw} EUR / {price_unit_qty} pcs, stock: {stock_value}")
 
             return {

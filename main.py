@@ -608,7 +608,10 @@ async def supplier_open(req: Request, authorization: str | None = Header(default
     if sid not in SUPPLIER_META:
         raise HTTPException(status_code=400, detail=f"Ismeretlen beszállító: {sid}")
 
-    if sid in ("koelner", "reyher"):
+    # Suppliers with saved Playwright sessions → headed browser (logged in)
+    _SESSION_OPEN_SIDS = {"koelner", "reyher", "csavarda", "irontrade", "fabory",
+                          "hopefix", "wasishop", "mekrs"}
+    if sid in _SESSION_OPEN_SIDS:
         asyncio.create_task(_supplier_open_headed(sid, supplier_part_no))
         return {"status": "opening"}
 
@@ -617,15 +620,33 @@ async def supplier_open(req: Request, authorization: str | None = Header(default
 
 
 async def _supplier_open_headed(sid: str, supplier_part_no: str) -> None:
-    """Launch a headed (visible) browser for koelner or reyher, restoring session if available."""
+    """Launch a headed (visible) browser, restoring saved session if available."""
     from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
     import json as _json
     from pathlib import Path as _Path
     from datetime import datetime as _dt
 
+    _SESSIONS_DIR = _Path(__file__).parent / "assets" / "sessions"
+
     SESSION_FILES = {
-        "koelner": _Path(__file__).parent / "assets" / ".koelner_session.json",
-        "reyher":  _Path(__file__).parent / "assets" / "sessions" / "reyher_session.json",
+        "koelner":  _Path(__file__).parent / "assets" / ".koelner_session.json",
+        "reyher":   _SESSIONS_DIR / "reyher_session.json",
+        "csavarda": _SESSIONS_DIR / "csavarda_session.json",
+        "irontrade":_SESSIONS_DIR / "irontrade_session.json",
+        "fabory":   _SESSIONS_DIR / "fabory_session.json",
+        "hopefix":  _SESSIONS_DIR / "hopefix_session.json",
+        "wasishop": _SESSIONS_DIR / "wasishop_session.json",
+        "mekrs":    _SESSIONS_DIR / "mekrs_session.json",
+    }
+
+    # Search URLs for storage_state suppliers (opened directly after session restore)
+    _STORAGE_STATE_SEARCH_URLS = {
+        "csavarda":  "https://csavarda.hu/pest/kereso?search={part_no}",
+        "irontrade": "https://irontrade.hu/kereso?name={part_no}",
+        "fabory":    "https://www.fabory.com/hu/search?text={part_no}",
+        "mekrs":     "https://eshop.mekrs.cz/en/products?nazev={part_no}&onStock=false",
+        "hopefix":   "https://www.hopefix.cz/en",
+        "wasishop":  "https://www.wasishop.de",
     }
     LOGIN_URLS = {
         "koelner": "https://webshop.koelner.hu/belepes/",
@@ -641,6 +662,36 @@ async def _supplier_open_headed(sid: str, supplier_part_no: str) -> None:
     }
 
     session_file = SESSION_FILES[sid]
+
+    # ── Generic storage_state suppliers (csavarda, irontrade, fabory, mekrs, hopefix, wasishop)
+    if sid in _STORAGE_STATE_SEARCH_URLS:
+        url_tpl = _STORAGE_STATE_SEARCH_URLS[sid]
+        target_url = (
+            url_tpl.replace("{part_no}", supplier_part_no)
+            if supplier_part_no and "{part_no}" in url_tpl else url_tpl
+        )
+        try:
+            async with async_playwright() as pw:
+                browser = await pw.chromium.launch(headless=False)
+                context = None
+                if session_file.exists():
+                    try:
+                        raw = _json.loads(session_file.read_text())
+                        state = raw.get("state", raw)
+                        context = await browser.new_context(storage_state=state)
+                        log.info(f"[{sid}/open] Session restored from {session_file}")
+                    except Exception as exc:
+                        log.warning(f"[{sid}/open] Session unreadable: {exc}")
+                if context is None:
+                    context = await browser.new_context()
+                page = await context.new_page()
+                await page.goto(target_url, wait_until="domcontentloaded", timeout=20000)
+                log.info(f"[{sid}/open] Navigated to {target_url}")
+                await page.wait_for_event("close", timeout=0)
+        except Exception as exc:
+            log.warning(f"[{sid}/open] Browser closed or error: {exc}")
+        return
+
     target_url   = (
         SEARCH_URLS[sid].format(part_no=supplier_part_no)
         if supplier_part_no else HOME_URLS[sid]
