@@ -576,7 +576,10 @@
         <!-- Sidebar navigation -->
         <nav class="adm-nav">
           <button class="adm-nav-item active" data-tab="users">
-            <span class="adm-nav-icon">👤</span>Felhasználókezelés
+            <span class="adm-nav-icon">🛡️</span>Admin fiók
+          </button>
+          <button class="adm-nav-item" data-tab="team-users">
+            <span class="adm-nav-icon">👤</span>Userek
           </button>
           <button class="adm-nav-item" data-tab="suppliers">
             <span class="adm-nav-icon">🔑</span>Webshop belépés
@@ -595,16 +598,16 @@
           <!-- Tab: Felhasználókezelés -->
           <div class="adm-tab" id="adm-tab-users">
             <div class="adm-section">
-              <div class="adm-section-title">Felhasználókezelés</div>
-              <p class="adm-hint">A bejelentkezési felhasználónév és jelszó módosítása. Mentés után azonnal érvényes.</p>
+              <div class="adm-section-title">Admin fiók</div>
+              <p class="adm-hint">Az elsődleges admin felhasználó módosítása. Mentés után az új belépési adat lesz érvényes az apphoz.</p>
               <div style="max-width:400px;display:flex;flex-direction:column;gap:12px">
                 <div class="field" style="margin-bottom:0">
-                  <label>Felhasználónév</label>
+                  <label>Admin felhasználónév</label>
                   <input type="text" id="adm-new-user" autocomplete="off" readonly
                          onfocus="this.removeAttribute('readonly')" placeholder="pl. gepcoop">
                 </div>
                 <div class="field" style="margin-bottom:0">
-                  <label>Jelszó</label>
+                  <label>Új jelszó</label>
                   <div class="pw-wrap">
                     <input type="password" id="adm-new-pass" autocomplete="off" readonly
                            onfocus="this.removeAttribute('readonly')" placeholder="Új jelszó">
@@ -619,6 +622,32 @@
                 </div>
                 <div id="adm-user-msg" class="hidden"></div>
               </div>
+            </div>
+          </div>
+
+          <div class="adm-tab hidden" id="adm-tab-team-users">
+            <div class="adm-section">
+              <div class="adm-section-title">Userek</div>
+              <p class="adm-hint">Itt tud új usereket létrehozni, jelszót módosítani és a normál usereket törölni.</p>
+              <div style="max-width:520px;display:flex;flex-direction:column;gap:12px;margin-bottom:20px">
+                <div class="field" style="margin-bottom:0">
+                  <label>Új felhasználónév</label>
+                  <input type="text" id="adm-add-user-name" autocomplete="off" placeholder="pl. beszerzo2">
+                </div>
+                <div class="field" style="margin-bottom:0">
+                  <label>Új felhasználó jelszava</label>
+                  <input type="password" id="adm-add-user-pass" autocomplete="off" placeholder="Jelszó">
+                </div>
+                <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--navy2);font-weight:500">
+                  <input type="checkbox" id="adm-add-user-admin">
+                  Admin jogosultság
+                </label>
+                <div>
+                  <button class="btn-upload" id="adm-add-user-btn">Új user hozzáadása</button>
+                </div>
+                <div id="adm-user-add-msg" class="hidden"></div>
+              </div>
+              <div id="adm-users-wrap" style="display:flex;flex-direction:column;gap:10px"></div>
             </div>
           </div>
 
@@ -722,6 +751,7 @@
 /* ══ STATE ══════════════════════════════════════════════════════ */
 let authToken = sessionStorage.getItem('gc_token');
 let username  = sessionStorage.getItem('gc_user');
+let isAdminUser = sessionStorage.getItem('gc_is_admin') === '1';
 let _pendingPartNo     = null;  // part number waiting for user confirmation
 let _searchStartTs     = null;  // timestamp when scraping started
 let _currentFilterSids = '';    // active supplier filter for the running search
@@ -770,7 +800,7 @@ updateDatalistBinding();
 window.addEventListener('resize', updateDatalistBinding);
 
 /* ══ BOOT ═══════════════════════════════════════════════════════ */
-if (authToken) showApp();
+if (authToken) bootstrapSession();
 
 /* ══ LOGIN ══════════════════════════════════════════════════════ */
 document.getElementById('login-pass').addEventListener('keydown', e => { if (e.key==='Enter') doLogin(); });
@@ -800,9 +830,10 @@ async function doLogin() {
     });
     if (!res.ok) { const d=await res.json().catch(()=>({})); throw new Error(d.detail||'Hibás felhasználónév vagy jelszó.'); }
     const data = await res.json();
-    authToken = data.token; username = data.username;
+    authToken = data.token; username = data.username; isAdminUser = !!data.is_admin;
     sessionStorage.setItem('gc_token', authToken);
     sessionStorage.setItem('gc_user', username);
+    sessionStorage.setItem('gc_is_admin', isAdminUser ? '1' : '0');
     showApp();
   } catch(err) { showLoginErr(err.message); }
   finally { btn.disabled=false; txt.textContent='Bejelentkezés'; }
@@ -810,22 +841,54 @@ async function doLogin() {
 function showLoginErr(msg){ const el=document.getElementById('login-err'); el.textContent=msg; el.classList.remove('hidden'); }
 
 /* ══ APP ════════════════════════════════════════════════════════ */
+async function bootstrapSession() {
+  try {
+    const res = await fetch('/me', {
+      headers: { 'Authorization': `Bearer ${authToken}` },
+    });
+    if (!res.ok) throw new Error('Session expired');
+    const data = await res.json();
+    username = data.username;
+    isAdminUser = !!data.is_admin;
+    sessionStorage.setItem('gc_user', username);
+    sessionStorage.setItem('gc_is_admin', isAdminUser ? '1' : '0');
+    showApp();
+  } catch (_) {
+    doLogout(false);
+  }
+}
+
 function showApp(){
   document.getElementById('login-page').classList.add('hidden');
   document.getElementById('app-page').classList.remove('hidden');
   document.getElementById('user-display').textContent = username || 'User';
+  document.getElementById('btn-admin').classList.toggle('hidden', !isAdminUser);
+  adminToken = isAdminUser ? authToken : null;
   loadParts();
   setTimeout(() => document.getElementById('part-input').focus(), 50);
 }
-document.getElementById('btn-logout').addEventListener('click', () => {
-  sessionStorage.removeItem('gc_token'); sessionStorage.removeItem('gc_user');
-  authToken=null; username=null;
+
+function doLogout(clearLoginFields = true) {
+  sessionStorage.removeItem('gc_token'); sessionStorage.removeItem('gc_user'); sessionStorage.removeItem('gc_is_admin');
+  authToken=null; username=null; isAdminUser=false; adminToken=null;
+  document.getElementById('btn-admin').classList.add('hidden');
   document.getElementById('app-page').classList.add('hidden');
   document.getElementById('login-page').classList.remove('hidden');
-  document.getElementById('login-user').value='';
-  document.getElementById('login-pass').value='';
+  document.getElementById('adm-main').classList.add('hidden');
+  document.getElementById('adm-login').classList.remove('hidden');
+  document.getElementById('adm-logged-as').classList.add('hidden');
+  document.getElementById('adm-btn-logout').classList.add('hidden');
+  document.getElementById('adm-pass').value = '';
+  document.getElementById('adm-login-err').classList.add('hidden');
+  if (clearLoginFields) {
+    document.getElementById('login-user').value='';
+    document.getElementById('login-pass').value='';
+  }
+  admClose();
   resetUI();
-});
+}
+
+document.getElementById('btn-logout').addEventListener('click', () => doLogout(true));
 const partInput = document.getElementById('part-input');
 
 partInput.addEventListener('input', () => {
@@ -1218,9 +1281,9 @@ function renderResults(data) {
           <div style="margin-top:12px;font-size:13px;color:var(--muted);line-height:1.55">
             A webshop jelszava valószínűleg megváltozott. A frissítéshez nyissa meg az Admin panel Webshop belépés menüjét.
           </div>
-          <div style="margin-top:12px">
+          ${isAdminUser ? `<div style="margin-top:12px">
             <button class="btn-upload" onclick="openSupplierAdmin('${sid}')">⚙ Admin megnyitása</button>
-          </div>`;
+          </div>` : ''}`;
       }
     } else if (isManual) {
       bodyHtml = `
@@ -1409,19 +1472,27 @@ function resetUI(){
 }
 
 /* ══ ADMIN ══════════════════════════════════════════════════════ */
-let adminToken = null;
+let adminToken = isAdminUser ? authToken : null;
 let admRunsRange = 'week';
 let _admPreferredTab = 'users';
 
 // ── open / close overlay ─────────────────────────────────────────
 function openAdminOverlay() {
   document.getElementById('adm-overlay').classList.remove('hidden');
-  document.getElementById('adm-login').classList.add('hidden');
-  document.getElementById('adm-main').classList.remove('hidden');
-  admSwitchTab(_admPreferredTab || 'users');
-  admLoadMapping();
-  admLoadUsers();
-  admLoadSuppliers();
+  if (adminToken) {
+    document.getElementById('adm-logged-as').textContent = username || 'admin';
+    document.getElementById('adm-logged-as').classList.remove('hidden');
+    document.getElementById('adm-btn-logout').classList.add('hidden');
+    document.getElementById('adm-login').classList.add('hidden');
+    document.getElementById('adm-main').classList.remove('hidden');
+    admSwitchTab(_admPreferredTab || 'users');
+    admLoadMapping();
+    admLoadUsers();
+    admLoadSuppliers();
+  } else {
+    document.getElementById('adm-main').classList.add('hidden');
+    document.getElementById('adm-login').classList.remove('hidden');
+  }
 }
 
 document.getElementById('btn-admin').addEventListener('click', openAdminOverlay);
@@ -1430,6 +1501,9 @@ document.getElementById('btn-admin').addEventListener('click', openAdminOverlay)
 function admSwitchTab(tab) {
   document.querySelectorAll('.adm-nav-item').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('.adm-tab').forEach(p => p.classList.toggle('hidden', p.id !== `adm-tab-${tab}`));
+  if (tab === 'users' || tab === 'team-users') {
+    admLoadUsers();
+  }
   if (tab === 'runs') {
     admLoadRuns();
     admLoadRunsChart(admRunsRange);
@@ -1507,6 +1581,7 @@ document.getElementById('adm-btn-logout').addEventListener('click', () => {
   document.getElementById('adm-icon-eye').style.display = '';
   document.getElementById('adm-icon-eye-off').style.display = 'none';
   document.getElementById('adm-login-err').classList.add('hidden');
+  if (isAdminUser) adminToken = authToken;
 });
 
 // ── futásnapló ────────────────────────────────────────────────────
@@ -1514,7 +1589,7 @@ async function admLoadRuns() {
   const tbody = document.getElementById('adm-runs-tbody');
   tbody.innerHTML = '<tr><td colspan="8" class="adm-empty">Betöltés…</td></tr>';
   try {
-    const res = await fetch('/admin/runs');
+    const res = await fetch('/admin/runs', { headers: admHeaders() });
     const d   = await res.json();
     if (!d.runs || !d.runs.length) {
       tbody.innerHTML = '<tr><td colspan="8" class="adm-empty">Nincs rögzített futás.</td></tr>';
@@ -1550,7 +1625,7 @@ async function admLoadRunsChart(range = 'week') {
   summary.textContent = 'Diagram betöltése…';
 
   try {
-    const res = await fetch(`/admin/runs/chart?range=${encodeURIComponent(range)}`);
+    const res = await fetch(`/admin/runs/chart?range=${encodeURIComponent(range)}`, { headers: admHeaders() });
     const d = await res.json();
     const runs = Array.isArray(d.runs) ? d.runs : [];
     admRenderRunsChart(runs);
@@ -1655,7 +1730,7 @@ document.querySelectorAll('.adm-range-btn').forEach(btn => {
 // ── load and render current mapping ─────────────────────────────
 async function admLoadMapping() {
   try {
-    const res = await fetch('/admin/mapping');
+    const res = await fetch('/admin/mapping', { headers: admHeaders() });
     if (!res.ok) return;
     const d = await res.json();
     admRenderTable(d.columns, d.rows);
@@ -1719,6 +1794,7 @@ document.getElementById('adm-btn-upload').addEventListener('click', async () => 
   try {
     const res = await fetch('/admin/upload-mapping', {
       method: 'POST',
+      headers: admHeaders(),
       body: form,
     });
     const d = await res.json();
@@ -1747,9 +1823,13 @@ function escAttr(s) {
   return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
 async function admLoadSuppliers() {
   try {
-    const res = await fetch('/admin/suppliers');
+    const res = await fetch('/admin/suppliers', { headers: admHeaders() });
     if (!res.ok) return;
     const d = await res.json();
     admRenderSuppliers(d.suppliers);
@@ -1828,7 +1908,7 @@ async function admSaveSupplier(sid) {
   try {
     const res = await fetch('/admin/update-supplier', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: admHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ supplier_id: sid, username, password, extra }),
     });
     const d = await res.json();
@@ -1856,6 +1936,7 @@ document.getElementById('adm-btn-delete-map').addEventListener('click', async ()
   try {
     const res = await fetch('/admin/mapping', {
       method: 'DELETE',
+      headers: admHeaders(),
     });
     const d = await res.json();
     if (!res.ok) throw new Error(d.detail || 'Törlés sikertelen.');
@@ -1873,15 +1954,81 @@ document.getElementById('adm-btn-delete-map').addEventListener('click', async ()
 });
 
 // ── user management ───────────────────────────────────────────────
+function admHeaders(extra = {}) {
+  return {
+    ...extra,
+    ...(adminToken ? { 'Authorization': `Bearer ${adminToken}` } : {}),
+  };
+}
+
+function admUserMsgHtml(id) {
+  return `<div id="adm-user-msg-${id}" class="hidden" style="margin-top:8px"></div>`;
+}
+
+function admRoleLabel(isAdmin) {
+  return isAdmin ? 'Admin jogosultság' : 'Normál user';
+}
+
+function admRenderUsers(users) {
+  const wrap = document.getElementById('adm-users-wrap');
+  if (!users || !users.length) {
+    wrap.innerHTML = '<div class="adm-hint">Még nincs egyetlen felhasználó sem.</div>';
+    return;
+  }
+  wrap.innerHTML = users.map((u, idx) => {
+    const rowId = `u${idx}`;
+    return `
+      <div class="adm-supplier-row" style="padding:14px 16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+          <div>
+            <div style="font-family:'Oswald',sans-serif;font-size:15px;letter-spacing:.5px;color:var(--navy)">${escHtml(u.username)}</div>
+            <div id="adm-user-role-label-${rowId}" style="font-size:12px;color:var(--muted);margin-top:2px">${admRoleLabel(u.is_admin)}</div>
+          </div>
+          ${u.protected
+            ? '<span class="sup-chip active">Védett</span>'
+            : `<button class="btn-delete-map" onclick="admDeleteUser('${escAttr(u.username)}')">Törlés</button>`}
+        </div>
+        <input type="hidden" id="adm-user-is-admin-${rowId}" value="${u.is_admin ? '1' : '0'}">
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:10px;align-items:end">
+          <div class="field" style="margin-bottom:0">
+            <label>Új jelszó</label>
+            <input type="password" id="adm-user-pass-${rowId}" autocomplete="off" placeholder="Új jelszó">
+          </div>
+          <button class="btn-upload" onclick="admUpdateUserPassword('${escAttr(u.username)}','${rowId}', this)">Jelszó mentése</button>
+          <button class="btn-upload" id="adm-user-role-toggle-${rowId}" onclick="admStageUserAdmin('${escAttr(u.username)}','${rowId}', this)">
+            ${u.is_admin ? 'Admin jog elvétele' : 'Adminná tétel'}
+          </button>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:10px">
+          <div id="adm-user-role-pending-${rowId}" style="font-size:12px;color:var(--muted)">Nincs mentetlen jogosultságváltozás.</div>
+          <button class="btn-upload" id="adm-user-role-save-${rowId}" onclick="admSaveUserAdmin('${escAttr(u.username)}','${rowId}', this)" disabled>Jogosultság mentése</button>
+        </div>
+        ${admUserMsgHtml(rowId)}
+      </div>
+    `;
+  }).join('');
+}
+
 async function admLoadUsers() {
   try {
-    const res = await fetch('/admin/users');
-    if (!res.ok) return;
-    const d = await res.json();
-    if (d.users && d.users[0]) {
-      document.getElementById('adm-new-user').value = d.users[0].username;
+    const appRes = await fetch('/admin/app-user', { headers: admHeaders() });
+    if (appRes.ok) {
+      const appUser = await appRes.json();
+      document.getElementById('adm-new-user').value = appUser.username || '';
     }
   } catch(e) {}
+
+  try {
+    const usersRes = await fetch('/admin/users', { headers: admHeaders() });
+    if (!usersRes.ok) {
+      document.getElementById('adm-users-wrap').innerHTML = '<div class="adm-hint">Nem sikerült betölteni a felhasználókat.</div>';
+      return;
+    }
+    const d = await usersRes.json();
+    admRenderUsers(d.users || []);
+  } catch(e) {
+    document.getElementById('adm-users-wrap').innerHTML = '<div class="adm-hint">Nem sikerült betölteni a felhasználókat.</div>';
+  }
 }
 
 document.getElementById('adm-new-btn-eye').addEventListener('click', () => {
@@ -1910,15 +2057,15 @@ document.getElementById('adm-save-user').addEventListener('click', async () => {
 
   btn.disabled = true; btn.textContent = 'Mentés…';
   try {
-    const res = await fetch('/admin/update-user', {
+    const res = await fetch('/admin/update-app-user', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: admHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ username, password }),
     });
     const d = await res.json();
     if (!res.ok) throw new Error(d.detail || 'Mentés sikertelen.');
     msgEl.className = 'adm-msg ok';
-    msgEl.textContent = `✓ Bejelentkezési adatok frissítve: felhasználónév = "${d.username}"`;
+    msgEl.textContent = `✓ Admin belépési adatok frissítve: "${d.username}"`;
     document.getElementById('adm-new-pass').value = '';
   } catch(err) {
     msgEl.className = 'adm-msg err';
@@ -1928,6 +2075,132 @@ document.getElementById('adm-save-user').addEventListener('click', async () => {
     msgEl.classList.remove('hidden');
   }
 });
+
+async function admUpdateUserPassword(username, rowId, btn) {
+  const password = document.getElementById(`adm-user-pass-${rowId}`).value;
+  const msgEl    = document.getElementById(`adm-user-msg-${rowId}`);
+
+  msgEl.className = 'hidden';
+  if (!username || !password) {
+    msgEl.className = 'adm-msg err';
+    msgEl.textContent = '⚠ Felhasználónév és jelszó megadása kötelező.';
+    msgEl.classList.remove('hidden');
+    return;
+  }
+
+  btn.disabled = true; btn.textContent = 'Mentés…';
+  try {
+    const res = await fetch('/admin/update-user-password', {
+      method: 'POST',
+      headers: admHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ username, password }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || 'Mentés sikertelen.');
+    msgEl.className = 'adm-msg ok';
+    msgEl.textContent = `✓ Jelszó frissítve: "${d.username}"`;
+    document.getElementById(`adm-user-pass-${rowId}`).value = '';
+  } catch(err) {
+    msgEl.className = 'adm-msg err';
+    msgEl.textContent = `⚠ ${err.message}`;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Jelszó mentése';
+    msgEl.classList.remove('hidden');
+  }
+}
+
+document.getElementById('adm-add-user-btn').addEventListener('click', async () => {
+  const username = document.getElementById('adm-add-user-name').value.trim();
+  const password = document.getElementById('adm-add-user-pass').value;
+  const isAdmin  = document.getElementById('adm-add-user-admin').checked;
+  const msgEl    = document.getElementById('adm-user-add-msg');
+  const btn      = document.getElementById('adm-add-user-btn');
+
+  msgEl.className = 'hidden';
+  if (!username || !password) {
+    msgEl.className = 'adm-msg err';
+    msgEl.textContent = '⚠ Felhasználónév és jelszó megadása kötelező.';
+    msgEl.classList.remove('hidden');
+    return;
+  }
+
+  btn.disabled = true; btn.textContent = 'Létrehozás…';
+  try {
+    const res = await fetch('/admin/users', {
+      method: 'POST',
+      headers: admHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ username, password, is_admin: isAdmin }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || 'Létrehozás sikertelen.');
+    msgEl.className = 'adm-msg ok';
+    msgEl.textContent = `✓ Új felhasználó létrehozva: "${d.username}"${d.is_admin ? ' (admin)' : ''}`;
+    document.getElementById('adm-add-user-name').value = '';
+    document.getElementById('adm-add-user-pass').value = '';
+    document.getElementById('adm-add-user-admin').checked = false;
+    admSwitchTab('team-users');
+    await admLoadUsers();
+  } catch(err) {
+    msgEl.className = 'adm-msg err';
+    msgEl.textContent = `⚠ ${err.message}`;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Új user hozzáadása';
+    msgEl.classList.remove('hidden');
+  }
+});
+
+async function admDeleteUser(username) {
+  if (!confirm(`Biztosan törli ezt a felhasználót: ${username}?`)) return;
+  try {
+    const res = await fetch(`/admin/users/${encodeURIComponent(username)}`, {
+      method: 'DELETE',
+      headers: admHeaders(),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || 'Törlés sikertelen.');
+    await admLoadUsers();
+  } catch(err) {
+    alert(`⚠ ${err.message}`);
+  }
+}
+
+function admStageUserAdmin(username, rowId, btn) {
+  const input = document.getElementById(`adm-user-is-admin-${rowId}`);
+  const label = document.getElementById(`adm-user-role-label-${rowId}`);
+  const pending = document.getElementById(`adm-user-role-pending-${rowId}`);
+  const saveBtn = document.getElementById(`adm-user-role-save-${rowId}`);
+  const nextIsAdmin = input.value !== '1';
+  input.value = nextIsAdmin ? '1' : '0';
+  label.textContent = admRoleLabel(nextIsAdmin);
+  btn.textContent = nextIsAdmin ? 'Admin jog elvétele' : 'Adminná tétel';
+  pending.textContent = `Mentésre vár: ${admRoleLabel(nextIsAdmin)}`;
+  pending.style.color = 'var(--navy2)';
+  saveBtn.disabled = false;
+}
+
+async function admSaveUserAdmin(username, rowId, btn) {
+  const isAdmin = document.getElementById(`adm-user-is-admin-${rowId}`).value === '1';
+  const pending = document.getElementById(`adm-user-role-pending-${rowId}`);
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = 'Mentés…';
+  try {
+    const res = await fetch(`/admin/users/${encodeURIComponent(username)}/admin`, {
+      method: 'POST',
+      headers: admHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ is_admin: isAdmin }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || 'Mentés sikertelen.');
+    pending.textContent = `Mentve: ${admRoleLabel(d.is_admin)}`;
+    pending.style.color = 'var(--muted)';
+    await admLoadUsers();
+  } catch (err) {
+    alert(`⚠ ${err.message}`);
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
 </script>
 </body>
 </html>

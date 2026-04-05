@@ -8,35 +8,33 @@ Automates supplier price and stock lookups for Gép-Coop procurement staff. A us
 
 ## Architecture
 
-The system uses an **AI agent + tool calling** pattern:
+The system uses a **FastAPI backend + browser UI + supplier scraper** pattern:
 
 ```
-[Streamlit UI] → POST /query → [FastAPI] → [Claude Agent]
-                                                ├── lookup_mapping()   → reads assets/article_ID.csv
-                                                └── fetch_supplier_price() → Playwright → supplier site
+[Browser UI] → POST /query → [FastAPI]
+                               ├── lookup_mapping()       → Supabase article mapping
+                               └── fetch_supplier_price() → Playwright → supplier site
 ```
 
-- The Claude agent orchestrates the workflow but never accesses websites directly
+- The backend orchestrates the workflow but never guesses prices or stock
 - `lookup_mapping` translates Gép-Coop internal part numbers to supplier part numbers
 - `fetch_supplier_price` dispatches to a per-supplier Playwright script based on `supplier_id`
-- The agent never guesses prices or stock — if a tool fails, it returns a human-readable error
+- If a scraper fails, the API returns a human-readable supplier-specific error
 
-## Planned Project Structure
+## Project Structure
 
 ```
 price_agent/
 ├── .env                        # API keys and supplier credentials (not committed)
 ├── assets/
-│   ├── article_ID.csv          # Internal → supplier part number mapping
-│   └── user.csv                # Supplier URLs and login usernames (reference only)
+│   └── ...                     # Sessions, imports, and support files
 ├── main.py                     # FastAPI entry point, POST /query endpoint
 ├── agent/
-│   ├── agent.py                # Claude agent with tool calling loop
-│   └── tools.py                # lookup_mapping and fetch_supplier_price definitions
+│   └── tools.py                # Mapping lookup and supplier dispatch
 ├── browser/
-│   └── supplier_csavarda.py    # Playwright script for csavarda.hu (pilot supplier)
+│   └── supplier_*.py           # Per-supplier Playwright scripts
 ├── ui/
-│   └── app.py                  # Streamlit frontend
+│   └── index.html              # Browser frontend
 └── requirements.txt
 ```
 
@@ -73,8 +71,8 @@ playwright install chromium
 # Start the backend
 uvicorn main:app --reload
 
-# Start the UI (separate terminal)
-streamlit run ui/app.py
+# Open the UI
+http://localhost:8000/
 ```
 
 ## Browser Tool Pattern

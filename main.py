@@ -28,6 +28,7 @@ SCRAPER_LIMIT = asyncio.Semaphore(4)
 
 # ── .env helpers ──────────────────────────────────────────────────────
 ENV_FILE = Path(__file__).parent / ".env"
+USERS_FILE = Path(__file__).parent / "assets" / "app_users.json"
 
 def _update_env_file(updates: dict[str, str]) -> None:
     """Update or append key=value pairs in the .env file, then reload os.environ."""
@@ -56,7 +57,64 @@ _app_password = os.environ.get("APP_PASSWORD", "")
 if not _app_username or not _app_password:
     raise RuntimeError("APP_USERNAME and APP_PASSWORD must be set in .env")
 
-VALID_USERS: dict = {_app_username: _app_password}
+def _load_extra_users() -> dict[str, dict[str, object]]:
+    if not USERS_FILE.exists():
+        return {}
+    try:
+        raw = json.loads(USERS_FILE.read_text(encoding="utf-8"))
+        users = {}
+        for row in raw.get("users", []):
+            username = (row.get("username") or "").strip()
+            password = row.get("password") or ""
+            is_admin = bool(row.get("is_admin", False))
+            if username and password and username != _app_username:
+                users[username] = {"password": password, "is_admin": is_admin}
+        return users
+    except Exception as exc:
+        log.warning(f"Nem sikerült betölteni az app_users.json fájlt: {exc}")
+        return {}
+
+
+def _save_extra_users(users: dict[str, dict[str, object]]) -> None:
+    USERS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "users": [
+            {
+                "username": username,
+                "password": str(data.get("password", "")),
+                "is_admin": bool(data.get("is_admin", False)),
+            }
+            for username, data in sorted(users.items(), key=lambda item: item[0].lower())
+        ]
+    }
+    USERS_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+EXTRA_USERS: dict[str, dict[str, object]] = _load_extra_users()
+VALID_USERS: dict[str, str] = {}
+
+
+def _rebuild_valid_users() -> None:
+    VALID_USERS.clear()
+    VALID_USERS[_app_username] = _app_password
+    for username, data in EXTRA_USERS.items():
+        if username != _app_username:
+            VALID_USERS[username] = str(data.get("password", ""))
+
+
+def _is_admin_user(username: str) -> bool:
+    if username == _app_username:
+        return True
+    return bool(EXTRA_USERS.get(username, {}).get("is_admin", False))
+
+
+def _invalidate_user_sessions(username: str) -> None:
+    for token, user in list(sessions.items()):
+        if user == username:
+            del sessions[token]
+
+
+_rebuild_valid_users()
 sessions: dict[str, str] = {}   # token → username
 
 # ── Supplier credentials ──────────────────────────────────────────
@@ -147,9 +205,12 @@ def _get_admin(authorization: str | None) -> str:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing token")
     token = authorization.removeprefix("Bearer ").strip()
-    if token not in admin_sessions:
-        raise HTTPException(status_code=401, detail="Invalid or expired admin token")
-    return admin_sessions[token]
+    if token in admin_sessions:
+        return admin_sessions[token]
+    username = sessions.get(token)
+    if username and _is_admin_user(username):
+        return username
+    raise HTTPException(status_code=401, detail="Invalid or expired admin token")
 
 
 def _hu(n: float, dec: int = 4) -> str:
@@ -300,6 +361,18 @@ class UpdateUserRequest(BaseModel):
     username: str
     password: str
 
+class CreateUserRequest(BaseModel):
+    username: str
+    password: str
+    is_admin: bool = False
+
+class UpdateAppUserRequest(BaseModel):
+    username: str
+    password: str
+
+class UpdateUserRoleRequest(BaseModel):
+    is_admin: bool
+
 class UpdateSupplierRequest(BaseModel):
     supplier_id: str
     username: str
@@ -328,7 +401,15 @@ def login(req: LoginRequest):
         raise HTTPException(status_code=401, detail="Invalid username or password")
     token = secrets.token_hex(32)
     sessions[token] = req.username
-    return {"token": token, "username": req.username}
+    return {"token": token, "username": req.username, "is_admin": _is_admin_user(req.username)}
+
+
+@app.get("/me")
+def get_me(
+    authorization: str | None = Header(default=None),
+):
+    username = _get_username(authorization)
+    return {"username": username, "is_admin": _is_admin_user(username)}
 
 
 @app.get("/query/lookup")
@@ -1173,20 +1254,135 @@ def admin_update_supplier(
 
 
 @app.get("/admin/users")
-def admin_get_users():
-    return {"users": [{"username": u} for u in VALID_USERS.keys()]}
-
-
-@app.post("/admin/update-user")
-def admin_update_user(
-    req: UpdateUserRequest,
+def admin_get_users(
+    authorization: str | None = Header(default=None),
 ):
+    _get_admin(authorization)
+    users = [
+        {
+            "username": username,
+            "role": "admin" if bool(data.get("is_admin", False)) else "user",
+            "protected": False,
+            "is_admin": bool(data.get("is_admin", False)),
+        }
+        for username, data in sorted(EXTRA_USERS.items(), key=lambda item: item[0].lower())
+    ]
+    return {"users": users}
+
+
+@app.get("/admin/app-user")
+def admin_get_app_user(
+    authorization: str | None = Header(default=None),
+):
+    _get_admin(authorization)
+    return {"username": _app_username, "role": "admin", "is_admin": True, "protected": True}
+
+
+@app.post("/admin/update-app-user")
+def admin_update_app_user(
+    req: UpdateAppUserRequest,
+    authorization: str | None = Header(default=None),
+):
+    _get_admin(authorization)
     username = req.username.strip()
     if not username or not req.password:
         raise HTTPException(status_code=400, detail="Felhasználónév és jelszó megadása kötelező.")
-    VALID_USERS.clear()
-    VALID_USERS[username] = req.password
+
+    global _app_username, _app_password
+    old_username = _app_username
+    _app_username = username
+    _app_password = req.password
+    if old_username in EXTRA_USERS:
+        del EXTRA_USERS[old_username]
+    if username in EXTRA_USERS:
+        del EXTRA_USERS[username]
+    _save_extra_users(EXTRA_USERS)
     _update_env_file({"APP_USERNAME": username, "APP_PASSWORD": req.password})
-    sessions.clear()   # invalidate all active sessions — re-login required
-    log.info(f"Felhasználói adatok frissítve: username={username}")
+    _rebuild_valid_users()
+    _invalidate_user_sessions(old_username)
+    if username != old_username:
+        _invalidate_user_sessions(username)
+    log.info(f"Admin app user frissítve: username={username}")
+    return {"username": username}
+
+
+@app.post("/admin/users")
+def admin_create_user(
+    req: CreateUserRequest,
+    authorization: str | None = Header(default=None),
+):
+    _get_admin(authorization)
+    username = req.username.strip()
+    if not username or not req.password:
+        raise HTTPException(status_code=400, detail="Felhasználónév és jelszó megadása kötelező.")
+    if username in VALID_USERS:
+        raise HTTPException(status_code=400, detail="Ez a felhasználónév már létezik.")
+    EXTRA_USERS[username] = {"password": req.password, "is_admin": bool(req.is_admin)}
+    _save_extra_users(EXTRA_USERS)
+    _rebuild_valid_users()
+    log.info(f"Új felhasználó létrehozva: username={username}")
+    return {"username": username, "is_admin": bool(req.is_admin)}
+
+
+@app.post("/admin/update-user-password")
+def admin_update_user_password(
+    req: UpdateUserRequest,
+    authorization: str | None = Header(default=None),
+):
+    _get_admin(authorization)
+    username = req.username.strip()
+    if not username or not req.password:
+        raise HTTPException(status_code=400, detail="Felhasználónév és jelszó megadása kötelező.")
+
+    global _app_password
+    if username == _app_username:
+        _app_password = req.password
+        _update_env_file({"APP_PASSWORD": req.password})
+    elif username in EXTRA_USERS:
+        EXTRA_USERS[username]["password"] = req.password
+        _save_extra_users(EXTRA_USERS)
+    else:
+        raise HTTPException(status_code=404, detail="Ismeretlen felhasználó.")
+
+    _rebuild_valid_users()
+    _invalidate_user_sessions(username)
+    log.info(f"Felhasználói jelszó frissítve: username={username}")
+    return {"username": username}
+
+
+@app.post("/admin/users/{username}/admin")
+def admin_set_user_admin(
+    username: str,
+    req: UpdateUserRoleRequest,
+    authorization: str | None = Header(default=None),
+):
+    _get_admin(authorization)
+    username = username.strip()
+    if username == _app_username:
+        raise HTTPException(status_code=400, detail="A fő admin felhasználó mindig admin.")
+    if username not in EXTRA_USERS:
+        raise HTTPException(status_code=404, detail="Ismeretlen felhasználó.")
+    EXTRA_USERS[username]["is_admin"] = bool(req.is_admin)
+    _save_extra_users(EXTRA_USERS)
+    _invalidate_user_sessions(username)
+    log.info(f"Felhasználó admin joga frissítve: username={username}, is_admin={bool(req.is_admin)}")
+    return {"username": username, "is_admin": bool(req.is_admin)}
+
+
+@app.delete("/admin/users/{username}")
+def admin_delete_user(
+    username: str,
+    authorization: str | None = Header(default=None),
+):
+    _get_admin(authorization)
+    username = username.strip()
+    if username == _app_username:
+        raise HTTPException(status_code=400, detail="A fő admin felhasználó nem törölhető.")
+    if username not in EXTRA_USERS:
+        raise HTTPException(status_code=404, detail="Ismeretlen felhasználó.")
+    del EXTRA_USERS[username]
+    _save_extra_users(EXTRA_USERS)
+    _rebuild_valid_users()
+    _invalidate_user_sessions(username)
+    log.info(f"Felhasználó törölve: username={username}")
     return {"username": username}
