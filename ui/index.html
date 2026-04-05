@@ -523,14 +523,13 @@
 <div id="pw-modal" class="hidden" onclick="if(event.target===this)closePwModal()">
   <div class="pw-card">
     <div class="pw-hdr">
-      <span id="pw-hdr-title">Jelszó megváltozott</span>
+      <span id="pw-hdr-title">Admin beavatkozás szükséges</span>
       <button class="pw-close-btn" onclick="closePwModal()" title="Bezárás">&times;</button>
     </div>
     <div class="pw-body">
-      <div class="pw-desc" id="pw-desc">A bejelentkezés sikertelen — a jelszó valószínűleg megváltozott. Adja meg az új jelszót, és a rendszer automatikusan újra lekérdezi az árat.</div>
-      <div class="pw-row">
-        <input id="pw-input" class="pw-input" type="password" placeholder="Új jelszó…" autocomplete="new-password">
-        <button class="pw-btn" id="pw-save-btn">Mentés</button>
+      <div class="pw-desc" id="pw-desc">A bejelentkezés sikertelen. A webshop jelszavát az Admin panel Webshop belépés menüjében kell frissíteni.</div>
+      <div class="pw-row" style="justify-content:flex-end">
+        <button class="pw-btn" id="pw-save-btn">Admin megnyitása</button>
       </div>
       <div class="pw-msg" id="pw-msg"></div>
     </div>
@@ -726,8 +725,7 @@ let username  = sessionStorage.getItem('gc_user');
 let _pendingPartNo     = null;  // part number waiting for user confirmation
 let _searchStartTs     = null;  // timestamp when scraping started
 let _currentFilterSids = '';    // active supplier filter for the running search
-let _skippedSuppliers  = new Set(); // suppliers explicitly skipped by closing pw modal
-let _pendingResults    = null;  // last result data waiting for deferred render
+let _skippedSuppliers  = new Set();
 
 // pipeline state per supplier: {csavarda: [s0,s1,s2,s3], irontrade: [...]}
 const BROWSER_STEPS = [
@@ -985,7 +983,7 @@ async function startSearch(partNo, filterSids) {
   _searchStartTs = Date.now();
   _currentFilterSids = filterSids || '';
   _skippedSuppliers = new Set();
-  _pendingResults = null;
+  _suppliersNeedAdmin = new Set();
   setQueryBusy(true);
 
   try {
@@ -1040,12 +1038,12 @@ function parseSSE(raw) {
   else if (type==='password_required') handlePasswordRequired(data);
 }
 
-/* ══ SUPPLIER PASSWORD PROMPT ════════════════════════════════ */
-let _pwModalSupplier = null;
+/* ══ SUPPLIER PASSWORD ACTION ════════════════════════════════ */
+let _suppliersNeedAdmin = new Set();
 
 function handlePasswordRequired(data) {
   const sid = data.supplier;
-  _pwModalSupplier = sid;
+  if (sid) _suppliersNeedAdmin.add(sid);
   // Mark the active pipeline step as error
   if (sid) {
     const steps = supPipeState[sid] || [];
@@ -1053,72 +1051,21 @@ function handlePasswordRequired(data) {
       if (steps[i] === 'active') { setSupStep(sid, i, 'error'); break; }
     }
   }
-  const label = sid ? sid.charAt(0).toUpperCase() + sid.slice(1) : 'Beszállító';
-  document.getElementById('pw-hdr-title').textContent = `${label} — Jelszó megváltozott`;
-  document.getElementById('pw-desc').textContent =
-    `A(z) ${label} bejelentkezés sikertelen — a jelszó valószínűleg megváltozott. ` +
-    `Adja meg az új jelszót, és a rendszer automatikusan újra lekérdezi az árat.`;
-  document.getElementById('pw-modal').classList.remove('hidden');
-  document.getElementById('pw-input').value = '';
-  document.getElementById('pw-msg').textContent = '';
-  setTimeout(() => document.getElementById('pw-input').focus(), 50);
+}
+
+function openSupplierAdmin(sid) {
+  _admPreferredTab = 'suppliers';
+  openAdminOverlay();
+  if (sid) {
+    setTimeout(() => {
+      const row = document.getElementById(`adm-supplier-${sid}`);
+      row?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 120);
+  }
 }
 
 function closePwModal() {
   document.getElementById('pw-modal').classList.add('hidden');
-  document.getElementById('pw-save-btn').disabled = false;
-  // If closed without saving → mark supplier as explicitly skipped
-  if (_pwModalSupplier) {
-    _skippedSuppliers.add(_pwModalSupplier);
-    _pwModalSupplier = null;
-  }
-  // If results already arrived while the modal was open, render them now
-  if (_pendingResults) {
-    renderResults(_pendingResults);
-    _pendingResults = null;
-  }
-}
-
-document.getElementById('pw-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter') saveSupplierPassword();
-});
-document.getElementById('pw-save-btn').addEventListener('click', saveSupplierPassword);
-
-async function saveSupplierPassword() {
-  const pw    = document.getElementById('pw-input').value;
-  const msgEl = document.getElementById('pw-msg');
-  const btn   = document.getElementById('pw-save-btn');
-  const sid   = _pwModalSupplier;
-  if (!pw) {
-    msgEl.style.color = 'var(--red)';
-    msgEl.textContent = 'Kérjük adja meg az új jelszót.';
-    return;
-  }
-  btn.disabled = true;
-  msgEl.style.color = 'var(--muted)';
-  msgEl.textContent = 'Mentés…';
-  try {
-    const res = await fetch('/supplier/update-password', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
-      body: JSON.stringify({ supplier_id: sid, password: pw }),
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.detail || 'Mentés sikertelen.');
-    }
-    msgEl.style.color = 'var(--green, #16a34a)';
-    msgEl.textContent = 'Jelszó elmentve — újra lekérdezés…';
-    const partNo = _pendingPartNo;
-    setTimeout(() => {
-      closePwModal();
-      if (partNo && sid) startSearch(partNo, sid);
-    }, 900);
-  } catch(e) {
-    msgEl.style.color = 'var(--red)';
-    msgEl.textContent = e.message;
-    btn.disabled = false;
-  }
 }
 
 function handleProgress(ev) {
@@ -1177,12 +1124,6 @@ function handleResult(data) {
     const elapsed = ((Date.now() - _searchStartTs) / 1000).toFixed(1).replace('.', ',');
     document.getElementById('runtime-text').textContent = `Keresés futási ideje: ${elapsed} mp`;
     document.getElementById('runtime-line').classList.remove('hidden');
-  }
-
-  // If the password modal is still open, defer rendering until it's closed
-  if (!document.getElementById('pw-modal').classList.contains('hidden')) {
-    _pendingResults = data;
-    return;
   }
 
   renderResults(data);
@@ -1258,6 +1199,7 @@ function renderResults(data) {
     const r = suppliers[sid];
     const isWinner = sid === winner;
     const hasError = 'error' in r;
+    const needsAdmin = hasError && _suppliersNeedAdmin.has(sid);
 
     const card = document.createElement('div');
     card.className = `sup-card ${isWinner?'is-winner':'is-loser'}`;
@@ -1271,6 +1213,15 @@ function renderResults(data) {
       </div>`;
     } else if (hasError) {
       bodyHtml = `<div class="sup-err">⚠️ ${r.error}</div>`;
+      if (needsAdmin) {
+        bodyHtml += `
+          <div style="margin-top:12px;font-size:13px;color:var(--muted);line-height:1.55">
+            A webshop jelszava valószínűleg megváltozott. A frissítéshez nyissa meg az Admin panel Webshop belépés menüjét.
+          </div>
+          <div style="margin-top:12px">
+            <button class="btn-upload" onclick="openSupplierAdmin('${sid}')">⚙ Admin megnyitása</button>
+          </div>`;
+      }
     } else if (isManual) {
       bodyHtml = `
         <div style="font-size:13px;color:var(--muted);margin-bottom:16px;line-height:1.6">
@@ -1460,13 +1411,14 @@ function resetUI(){
 /* ══ ADMIN ══════════════════════════════════════════════════════ */
 let adminToken = null;
 let admRunsRange = 'week';
+let _admPreferredTab = 'users';
 
 // ── open / close overlay ─────────────────────────────────────────
 function openAdminOverlay() {
   document.getElementById('adm-overlay').classList.remove('hidden');
   document.getElementById('adm-login').classList.add('hidden');
   document.getElementById('adm-main').classList.remove('hidden');
-  admSwitchTab('users');
+  admSwitchTab(_admPreferredTab || 'users');
   admLoadMapping();
   admLoadUsers();
   admLoadSuppliers();
@@ -1807,7 +1759,7 @@ async function admLoadSuppliers() {
 function admRenderSuppliers(suppliers) {
   const wrap = document.getElementById('adm-suppliers-wrap');
   wrap.innerHTML = suppliers.map(s => `
-    <div class="adm-supplier-row">
+    <div class="adm-supplier-row" id="adm-supplier-${s.id}">
       <div class="adm-sup-header">
         <span class="adm-sup-name">${s.id}</span>
         <a href="${escAttr(s.url)}" target="_blank" class="adm-sup-url">${escAttr(s.url)} ↗</a>

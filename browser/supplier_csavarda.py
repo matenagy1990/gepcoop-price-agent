@@ -61,6 +61,33 @@ _JS_CONTAINS = """
     return null;
 }
 """
+
+
+async def _find_exact_product_link(page, supplier_part_no: str):
+    links = page.locator("a[href*='/pest/termek/']")
+    count = await links.count()
+    for idx in range(count):
+        link = links.nth(idx)
+        try:
+            link_text = await link.inner_text()
+        except Exception:
+            link_text = ""
+        if supplier_part_no in link_text:
+            return link
+        try:
+            row_text = await link.evaluate(
+                """el => {
+                    const parent =
+                        el.closest('li, article, tr, .product-card, .product-item, .card, .grid-item, .row') ||
+                        el.parentElement;
+                    return (parent?.innerText || '').trim();
+                }"""
+            )
+        except Exception:
+            row_text = ""
+        if supplier_part_no in row_text:
+            return link
+    return None
 # ── Main scraper ───────────────────────────────────────────────────────────────
 
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
@@ -216,9 +243,16 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             if product_links == 0:
                 raise RuntimeError(f"No product links found for part {supplier_part_no} on csavarda.hu.")
 
-            # ── Step 4: open product drawer ───────────────────────────────────
-            log.info("Clicking first product link…")
-            await page.locator("a[href*='/pest/termek/']").first.click()
+            # ── Step 4: open exact product drawer ────────────────────────────
+            exact_link = await _find_exact_product_link(page, supplier_part_no)
+            if not exact_link:
+                raise RuntimeError(
+                    f"Part {supplier_part_no} was listed on csavarda.hu, but no exact product link could be identified."
+                )
+
+            link_text = (await exact_link.inner_text()).strip()
+            log.info("Clicking exact Csavarda result for %s (link text=%r)", supplier_part_no, link_text)
+            await exact_link.click()
 
             try:
                 await page.wait_for_selector("text=Nettó egységár:", timeout=15000)

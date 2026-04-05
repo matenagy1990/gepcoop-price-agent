@@ -50,6 +50,20 @@ _JS_NEXT_SIBLING = """
 """
 
 
+async def _find_exact_result_row(page, supplier_part_no: str):
+    rows = page.locator("table tbody tr")
+    count = await rows.count()
+    for idx in range(count):
+        row = rows.nth(idx)
+        try:
+            text = await row.inner_text()
+        except Exception:
+            continue
+        if supplier_part_no in text:
+            return row
+    return None
+
+
 async def _is_logged_in(page) -> bool:
     """
     Session check: if the restored session is valid, irontrade.hu serves the search
@@ -216,9 +230,22 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             if rows == 0:
                 raise RuntimeError(f"Part {supplier_part_no} was not found on irontrade.hu.")
 
-            # ── Step 5: navigate to product page ─────────────────────────────
-            log.info("Clicking first product link…")
-            await page.locator("table tbody tr td a").first.click()
+            # ── Step 5: navigate to exact product page ───────────────────────
+            exact_row = await _find_exact_result_row(page, supplier_part_no)
+            if not exact_row:
+                raise RuntimeError(
+                    f"Part {supplier_part_no} was listed on irontrade.hu, but no exact result row could be identified."
+                )
+
+            product_link = exact_row.locator(f"a[data-sku='{supplier_part_no}']").first
+            if not await product_link.count():
+                product_link = exact_row.locator("a").filter(has_text=supplier_part_no).first
+            if not await product_link.count():
+                product_link = exact_row.locator("a").nth(1)
+
+            link_text = (await product_link.inner_text()).strip() if await product_link.count() else ""
+            log.info("Clicking exact Irontrade result row for %s (link text=%r)", supplier_part_no, link_text)
+            await product_link.click()
             await page.wait_for_load_state("domcontentloaded")
             log.info(f"Product page URL: {page.url}")
 
