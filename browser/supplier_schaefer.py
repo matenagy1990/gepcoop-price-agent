@@ -6,10 +6,12 @@ Login flow:
      → click "Log in" → redirects to /b2b/en/?action=shop_login
 
 Search flow:
-  2. Fill input[type='search'] with the article number → press Enter
-     → navigates directly to the product page /b2b/en/art-{slug}-p{id}/
-     (for exact article numbers the shop always resolves to the product page)
-  3. If landed on a search results page (/b2b/en/search/), click first /b2b/en/art- link
+  2. Open the authenticated shop homepage, fill the visible search field with the
+     article number and press Enter
+     → exact article numbers usually navigate directly to
+       /b2b/en/art-{slug}-p{id}/
+  3. If the shop returns a search results page (/b2b/en/search/), look for an
+     exact part-number row in the main content and only then open the product link
 
 Data extraction:
   - Price:    span[itemprop='price'] content attribute → clean float (e.g. "4.58")
@@ -35,9 +37,133 @@ log = logging.getLogger("schaefer")
 
 LOGIN_URL = "https://shop.schaefer-peters.com/sp/en/login/"
 HOME_URL = "https://shop.schaefer-peters.com/b2b/en/"
-SEARCH_URL = "https://shop.schaefer-peters.com/b2b/en/search/?query={part_no}"
 SESSION_FILE = Path(__file__).parent.parent / "assets" / "sessions" / "schaefer_session.json"
 SESSION_MAX_AGE_HOURS = 20
+
+
+def _normalize_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def _contains_exact_part(text: str, supplier_part_no: str) -> bool:
+    text_n = _normalize_text(text)
+    part_n = _normalize_text(supplier_part_no)
+    if not text_n or not part_n:
+        return False
+    pattern = rf"(?<![A-Za-z0-9]){re.escape(part_n)}(?![A-Za-z0-9])"
+    return re.search(pattern, text_n) is not None
+
+
+async def _is_logged_in(page) -> bool:
+    if "/login" in page.url:
+        return False
+    try:
+        return await page.evaluate(
+            """() => {
+                const body = document.body?.innerText || '';
+                return !!document.querySelector("input[type='search']") && /logout/i.test(body);
+            }"""
+        )
+    except Exception:
+        return False
+
+
+def _has_no_results(body_text: str) -> bool:
+    low = body_text.lower()
+    return "no entries found" in low or "no result" in low or "0 article" in low
+
+
+async def _get_visible_search_input(page):
+    visible = page.locator("input[type='search']:visible")
+    if await visible.count():
+        return visible.first
+    return page.locator("input[type='search']").first
+
+
+async def _search_from_home(page, supplier_part_no: str) -> None:
+    search_input = await _get_visible_search_input(page)
+    await search_input.wait_for(state="visible", timeout=10000)
+    await search_input.fill("")
+    await search_input.fill(supplier_part_no)
+    filled = await search_input.input_value()
+    if filled != supplier_part_no:
+        await search_input.press("ControlOrMeta+A")
+        await search_input.press("Backspace")
+        await search_input.type(supplier_part_no, delay=25)
+    await search_input.press("Enter")
+
+
+async def _open_exact_result_from_search(page, supplier_part_no: str) -> bool:
+    main = page.locator("main").first if await page.locator("main").count() else page.locator("body").first
+
+    table_rows = main.locator("table tr")
+    table_row_count = await table_rows.count()
+    for idx in range(table_row_count):
+        row = table_rows.nth(idx)
+        try:
+            row_text = await row.inner_text()
+        except Exception:
+            continue
+        if not _contains_exact_part(row_text, supplier_part_no):
+            continue
+        link = row.locator("a[href*='/b2b/en/art-']")
+        if await link.count():
+            await link.first.click(timeout=8000)
+            return True
+
+    links = main.locator("a[href*='/b2b/en/art-']")
+    link_count = await links.count()
+    for idx in range(link_count):
+        link = links.nth(idx)
+        try:
+            link_text = await link.inner_text()
+        except Exception:
+            continue
+        if _contains_exact_part(link_text, supplier_part_no):
+            await link.click(timeout=8000)
+            return True
+
+    exact_rows = main.locator("tr")
+    row_count = await exact_rows.count()
+    for idx in range(row_count):
+        row = exact_rows.nth(idx)
+        try:
+            row_text = await row.inner_text()
+        except Exception:
+            continue
+        if not _contains_exact_part(row_text, supplier_part_no):
+            continue
+        link = row.locator("a[href*='/b2b/en/art-']")
+        if await link.count():
+            await link.first.click(timeout=8000)
+            return True
+
+    exact_blocks = main.locator("article, li, div")
+    block_count = min(await exact_blocks.count(), 12)
+    for idx in range(block_count):
+        block = exact_blocks.nth(idx)
+        try:
+            block_text = await block.inner_text()
+        except Exception:
+            continue
+        if not _contains_exact_part(block_text, supplier_part_no):
+            continue
+        link = block.locator("a[href*='/b2b/en/art-']")
+        if await link.count():
+            await link.first.click(timeout=8000)
+            return True
+
+    return False
+
+
+async def _is_product_page(page, supplier_part_no: str) -> bool:
+    try:
+        if await page.locator("span[itemprop='price']").count():
+            body_text = await page.locator("body").inner_text()
+            return _contains_exact_part(body_text, supplier_part_no)
+    except Exception:
+        return False
+    return False
 
 
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
@@ -69,11 +195,10 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
         try:
             await emit("Opening shop.schaefer-peters.com…")
-            search_url = SEARCH_URL.format(part_no=supplier_part_no)
 
             if use_session:
-                await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
-                if "/login" in page.url:
+                await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=20000)
+                if not await _is_logged_in(page):
                     log.warning("Saved session is no longer valid — performing fresh login")
                     invalidate_session(SESSION_FILE)
                     await ctx.close()
@@ -98,7 +223,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
                 try:
                     await page.wait_for_function(
-                        "() => !location.pathname.includes('/login') && !!document.querySelector(\"input[type='search']\")",
+                        "() => !location.pathname.includes('/login') && !!document.querySelector(\"input[type='search']\") && /logout/i.test(document.body.innerText)",
                         timeout=12000,
                     )
                 except PlaywrightTimeout:
@@ -111,32 +236,53 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 except Exception as exc:
                     log.warning(f"Could not persist session: {exc}")
 
-                await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
+                await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=20000)
 
-            # Search — use the search box and press Enter
+            # Search — use the visible search box from the authenticated homepage
             await emit(f"Searching for {supplier_part_no} on schaefer-peters…")
+            await _search_from_home(page, supplier_part_no)
+            try:
+                await page.wait_for_function(
+                    "() => location.pathname.includes('/b2b/en/search/') || !!document.querySelector(\"span[itemprop='price']\")",
+                    timeout=12000,
+                )
+            except PlaywrightTimeout:
+                body_text = await page.locator("body").inner_text()
+                if _has_no_results(body_text):
+                    raise RuntimeError(f"Part {supplier_part_no} was not found on schaefer-peters.")
+                raise RuntimeError(
+                    f"Search for {supplier_part_no} did not resolve to a product or results page on schaefer-peters."
+                )
             log.info(f"After search: {page.url}")
 
-            # If still on a search results page, click the first product link
-            if "/search/" in page.url or "/b2b/en/art-" not in page.url:
-                try:
-                    await page.wait_for_selector("a[href*='/b2b/en/art-'], text=/no result|0 article/i", timeout=8000)
-                except PlaywrightTimeout:
-                    pass
+            # If still on a search results page, open only an exact matching result
+            if "/search/" in page.url and not await _is_product_page(page, supplier_part_no):
                 body_text = await page.locator("body").inner_text()
-                if "no result" in body_text.lower() or "0 article" in body_text.lower():
+                if _has_no_results(body_text):
                     raise RuntimeError(
                         f"Part {supplier_part_no} was not found on schaefer-peters."
                     )
                 try:
-                    first_link = page.locator("a[href*='/b2b/en/art-']").first
-                    await first_link.click(timeout=8000)
+                    await page.wait_for_function(
+                        "() => !!document.querySelector('table a[href*=\"/b2b/en/art-\"]') || /no entries found|no result|0 article/i.test(document.body.innerText)",
+                        timeout=8000,
+                    )
+                    body_text = await page.locator("body").inner_text()
+                    if _has_no_results(body_text):
+                        raise RuntimeError(
+                            f"Part {supplier_part_no} was not found on schaefer-peters."
+                        )
+                    opened = await _open_exact_result_from_search(page, supplier_part_no)
+                    if not opened:
+                        raise RuntimeError(
+                            f"Search results loaded for {supplier_part_no}, but no exact result row could be identified on schaefer-peters."
+                        )
                     await page.wait_for_load_state("domcontentloaded")
                     await page.wait_for_selector("span[itemprop='price']", timeout=8000)
                     log.info(f"Product page: {page.url}")
                 except PlaywrightTimeout:
                     raise RuntimeError(
-                        f"No product links found for {supplier_part_no} on schaefer-peters."
+                        f"Search results for {supplier_part_no} did not finish loading on schaefer-peters."
                     )
 
             await emit("Reading price and stock from schaefer-peters…")
