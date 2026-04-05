@@ -47,6 +47,47 @@ SESSION_FILE = Path(__file__).parent.parent / "assets" / "sessions" / "fastbolt_
 SESSION_MAX_AGE_HOURS = 20
 
 
+async def _find_matrix_cell(page, supplier_part_no: str):
+    candidates = [
+        page.locator(f".matrix [title='{supplier_part_no}']"),
+        page.locator(f"table [title='{supplier_part_no}']"),
+        page.locator(f"[title='{supplier_part_no}']"),
+    ]
+    for locator in candidates:
+        count = await locator.count()
+        if not count:
+            continue
+        for idx in range(count):
+            cell = locator.nth(idx)
+            try:
+                if await cell.is_visible():
+                    return cell, count
+            except Exception:
+                continue
+    return None, 0
+
+
+async def _find_enquiry_item(page, supplier_part_no: str):
+    direct = page.locator(f".item.enquiry-item:has(input#enquiry-item-{supplier_part_no})").first
+    if await direct.count():
+        return direct
+
+    fallback = page.locator(
+        f".item.enquiry-item:has-text('{supplier_part_no}'), "
+        f".item.enquiry-item:has-text('FB Mat.-No.')"
+    )
+    count = await fallback.count()
+    for idx in range(count):
+        item = fallback.nth(idx)
+        try:
+            text = await item.inner_text()
+        except Exception:
+            continue
+        if supplier_part_no in text:
+            return item
+    return None
+
+
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
     async def emit(msg: str):
         log.info(msg)
@@ -125,41 +166,70 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 raise RuntimeError(f"Part {supplier_part_no} was not found on fastbolt.")
 
             # Click the specific cell in the matrix table to add it to the enquiry panel
-            matrix_cell = page.locator(f"[title='{supplier_part_no}']").first
+            matrix_cell, match_count = await _find_matrix_cell(page, supplier_part_no)
+            if not matrix_cell:
+                raise RuntimeError(f"Part {supplier_part_no} not found in matrix table on fastbolt.")
+            log.info("Fastbolt matrix candidates for %s: %s", supplier_part_no, match_count)
             try:
-                await matrix_cell.wait_for(timeout=8000)
                 await matrix_cell.click()
-                log.info(f"Clicked matrix cell for {supplier_part_no}")
+                log.info(f"Clicked visible matrix cell for {supplier_part_no}")
             except PlaywrightTimeout:
                 raise RuntimeError(f"Part {supplier_part_no} not found in matrix table on fastbolt.")
 
-            # Wait for the enquiry input for this specific part to appear
+            # Wait for the enquiry panel to register the selected part.
             qty_selector = f"input#enquiry-item-{supplier_part_no}"
             try:
-                await page.wait_for_selector(qty_selector, timeout=10000)
-                log.info(f"Enquiry panel updated for {supplier_part_no}")
+                await page.wait_for_function(
+                    """partNo => {
+                        const byInput = document.querySelector(`input#enquiry-item-${partNo}`);
+                        if (byInput) return true;
+                        const items = [...document.querySelectorAll('.item.enquiry-item')];
+                        return items.some(item => item.innerText.includes(partNo));
+                    }""",
+                    arg=supplier_part_no,
+                    timeout=12000,
+                )
+                log.info("Enquiry panel registered %s", supplier_part_no)
             except PlaywrightTimeout:
+                panel_snapshot = await page.evaluate(
+                    """() => ({
+                        enquiryInputs: [...document.querySelectorAll('input[id^="enquiry-item-"]')].map(el => el.id),
+                        enquiryItems: [...document.querySelectorAll('.item.enquiry-item')].map(el => el.innerText.slice(0, 250))
+                    })"""
+                )
+                log.warning("Fastbolt enquiry panel snapshot: %s", panel_snapshot)
                 raise RuntimeError(f"Enquiry panel did not load for {supplier_part_no} on fastbolt.")
 
             await emit("Reading price and stock from fastbolt…")
 
+            item_locator = await _find_enquiry_item(page, supplier_part_no)
+            if not item_locator:
+                raise RuntimeError(f"Fastbolt enquiry item for {supplier_part_no} could not be identified.")
+
             # Type "1" into the quantity field and click the checkmark to trigger price load
-            qty_input = page.locator(qty_selector)
+            qty_input = item_locator.locator(qty_selector)
+            if not await qty_input.count():
+                qty_input = item_locator.locator("input[id^='enquiry-item-']").first
+            await qty_input.wait_for(timeout=8000)
             await qty_input.fill("1")
             log.info("Filled quantity with 1")
 
             # Click the checkmark inside the enquiry item row for this specific part
-            item_locator = page.locator(f".item.enquiry-item:has(input#enquiry-item-{supplier_part_no})")
             await item_locator.locator("a.btn-change-amount").click()
             log.info("Clicked checkmark to confirm quantity")
 
             # Wait for the AJAX price update — span.text-red > b must contain EUR
             try:
+                await item_locator.locator(".current-amount span.text-red").first.wait_for(timeout=10000)
                 await page.wait_for_function(
-                    "() => {"
-                    "  const b = document.querySelector('.current-amount span.text-red b');"
-                    "  return b && b.innerText.includes('EUR');"
-                    "}",
+                    """partNo => {
+                        const item = document.querySelector(`.item.enquiry-item:has(input#enquiry-item-${partNo})`)
+                          || [...document.querySelectorAll('.item.enquiry-item')].find(el => el.innerText.includes(partNo));
+                        if (!item) return false;
+                        const price = item.querySelector('.current-amount span.text-red');
+                        return price && price.innerText.includes('EUR');
+                    }""",
+                    arg=supplier_part_no,
                     timeout=10000,
                 )
                 log.info("Price loaded in enquiry panel")
@@ -167,15 +237,8 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 log.warning("Price did not appear after 10s — attempting extraction anyway")
 
             # Extract price and unit qty — scope to the specific enquiry item for this part
-            price_data = await page.evaluate(f"""() => {{
-                const item = document.querySelector(
-                    '.item.enquiry-item:has(input#enquiry-item-{supplier_part_no})'
-                );
-                if (!item) return null;
-                const span = item.querySelector('.current-amount span.text-red');
-                if (!span) return null;
-                return span.innerText.trim();   // e.g. "10.58 EUR\\n/ 100\\n= 105.80 EUR"
-            }}""")
+            price_span = item_locator.locator(".current-amount span.text-red").first
+            price_data = (await price_span.inner_text()).strip() if await price_span.count() else None
 
             log.info(f"Raw price text: {price_data!r}")
 
@@ -204,14 +267,8 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 log.warning(f"Could not parse unit qty from {price_data!r}, assuming 1")
 
             # Stock: .progress-bar-success scoped to this specific enquiry item
-            stock_text = await page.evaluate(f"""() => {{
-                const item = document.querySelector(
-                    '.item.enquiry-item:has(input#enquiry-item-{supplier_part_no})'
-                );
-                if (!item) return '';
-                const bar = item.querySelector('.progress-bar-success');
-                return bar ? bar.innerText.trim() : '';
-            }}""")
+            stock_bar = item_locator.locator(".progress-bar-success").first
+            stock_text = (await stock_bar.inner_text()).strip() if await stock_bar.count() else ""
             log.info(f"Stock text: {stock_text!r}")
             stock = _parse_stock(stock_text)
 

@@ -74,6 +74,34 @@ async def _extract_top_variant_price(page) -> tuple[float, int] | None:
     return price_raw, unit_qty
 
 
+async def _extract_top_variant_stock(page):
+    """Read stock state from the same top variant block that shows the active price."""
+    data = await page.evaluate("""() => {
+        const block =
+            document.querySelector('.product-variant.price-call-triggered.stock-call-triggered') ||
+            document.querySelector('.product-variant');
+        if (!block) return null;
+
+        const stockEl = block.querySelector('.stock-txt, [data-product-stock-status], .adp-stock');
+        const stockText = (stockEl?.textContent || block.querySelector('.adp-stock')?.textContent || '').trim();
+        const stockClass = stockEl?.className || '';
+        return { stockText, stockClass };
+    }""")
+    if not data:
+        return None
+
+    stock_text = (data.get("stockText") or "").strip()
+    stock_class = (data.get("stockClass") or "").strip().lower()
+    if not stock_text and not stock_class:
+        return None
+
+    if "outofstock" in stock_class or "nincs készleten" in stock_text.lower():
+        return 0
+    if "instock" in stock_class or "készleten" in stock_text.lower() or "raktáron" in stock_text.lower():
+        return "Raktáron"
+    return None
+
+
 async def _extract_price_and_unit_structured(page) -> tuple[float, int] | None:
     """Try a DOM-scoped extraction before falling back to full-body regex."""
     data = await page.evaluate("""() => {
@@ -255,12 +283,15 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     log.info("Price extracted via body-text fallback")
             log.info(f"Price: {price_raw} Ft / {unit_qty} db")
 
-            if await page.get_by_text("Nincs készleten", exact=False).count():
-                stock_value = 0
-            elif await page.get_by_text("Készleten", exact=False).count() or await page.get_by_text("Raktáron", exact=False).count():
-                stock_value = "Raktáron"
-            else:
-                stock_value = None
+            stock_value = await _extract_top_variant_stock(page)
+            if stock_value is None:
+                log.warning("Fabory top variant stock marker not found — falling back to page-wide stock text")
+                if await page.get_by_text("Nincs készleten", exact=False).count():
+                    stock_value = 0
+                elif await page.get_by_text("Készleten", exact=False).count() or await page.get_by_text("Raktáron", exact=False).count():
+                    stock_value = "Raktáron"
+                else:
+                    stock_value = None
             log.info(f"Stock: {stock_value}")
 
             return {
