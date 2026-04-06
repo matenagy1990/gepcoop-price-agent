@@ -235,12 +235,7 @@
   .adm-hdr-user{font-size:12px;color:rgba(255,255,255,.7);background:rgba(255,255,255,.1);padding:3px 10px;border-radius:12px}
   .adm-btn-close{background:rgba(255,255,255,.12);border:none;border-radius:8px;color:#fff;width:32px;height:32px;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .2s}
   .adm-btn-close:hover{background:rgba(255,255,255,.25)}
-  .adm-btn-logout{background:none;border:1.5px solid rgba(255,255,255,.3);border-radius:8px;color:rgba(255,255,255,.8);font-family:'Inter',sans-serif;font-size:12px;padding:4px 12px;cursor:pointer;transition:all .2s}
-  .adm-btn-logout:hover{border-color:#fff;color:#fff}
-
   .adm-body{padding:32px 36px}
-  .adm-login-wrap{max-width:380px;margin:0 auto}
-  .adm-login-wrap h2{font-family:'Oswald',sans-serif;font-size:20px;font-weight:600;color:var(--navy);margin-bottom:22px}
 
   .adm-section{margin-bottom:32px}
   .adm-section-title{font-family:'Oswald',sans-serif;font-size:13px;font-weight:600;color:var(--navy);letter-spacing:1px;text-transform:uppercase;margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid var(--border)}
@@ -568,34 +563,12 @@
     <div class="adm-hdr">
       <div class="adm-hdr-title">⚙ ADMIN PANEL</div>
       <div class="adm-hdr-right">
-        <div class="adm-hdr-user hidden" id="adm-logged-as"></div>
-        <button class="adm-btn-logout hidden" id="adm-btn-logout">Kijelentkezés</button>
+        <div class="adm-hdr-user" id="adm-logged-as"></div>
         <button class="adm-btn-close" id="adm-close" title="Bezárás">✕</button>
       </div>
     </div>
 
-    <!-- Login state -->
-    <div id="adm-login" class="adm-body">
-      <div class="adm-login-wrap">
-        <h2>Admin bejelentkezés</h2>
-        <div class="field">
-          <label>Jelszó</label>
-          <div class="pw-wrap">
-            <input type="password" id="adm-pass" autocomplete="off" readonly
-                   onfocus="this.removeAttribute('readonly')">
-            <button type="button" class="btn-eye" id="adm-btn-eye" title="Jelszó megjelenítése">
-              <svg id="adm-icon-eye" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-              <svg id="adm-icon-eye-off" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
-            </button>
-          </div>
-        </div>
-        <button class="btn-primary" id="adm-btn-login">Bejelentkezés</button>
-        <div id="adm-login-err" class="err-msg hidden"></div>
-      </div>
-    </div>
-
-    <!-- Main state (shown after login) -->
-    <div id="adm-main" class="hidden">
+    <div id="adm-main">
       <div class="adm-layout">
 
         <!-- Sidebar navigation -->
@@ -624,12 +597,11 @@
           <div class="adm-tab" id="adm-tab-users">
             <div class="adm-section">
               <div class="adm-section-title">Admin fiók</div>
-              <p class="adm-hint">Az elsődleges admin felhasználó módosítása. Mentés után az új belépési adat lesz érvényes az apphoz.</p>
+              <p class="adm-hint">Itt csak a saját admin fiókja jelszavát tudja módosítani. Más adminok jelszava ezen a felületen nem látható és nem szerkeszthető.</p>
               <div style="max-width:400px;display:flex;flex-direction:column;gap:12px">
                 <div class="field" style="margin-bottom:0">
-                  <label>Admin felhasználónév</label>
-                  <input type="text" id="adm-new-user" autocomplete="off" readonly
-                         onfocus="this.removeAttribute('readonly')" placeholder="pl. gepcoop">
+                  <label>Saját admin felhasználónév</label>
+                  <input type="text" id="adm-new-user" autocomplete="off" readonly placeholder="admin@gepcoop.hu">
                 </div>
                 <div class="field" style="margin-bottom:0">
                   <label>Új jelszó</label>
@@ -923,12 +895,7 @@ function doLogout(clearLoginFields = true) {
   document.getElementById('btn-admin').classList.add('hidden');
   document.getElementById('app-page').classList.add('hidden');
   document.getElementById('login-page').classList.remove('hidden');
-  document.getElementById('adm-main').classList.add('hidden');
-  document.getElementById('adm-login').classList.remove('hidden');
-  document.getElementById('adm-logged-as').classList.add('hidden');
-  document.getElementById('adm-btn-logout').classList.add('hidden');
-  document.getElementById('adm-pass').value = '';
-  document.getElementById('adm-login-err').classList.add('hidden');
+  document.getElementById('adm-logged-as').textContent = '';
   if (clearLoginFields) {
     document.getElementById('login-user').value='';
     document.getElementById('login-pass').value='';
@@ -1527,21 +1494,13 @@ let _admPreferredTab = 'users';
 
 // ── open / close overlay ─────────────────────────────────────────
 function openAdminOverlay() {
+  if (!adminToken) return;
   document.getElementById('adm-overlay').classList.remove('hidden');
-  if (adminToken) {
-    document.getElementById('adm-logged-as').textContent = username || 'admin';
-    document.getElementById('adm-logged-as').classList.remove('hidden');
-    document.getElementById('adm-btn-logout').classList.add('hidden');
-    document.getElementById('adm-login').classList.add('hidden');
-    document.getElementById('adm-main').classList.remove('hidden');
-    admSwitchTab(_admPreferredTab || 'users');
-    admLoadMapping();
-    admLoadUsers();
-    admLoadSuppliers();
-  } else {
-    document.getElementById('adm-main').classList.add('hidden');
-    document.getElementById('adm-login').classList.remove('hidden');
-  }
+  document.getElementById('adm-logged-as').textContent = username || 'admin';
+  admSwitchTab(_admPreferredTab || 'users');
+  admLoadMapping();
+  admLoadUsers();
+  admLoadSuppliers();
 }
 
 document.getElementById('btn-admin').addEventListener('click', openAdminOverlay);
@@ -1562,16 +1521,6 @@ document.querySelectorAll('.adm-nav-item').forEach(btn => {
   btn.addEventListener('click', () => admSwitchTab(btn.dataset.tab));
 });
 
-// Admin password show/hide toggle
-document.getElementById('adm-btn-eye').addEventListener('click', () => {
-  const inp = document.getElementById('adm-pass');
-  const on  = document.getElementById('adm-icon-eye');
-  const off = document.getElementById('adm-icon-eye-off');
-  const show = inp.type === 'password';
-  inp.type = show ? 'text' : 'password';
-  on.style.display  = show ? 'none' : '';
-  off.style.display = show ? '' : 'none';
-});
 document.getElementById('adm-close').addEventListener('click', admClose);
 document.getElementById('adm-overlay').addEventListener('click', e => {
   if (e.target === document.getElementById('adm-overlay')) admClose();
@@ -1579,59 +1528,6 @@ document.getElementById('adm-overlay').addEventListener('click', e => {
 function admClose() {
   document.getElementById('adm-overlay').classList.add('hidden');
 }
-
-// ── login ────────────────────────────────────────────────────────
-document.getElementById('adm-pass').addEventListener('keydown', e => { if (e.key === 'Enter') admDoLogin(); });
-document.getElementById('adm-btn-login').addEventListener('click', admDoLogin);
-
-async function admDoLogin() {
-  const pass = document.getElementById('adm-pass').value;
-  const errEl = document.getElementById('adm-login-err');
-  const btn   = document.getElementById('adm-btn-login');
-  errEl.classList.add('hidden');
-  if (!pass) { admShowErr('Kérjük adja meg a jelszót.'); return; }
-  btn.disabled = true; btn.textContent = '…';
-  try {
-    const res = await fetch('/admin/login', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: pass }),
-    });
-    if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.detail || 'Hibás belépési adatok.'); }
-    const d = await res.json();
-    adminToken = d.token;
-    document.getElementById('adm-logged-as').textContent = d.username;
-    document.getElementById('adm-logged-as').classList.remove('hidden');
-    document.getElementById('adm-btn-logout').classList.remove('hidden');
-    document.getElementById('adm-login').classList.add('hidden');
-    document.getElementById('adm-main').classList.remove('hidden');
-    admSwitchTab('users');
-    admLoadMapping();
-    admLoadUsers();
-    admLoadSuppliers();
-  } catch(err) { admShowErr(err.message); }
-  finally { btn.disabled = false; btn.textContent = 'Bejelentkezés'; }
-}
-function admShowErr(msg) {
-  const el = document.getElementById('adm-login-err');
-  el.textContent = msg; el.classList.remove('hidden');
-}
-
-// ── admin logout ─────────────────────────────────────────────────
-document.getElementById('adm-btn-logout').addEventListener('click', () => {
-  adminToken = null;
-  document.getElementById('adm-logged-as').classList.add('hidden');
-  document.getElementById('adm-btn-logout').classList.add('hidden');
-  document.getElementById('adm-main').classList.add('hidden');
-  document.getElementById('adm-login').classList.remove('hidden');
-  const _p = document.getElementById('adm-pass');
-  _p.value = '';
-  _p.setAttribute('readonly','');
-  _p.type = 'password';
-  document.getElementById('adm-icon-eye').style.display = '';
-  document.getElementById('adm-icon-eye-off').style.display = 'none';
-  document.getElementById('adm-login-err').classList.add('hidden');
-  if (isAdminUser) adminToken = authToken;
-});
 
 // ── futásnapló ────────────────────────────────────────────────────
 async function admLoadRuns() {
@@ -2095,15 +1991,14 @@ document.getElementById('adm-new-btn-eye').addEventListener('click', () => {
 });
 
 document.getElementById('adm-save-user').addEventListener('click', async () => {
-  const username = document.getElementById('adm-new-user').value.trim();
   const password = document.getElementById('adm-new-pass').value;
   const msgEl    = document.getElementById('adm-user-msg');
   const btn      = document.getElementById('adm-save-user');
 
   msgEl.className = 'hidden';
-  if (!username || !password) {
+  if (!password) {
     msgEl.className = 'adm-msg err';
-    msgEl.textContent = '⚠ Felhasználónév és jelszó megadása kötelező.';
+    msgEl.textContent = '⚠ Új jelszó megadása kötelező.';
     msgEl.classList.remove('hidden');
     return;
   }
@@ -2113,12 +2008,12 @@ document.getElementById('adm-save-user').addEventListener('click', async () => {
     const res = await fetch('/admin/update-app-user', {
       method: 'POST',
       headers: admHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ password }),
     });
     const d = await res.json();
     if (!res.ok) throw new Error(d.detail || 'Mentés sikertelen.');
     msgEl.className = 'adm-msg ok';
-    msgEl.textContent = `✓ Admin belépési adatok frissítve: "${d.username}"`;
+    msgEl.textContent = `✓ Saját admin jelszó frissítve: "${d.username}"`;
     document.getElementById('adm-new-pass').value = '';
   } catch(err) {
     msgEl.className = 'adm-msg err';

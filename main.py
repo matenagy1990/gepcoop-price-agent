@@ -4,7 +4,6 @@ import csv
 import hashlib
 import hmac
 import io
-import json
 import logging
 import os
 import secrets
@@ -31,7 +30,6 @@ SCRAPER_LIMIT = asyncio.Semaphore(4)
 
 # ── .env helpers ──────────────────────────────────────────────────────
 ENV_FILE = Path(__file__).parent / ".env"
-USERS_FILE = Path(__file__).parent / "assets" / "app_users.json"
 
 def _update_env_file(updates: dict[str, str]) -> None:
     """Update or append key=value pairs in the .env file, then reload os.environ."""
@@ -57,29 +55,6 @@ def _update_env_file(updates: dict[str, str]) -> None:
 # ── Auth / Supabase-backed app users ─────────────────────────────────
 PBKDF2_ITERATIONS = 240_000
 AUTH_TABLE = "app_users"
-_legacy_app_username = os.environ.get("APP_USERNAME", "").strip()
-_legacy_app_password = os.environ.get("APP_PASSWORD", "")
-
-
-def _load_extra_users() -> dict[str, dict[str, object]]:
-    if not USERS_FILE.exists():
-        return {}
-    try:
-        raw = json.loads(USERS_FILE.read_text(encoding="utf-8"))
-        users = {}
-        for row in raw.get("users", []):
-            username = (row.get("username") or "").strip()
-            password = row.get("password") or ""
-            is_admin = bool(row.get("is_admin", False))
-            if username and password and username != _legacy_app_username:
-                users[username] = {"password": password, "is_admin": is_admin}
-        return users
-    except Exception as exc:
-        log.warning(f"Nem sikerült betölteni az app_users.json fájlt: {exc}")
-        return {}
-
-
-EXTRA_USERS: dict[str, dict[str, object]] = _load_extra_users()
 
 _auth_bootstrapped = False
 
@@ -211,9 +186,6 @@ def _ensure_auth_bootstrap() -> None:
     global _auth_bootstrapped
     if _auth_bootstrapped:
         return
-    sb = _get_supabase_main()
-    if sb is None:
-        raise RuntimeError("Supabase not configured for app user authentication.")
     try:
         existing = _get_auth_users(include_inactive=True)
     except Exception as exc:
@@ -222,30 +194,9 @@ def _ensure_auth_bootstrap() -> None:
         ) from exc
 
     if not existing:
-        seeded = False
-        if _legacy_app_username and _legacy_app_password:
-            _upsert_auth_user(
-                _legacy_app_username,
-                _legacy_app_password,
-                is_admin=True,
-                is_primary=True,
-                is_active=True,
-            )
-            seeded = True
-        for username, data in EXTRA_USERS.items():
-            password = str(data.get("password", ""))
-            if not username or not password or username == _legacy_app_username:
-                continue
-            _upsert_auth_user(
-                username,
-                password,
-                is_admin=bool(data.get("is_admin", False)),
-                is_primary=False,
-                is_active=True,
-            )
-            seeded = True
-        if seeded:
-            log.info("Legacy app users migrated to Supabase app_users table.")
+        raise RuntimeError(
+            "A Supabase app_users tábla üres. Hozz létre legalább egy elsődleges admin felhasználót az admin felületen vagy SQL-ből."
+        )
     _auth_bootstrapped = True
 
 
@@ -334,8 +285,6 @@ def _lookup_part_name(part_no: str) -> str:
         pass
     return ""
 
-admin_sessions: dict[str, str] = {}
-
 UI_FILE   = Path(__file__).parent / "ui" / "index.html"
 LOGO_FILE = Path(__file__).parent / "assets" / "logo.png"
 
@@ -353,8 +302,6 @@ def _get_admin(authorization: str | None) -> str:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing token")
     token = authorization.removeprefix("Bearer ").strip()
-    if token in admin_sessions:
-        return admin_sessions[token]
     session = sessions.get(token)
     if session:
         username = str(session.get("username", ""))
@@ -504,9 +451,6 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
-class AdminLoginRequest(BaseModel):
-    password: str
-
 class UpdateUserRequest(BaseModel):
     username: str
     password: str
@@ -517,7 +461,6 @@ class CreateUserRequest(BaseModel):
     is_admin: bool = False
 
 class UpdateAppUserRequest(BaseModel):
-    username: str
     password: str
 
 class UpdateUserRoleRequest(BaseModel):
@@ -1087,8 +1030,8 @@ def update_supplier_password(
     req: UpdatePasswordRequest,
     authorization: str | None = Header(default=None),
 ):
-    """Allow a logged-in user to update a supplier's password (e.g. after Schaefer monthly rotation)."""
-    _get_username(authorization)
+    """Allow an admin to update a supplier's password (e.g. after Schaefer monthly rotation)."""
+    _get_admin(authorization)
     if req.supplier_id not in SUPPLIER_CREDS:
         raise HTTPException(status_code=400, detail=f"Ismeretlen beszállító: {req.supplier_id}")
     if not req.password:
@@ -1103,16 +1046,11 @@ def update_supplier_password(
 
 # ── Admin routes ──────────────────────────────────────────────────────
 
-@app.post("/admin/login")
-def admin_login(req: AdminLoginRequest):
-    raise HTTPException(
-        status_code=400,
-        detail="Külön admin jelszó már nincs használatban. Jelentkezzen be admin felhasználóval a normál login felületen.",
-    )
-
-
 @app.get("/admin/mapping")
-def admin_get_mapping():
+def admin_get_mapping(
+    authorization: str | None = Header(default=None),
+):
+    _get_admin(authorization)
     from agent.tools import _get_supabase
     sb = _get_supabase()
     if sb is None:
@@ -1171,7 +1109,9 @@ def _clean_mapping_val(v) -> str | None:
 @app.post("/admin/upload-mapping")
 async def admin_upload_mapping(
     file: UploadFile = File(...),
+    authorization: str | None = Header(default=None),
 ):
+    _get_admin(authorization)
     import pandas as pd
 
     content  = await file.read()
@@ -1255,7 +1195,10 @@ async def admin_upload_mapping(
 
 
 @app.get("/admin/mapping-template")
-def admin_mapping_template():
+def admin_mapping_template(
+    authorization: str | None = Header(default=None),
+):
+    _get_admin(authorization)
     """Return an Excel (.xlsx) template with all column headers and two example rows."""
     import pandas as pd
 
@@ -1283,7 +1226,10 @@ def admin_mapping_template():
 
 
 @app.delete("/admin/mapping")
-def admin_delete_mapping():
+def admin_delete_mapping(
+    authorization: str | None = Header(default=None),
+):
+    _get_admin(authorization)
     from agent.tools import _get_supabase
     sb = _get_supabase()
     if sb is None:
@@ -1298,7 +1244,10 @@ def admin_delete_mapping():
 
 
 @app.get("/admin/runs")
-def admin_get_runs():
+def admin_get_runs(
+    authorization: str | None = Header(default=None),
+):
+    _get_admin(authorization)
     sb = _get_supabase_main()
     if sb is None:
         return {"runs": []}
@@ -1317,7 +1266,11 @@ def admin_get_runs():
 
 
 @app.get("/admin/runs/chart")
-def admin_get_runs_chart(range: str = "week"):
+def admin_get_runs_chart(
+    range: str = "week",
+    authorization: str | None = Header(default=None),
+):
+    _get_admin(authorization)
     sb = _get_supabase_main()
     if sb is None:
         return {"range": range, "runs": []}
@@ -1430,11 +1383,11 @@ def admin_get_users(
 def admin_get_app_user(
     authorization: str | None = Header(default=None),
 ):
-    _get_admin(authorization)
+    admin_username = _get_admin(authorization)
     _ensure_auth_bootstrap()
-    row = _get_auth_user(_get_primary_admin_username(), include_inactive=False)
+    row = _get_auth_user(admin_username, include_inactive=False)
     if not row:
-        raise HTTPException(status_code=404, detail="A fő admin felhasználó nem található.")
+        raise HTTPException(status_code=404, detail="Az admin felhasználó nem található.")
     return _auth_row_to_user(row)
 
 
@@ -1443,40 +1396,19 @@ def admin_update_app_user(
     req: UpdateAppUserRequest,
     authorization: str | None = Header(default=None),
 ):
-    _get_admin(authorization)
+    admin_username = _get_admin(authorization)
     _ensure_auth_bootstrap()
-    username = req.username.strip()
-    if not username or not req.password:
-        raise HTTPException(status_code=400, detail="Felhasználónév és jelszó megadása kötelező.")
+    if not req.password:
+        raise HTTPException(status_code=400, detail="Új jelszó megadása kötelező.")
 
-    old_username = _get_primary_admin_username()
-    if username != old_username:
-        existing = _get_auth_user(username, include_inactive=True)
-        if existing and not bool(existing.get("is_primary", False)):
-            raise HTTPException(status_code=400, detail="Ez a felhasználónév már létezik.")
+    row = _get_auth_user(admin_username, include_inactive=True)
+    if not row:
+        raise HTTPException(status_code=404, detail="Az admin felhasználó nem található.")
 
-    sb = _get_supabase_main()
-    now = datetime.now(timezone.utc).isoformat()
-    old_row = _get_auth_user(old_username, include_inactive=True)
-    if not old_row:
-        raise HTTPException(status_code=404, detail="A fő admin felhasználó nem található.")
-    if username != old_username:
-        sb.table(AUTH_TABLE).delete().eq("username", old_username).execute()
-    sb.table(AUTH_TABLE).upsert({
-        "username": username,
-        "password_hash": _hash_password(req.password),
-        "is_admin": True,
-        "is_primary": True,
-        "is_active": True,
-        "created_at": old_row.get("created_at") or now,
-        "updated_at": now,
-        "deleted_at": None,
-    }, on_conflict="username").execute()
-    if username != old_username:
-        _invalidate_user_sessions(old_username)
-    _invalidate_user_sessions(username)
-    log.info(f"Admin app user frissítve: username={username}")
-    return {"username": username}
+    _set_auth_password(admin_username, req.password)
+    _invalidate_user_sessions(admin_username)
+    log.info(f"Admin saját jelszó frissítve: username={admin_username}")
+    return {"username": admin_username}
 
 
 @app.post("/admin/users")
