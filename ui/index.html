@@ -97,6 +97,35 @@
   .btn-query:disabled{opacity:.6;cursor:not-allowed;transform:none}
   .spinner{width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}
   @keyframes spin{to{transform:rotate(360deg)}}
+  .guide-card{background:linear-gradient(135deg,#f8fbff 0%,#eef5fb 100%);border:1px solid rgba(0,159,230,.16);border-radius:var(--r);box-shadow:var(--sh);padding:22px 24px;margin-bottom:24px;display:flex;flex-direction:column;gap:18px;max-width:100%}
+  .guide-top{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;width:100%}
+  .guide-copy{min-width:0;flex:1}
+  .guide-eyebrow{font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--blue);margin-bottom:6px}
+  .guide-title{font-family:'Oswald',sans-serif;font-size:20px;line-height:1.15;color:var(--navy);margin-bottom:6px}
+  .guide-desc{font-size:13px;color:var(--muted);line-height:1.6;max-width:700px}
+  .guide-actions{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;align-items:stretch}
+  .btn-guide-open,.btn-guide-download,.btn-guide-secondary{min-height:44px;padding:0 18px;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;transition:all .18s;display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap}
+  .btn-guide-open{background:linear-gradient(135deg,var(--navy) 0%,var(--navy2) 100%);border:none;color:#fff;box-shadow:0 4px 14px rgba(22,27,99,.18)}
+  .btn-guide-open:hover:not(:disabled){opacity:.92;transform:translateY(-1px)}
+  .btn-guide-download{background:#fff;border:1.5px solid rgba(22,27,99,.15);color:var(--navy2)}
+  .btn-guide-download:hover:not(:disabled){border-color:var(--blue);color:var(--navy)}
+  .btn-guide-secondary{background:#fff;border:1.5px solid rgba(0,159,230,.18);color:var(--blue)}
+  .btn-guide-secondary:hover:not(:disabled){border-color:var(--blue);background:rgba(0,159,230,.05)}
+  .btn-guide-open:disabled,.btn-guide-download:disabled,.btn-guide-secondary:disabled{opacity:.55;cursor:not-allowed;transform:none}
+  .guide-admin{width:100%;padding:18px;border-top:1px solid rgba(22,27,99,.08);background:rgba(255,255,255,.7);border-radius:14px;display:flex;flex-direction:column;gap:14px}
+  .guide-admin-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+  .guide-admin-copy{min-width:0}
+  .guide-admin-title{font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:4px}
+  .guide-admin-desc{font-size:13px;line-height:1.5;color:var(--muted)}
+  .guide-badge{display:inline-flex;align-items:center;justify-content:center;min-height:24px;padding:0 10px;border-radius:999px;background:rgba(22,27,99,.08);color:var(--navy2);font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;white-space:nowrap}
+  .guide-upload-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:stretch}
+  .guide-file-label{min-width:0;padding:12px 14px;border:1.5px dashed var(--border);border-radius:10px;font-size:13px;color:var(--muted);cursor:pointer;display:flex;align-items:center;gap:8px;background:#fff}
+  .guide-file-label:hover{border-color:var(--blue);color:var(--navy)}
+  .guide-file-label span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #guide-file{display:none}
+  .guide-msg{font-size:12px;line-height:1.5}
+  .guide-msg.ok{color:#3a7a09}
+  .guide-msg.err{color:var(--red)}
 
   /* ── PIPELINE ── */
   .pipeline-card{background:var(--white);border-radius:var(--r);box-shadow:var(--sh);padding:24px 32px;margin-bottom:24px;animation:slideDown .3s ease;max-width:100%}
@@ -389,6 +418,15 @@
     .sup-price-big{font-size:24px}
     .query-row{flex-direction:column}
     .btn-query{width:100%;justify-content:center}
+    .guide-card{padding:18px 18px}
+    .guide-top{flex-direction:column;align-items:flex-start}
+    .guide-title{font-size:18px}
+    .guide-actions{width:100%;justify-content:stretch}
+    .btn-guide-open,.btn-guide-download,.btn-guide-secondary{width:100%}
+    .guide-admin{padding:16px}
+    .guide-admin-head{flex-direction:column;align-items:flex-start}
+    .guide-upload-row{grid-template-columns:1fr}
+    .guide-file-label{min-width:0;width:100%}
     .sup-filter-label{display:none}
     .reco-savings{flex-direction:column}
 
@@ -518,6 +556,40 @@
   </header>
 
   <main class="app-main">
+
+    <div class="guide-card" id="guide-card">
+      <div class="guide-top">
+        <div class="guide-copy">
+          <div class="guide-eyebrow">Belső használati útmutató</div>
+          <div class="guide-title">Árfigyelő működési leírás</div>
+          <div class="guide-desc">
+            A rendszer fontosabb működését és használati leírását tartalmazó dokumentum.
+            Belső használatra szánt anyag, minden bejelentkezett user számára elérhető.
+          </div>
+        </div>
+        <div class="guide-actions">
+          <button class="btn-guide-open" id="btn-guide-open">Megnyitás</button>
+          <button class="btn-guide-download" id="btn-guide-download">PDF letöltése</button>
+        </div>
+      </div>
+      <div class="guide-admin hidden" id="guide-admin-panel">
+        <div class="guide-admin-head">
+          <div class="guide-admin-copy">
+            <div class="guide-admin-title">Dokumentum csere</div>
+            <div class="guide-admin-desc">A fő admin itt tud új PDF-et feltölteni, amely azonnal lecseréli a jelenlegi útmutatót minden user számára.</div>
+          </div>
+          <div class="guide-badge">Fő admin</div>
+        </div>
+        <div class="guide-upload-row">
+          <label class="guide-file-label" for="guide-file">
+            📄 <span id="guide-file-name">Válasszon új PDF fájlt...</span>
+          </label>
+          <input type="file" id="guide-file" accept="application/pdf,.pdf">
+          <button class="btn-guide-secondary" id="btn-guide-upload" disabled>Feltöltés mentése</button>
+        </div>
+        <div class="guide-msg" id="guide-upload-msg"></div>
+      </div>
+    </div>
 
     <!-- Query -->
     <div class="query-card">
@@ -826,6 +898,7 @@
 let authToken = sessionStorage.getItem('gc_token');
 let username  = sessionStorage.getItem('gc_user');
 let isAdminUser = sessionStorage.getItem('gc_is_admin') === '1';
+let isPrimaryAdminUser = sessionStorage.getItem('gc_is_primary_admin') === '1';
 let _pendingPartNo     = null;  // part number waiting for user confirmation
 let _searchStartTs     = null;  // timestamp when scraping started
 let _currentFilterSids = '';    // active supplier filter for the running search
@@ -944,15 +1017,71 @@ async function doLogin() {
     });
     if (!res.ok) { const d=await res.json().catch(()=>({})); throw new Error(d.detail||'Hibás felhasználónév vagy jelszó.'); }
     const data = await res.json();
-    authToken = data.token; username = data.username; isAdminUser = !!data.is_admin;
+    authToken = data.token; username = data.username; isAdminUser = !!data.is_admin; isPrimaryAdminUser = !!data.is_primary_admin;
     sessionStorage.setItem('gc_token', authToken);
     sessionStorage.setItem('gc_user', username);
     sessionStorage.setItem('gc_is_admin', isAdminUser ? '1' : '0');
+    sessionStorage.setItem('gc_is_primary_admin', isPrimaryAdminUser ? '1' : '0');
     showApp();
   } catch(err) { showLoginErr(err.message); }
   finally { btn.disabled=false; txt.textContent='Bejelentkezés'; }
 }
 function showLoginErr(msg){ const el=document.getElementById('login-err'); el.textContent=msg; el.classList.remove('hidden'); }
+
+function openGuidePdf(download = false) {
+  if (!authToken) {
+    showError('A munkamenet lejárt.');
+    return;
+  }
+  const url = `/guide/pdf?token=${encodeURIComponent(authToken)}${download ? '&download=1' : ''}`;
+  const link = document.createElement('a');
+  link.href = url;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  if (download) link.download = 'Gep-Coop-Kft-Belso-hasznalatra-or-2026.pdf';
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+document.getElementById('guide-file').addEventListener('change', e => {
+  const f = e.target.files[0];
+  document.getElementById('guide-file-name').textContent = f ? f.name : 'Válasszon új PDF fájlt...';
+  document.getElementById('btn-guide-upload').disabled = !f;
+});
+
+document.getElementById('btn-guide-upload').addEventListener('click', async function () {
+  const fileInput = document.getElementById('guide-file');
+  const msgEl = document.getElementById('guide-upload-msg');
+  const btn = this;
+  if (!fileInput.files[0]) return;
+  msgEl.className = 'guide-msg';
+  msgEl.textContent = '';
+  btn.disabled = true;
+  btn.textContent = 'Mentés folyamatban...';
+  try {
+    const form = new FormData();
+    form.append('file', fileInput.files[0]);
+    const res = await fetch('/admin/guide/upload', {
+      method: 'POST',
+      headers: admHeaders(),
+      body: form,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'A dokumentum cseréje sikertelen.');
+    msgEl.className = 'guide-msg ok';
+    msgEl.textContent = `Új dokumentum elmentve: ${data.filename}`;
+    fileInput.value = '';
+    document.getElementById('guide-file-name').textContent = 'Válasszon új PDF fájlt...';
+  } catch (err) {
+    msgEl.className = 'guide-msg err';
+    msgEl.textContent = err.message || 'A dokumentum cseréje sikertelen.';
+  } finally {
+    btn.disabled = !fileInput.files[0];
+    btn.textContent = 'Feltöltés mentése';
+  }
+});
 
 /* ══ APP ════════════════════════════════════════════════════════ */
 async function bootstrapSession() {
@@ -964,8 +1093,10 @@ async function bootstrapSession() {
     const data = await res.json();
     username = data.username;
     isAdminUser = !!data.is_admin;
+    isPrimaryAdminUser = !!data.is_primary_admin;
     sessionStorage.setItem('gc_user', username);
     sessionStorage.setItem('gc_is_admin', isAdminUser ? '1' : '0');
+    sessionStorage.setItem('gc_is_primary_admin', isPrimaryAdminUser ? '1' : '0');
     showApp();
   } catch (_) {
     doLogout(false);
@@ -977,6 +1108,7 @@ function showApp(){
   document.getElementById('app-page').classList.remove('hidden');
   document.getElementById('user-display').textContent = username || 'User';
   document.getElementById('btn-admin').classList.toggle('hidden', !isAdminUser);
+  document.getElementById('guide-admin-panel').classList.toggle('hidden', !isPrimaryAdminUser);
   adminToken = isAdminUser ? authToken : null;
   syncResponsiveLayout();
   requestAnimationFrame(() => {
@@ -989,9 +1121,10 @@ function showApp(){
 }
 
 function doLogout(clearLoginFields = true) {
-  sessionStorage.removeItem('gc_token'); sessionStorage.removeItem('gc_user'); sessionStorage.removeItem('gc_is_admin');
-  authToken=null; username=null; isAdminUser=false; adminToken=null;
+  sessionStorage.removeItem('gc_token'); sessionStorage.removeItem('gc_user'); sessionStorage.removeItem('gc_is_admin'); sessionStorage.removeItem('gc_is_primary_admin');
+  authToken=null; username=null; isAdminUser=false; isPrimaryAdminUser=false; adminToken=null;
   document.getElementById('btn-admin').classList.add('hidden');
+  document.getElementById('guide-admin-panel').classList.add('hidden');
   document.getElementById('app-page').classList.add('hidden');
   document.getElementById('login-page').classList.remove('hidden');
   document.getElementById('adm-logged-as').textContent = '';
@@ -1004,6 +1137,12 @@ function doLogout(clearLoginFields = true) {
 }
 
 document.getElementById('btn-logout').addEventListener('click', () => doLogout(true));
+document.getElementById('btn-guide-open').addEventListener('click', function () {
+  openGuidePdf(false);
+});
+document.getElementById('btn-guide-download').addEventListener('click', function () {
+  openGuidePdf(true);
+});
 const partInput = document.getElementById('part-input');
 
 partInput.addEventListener('input', () => {

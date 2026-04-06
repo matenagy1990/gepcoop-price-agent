@@ -64,6 +64,9 @@ def _normalize_username(username: str) -> str:
     return (username or "").strip()
 
 
+PRIMARY_ADMIN_USERNAME = _normalize_username(os.environ.get("PRIMARY_ADMIN_USERNAME", "herbstadam@gepcoop.hu"))
+
+
 def _hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
     dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS)
@@ -203,9 +206,16 @@ def _ensure_auth_bootstrap() -> None:
 
 def _get_primary_admin_username() -> str:
     _ensure_auth_bootstrap()
+    if PRIMARY_ADMIN_USERNAME:
+        primary = _get_auth_user(PRIMARY_ADMIN_USERNAME, include_inactive=False)
+        if primary and bool(primary.get("is_admin", False)):
+            return PRIMARY_ADMIN_USERNAME
     for row in _get_auth_users(include_inactive=False):
         if bool(row.get("is_primary", False)):
             return row.get("username", "")
+    admin_rows = [row for row in _get_auth_users(include_inactive=False) if bool(row.get("is_admin", False))]
+    if len(admin_rows) == 1:
+        return admin_rows[0].get("username", "")
     raise RuntimeError("No primary admin user found in Supabase app_users table.")
 
 
@@ -213,6 +223,20 @@ def _is_admin_user(username: str) -> bool:
     _ensure_auth_bootstrap()
     row = _get_auth_user(username, include_inactive=False)
     return bool(row and row.get("is_admin", False))
+
+
+def _is_primary_admin_user(username: str) -> bool:
+    _ensure_auth_bootstrap()
+    username = _normalize_username(username)
+    row = _get_auth_user(username, include_inactive=False)
+    if not row:
+        return False
+    if PRIMARY_ADMIN_USERNAME and username == PRIMARY_ADMIN_USERNAME and bool(row.get("is_admin", False)):
+        return True
+    if bool(row.get("is_primary", False)):
+        return True
+    admin_rows = [u for u in _get_auth_users(include_inactive=False) if bool(u.get("is_admin", False))]
+    return len(admin_rows) == 1 and admin_rows[0].get("username", "") == username
 
 
 def _invalidate_user_sessions(username: str) -> None:
@@ -288,15 +312,25 @@ def _lookup_part_name(part_no: str) -> str:
 
 UI_FILE   = Path(__file__).parent / "ui" / "index.html"
 LOGO_FILE = Path(__file__).parent / "assets" / "logo.png"
+GUIDE_PDF_FILE = Path(__file__).parent / "Gep-Coop-Kft-Belso-hasznalatra-or-2026.pdf"
+GUIDE_STORAGE_BUCKET = os.environ.get("SUPABASE_GUIDE_BUCKET", "internal-docs").strip() or "internal-docs"
+GUIDE_STORAGE_PATH = os.environ.get("SUPABASE_GUIDE_PATH", "guide/current.pdf").strip() or "guide/current.pdf"
+
+
+def _get_username_from_token(token: str | None) -> str:
+    token = (token or "").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing token")
+    if token not in sessions:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return str(sessions[token]["username"])
 
 
 def _get_username(authorization: str | None) -> str:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing token")
     token = authorization.removeprefix("Bearer ").strip()
-    if token not in sessions:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    return str(sessions[token]["username"])
+    return _get_username_from_token(token)
 
 
 def _get_admin(authorization: str | None) -> str:
@@ -309,6 +343,74 @@ def _get_admin(authorization: str | None) -> str:
         if username and _is_admin_user(username):
             return username
     raise HTTPException(status_code=401, detail="Invalid or expired admin token")
+
+
+def _guide_storage_bucket(create_if_missing: bool = False):
+    sb = _get_supabase_main()
+    if sb is None:
+        return None
+    try:
+        if create_if_missing:
+            try:
+                bucket_names = {
+                    (b.get("name") or b.get("id") or "").strip()
+                    for b in (sb.storage.list_buckets() or [])
+                }
+                if GUIDE_STORAGE_BUCKET not in bucket_names:
+                    sb.storage.create_bucket(
+                        GUIDE_STORAGE_BUCKET,
+                        options={"public": False, "allowed_mime_types": ["application/pdf"]},
+                    )
+                    log.info(f"Guide storage bucket létrehozva: {GUIDE_STORAGE_BUCKET}")
+            except Exception as exc:
+                if "already exists" not in str(exc).lower():
+                    raise
+        return sb.storage.from_(GUIDE_STORAGE_BUCKET)
+    except Exception as exc:
+        log.warning(f"Guide storage bucket elérése sikertelen: {exc}")
+        return None
+
+
+def _read_guide_pdf_bytes() -> bytes | None:
+    bucket = _guide_storage_bucket(create_if_missing=False)
+    if bucket is not None:
+        try:
+            if bucket.exists(GUIDE_STORAGE_PATH):
+                return bucket.download(GUIDE_STORAGE_PATH)
+        except Exception as exc:
+            log.warning(f"Guide PDF olvasása Storage-ból sikertelen: {exc}")
+    if GUIDE_PDF_FILE.exists():
+        content = GUIDE_PDF_FILE.read_bytes()
+        if bucket is not None:
+            try:
+                bucket.upload(
+                    GUIDE_STORAGE_PATH,
+                    content,
+                    {"content-type": "application/pdf", "upsert": "true"},
+                )
+                log.info(f"Guide PDF automatikusan feltöltve Storage-ba: {GUIDE_STORAGE_BUCKET}/{GUIDE_STORAGE_PATH}")
+            except Exception as exc:
+                log.warning(f"Guide PDF automatikus Storage feltöltése sikertelen: {exc}")
+        return content
+    return None
+
+
+def _write_guide_pdf_bytes(content: bytes) -> None:
+    bucket = _guide_storage_bucket(create_if_missing=True)
+    if bucket is None:
+        raise RuntimeError("A Supabase Storage nem érhető el a dokumentum mentéséhez.")
+    try:
+        bucket.upload(
+            GUIDE_STORAGE_PATH,
+            content,
+            {"content-type": "application/pdf", "upsert": "true"},
+        )
+    except Exception as exc:
+        raise RuntimeError(f"A dokumentum Storage mentése sikertelen: {exc}") from exc
+    try:
+        GUIDE_PDF_FILE.write_bytes(content)
+    except Exception as exc:
+        log.warning(f"Helyi guide PDF tükör mentése sikertelen: {exc}")
 
 
 def _hu(n: float, dec: int = 4) -> str:
@@ -489,6 +591,59 @@ def serve_logo():
     return FileResponse(LOGO_FILE, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
 
 
+@app.get("/guide/pdf")
+def serve_guide_pdf(
+    download: int = 0,
+    token: str | None = None,
+    authorization: str | None = Header(default=None),
+):
+    if token:
+        _get_username_from_token(token)
+    else:
+        _get_username(authorization)
+    content = _read_guide_pdf_bytes()
+    if not content:
+        raise HTTPException(status_code=404, detail="Guide PDF not found")
+    disposition = "attachment" if download else "inline"
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": f'{disposition}; filename="{GUIDE_PDF_FILE.name}"',
+        },
+    )
+
+
+@app.post("/admin/guide/upload")
+async def admin_upload_guide_pdf(
+    file: UploadFile = File(...),
+    authorization: str | None = Header(default=None),
+):
+    admin_username = _get_admin(authorization)
+    if not _is_primary_admin_user(admin_username):
+        raise HTTPException(status_code=403, detail="Csak a fő admin cserélheti a dokumentumot.")
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Fájl megadása kötelező.")
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Csak PDF fájl tölthető fel.")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Az üres fájl nem tölthető fel.")
+    if not content.startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="A feltöltött fájl nem érvényes PDF.")
+
+    _write_guide_pdf_bytes(content)
+    log.info(f"Guide PDF frissítve: uploaded_by={admin_username}, filename={file.filename}")
+    return {
+        "filename": GUIDE_PDF_FILE.name,
+        "uploaded_by": admin_username,
+        "storage_bucket": GUIDE_STORAGE_BUCKET,
+        "storage_path": GUIDE_STORAGE_PATH,
+    }
+
+
 @app.post("/login")
 def login(req: LoginRequest):
     _ensure_auth_bootstrap()
@@ -500,7 +655,12 @@ def login(req: LoginRequest):
         "username": user["username"],
         "is_admin": bool(user.get("is_admin", False)),
     }
-    return {"token": token, "username": user["username"], "is_admin": bool(user.get("is_admin", False))}
+    return {
+        "token": token,
+        "username": user["username"],
+        "is_admin": bool(user.get("is_admin", False)),
+        "is_primary_admin": _is_primary_admin_user(user["username"]),
+    }
 
 
 @app.get("/me")
@@ -508,7 +668,11 @@ def get_me(
     authorization: str | None = Header(default=None),
 ):
     username = _get_username(authorization)
-    return {"username": username, "is_admin": _is_admin_user(username)}
+    return {
+        "username": username,
+        "is_admin": _is_admin_user(username),
+        "is_primary_admin": _is_primary_admin_user(username),
+    }
 
 
 @app.get("/query/lookup")
@@ -1366,9 +1530,13 @@ def admin_get_users(
     _get_admin(authorization)
     _ensure_auth_bootstrap()
     users = [
-        _auth_row_to_user(row)
+        {
+            **_auth_row_to_user(row),
+            "is_primary": _is_primary_admin_user(row.get("username", "")),
+            "protected": _is_primary_admin_user(row.get("username", "")),
+        }
         for row in _get_auth_users(include_inactive=False)
-        if not bool(row.get("is_primary", False))
+        if not _is_primary_admin_user(row.get("username", ""))
     ]
     return {"users": users}
 
@@ -1460,7 +1628,7 @@ def admin_set_user_admin(
     user = _get_auth_user(username, include_inactive=True)
     if not user:
         raise HTTPException(status_code=404, detail="Ismeretlen felhasználó.")
-    if bool(user.get("is_primary", False)):
+    if _is_primary_admin_user(username):
         raise HTTPException(status_code=400, detail="A fő admin felhasználó mindig admin.")
     _set_auth_admin(username, bool(req.is_admin))
     _invalidate_user_sessions(username)
@@ -1479,7 +1647,7 @@ def admin_delete_user(
     user = _get_auth_user(username, include_inactive=True)
     if not user:
         raise HTTPException(status_code=404, detail="Ismeretlen felhasználó.")
-    if bool(user.get("is_primary", False)):
+    if _is_primary_admin_user(username):
         raise HTTPException(status_code=400, detail="A fő admin felhasználó nem törölhető.")
     _soft_delete_auth_user(username)
     _invalidate_user_sessions(username)
