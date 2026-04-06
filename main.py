@@ -784,8 +784,8 @@ def _build_supplier_url(sid: str, supplier_part_no: str = "") -> str:
 async def supplier_open(req: Request, authorization: str | None = Header(default=None)):
     """
     Open a supplier's website for the buyer.
-    - koelner / reyher: launches a headed Playwright browser with saved session (logged in).
-    - others: returns the URL so the frontend can open it in a new tab.
+    Always return a URL so the frontend can open it in a new tab.
+    Any webshop login is handled manually by the user in their own browser.
     """
     _get_username(authorization)
     data = await req.json()
@@ -794,13 +794,6 @@ async def supplier_open(req: Request, authorization: str | None = Header(default
 
     if sid not in SUPPLIER_META:
         raise HTTPException(status_code=400, detail=f"Ismeretlen beszállító: {sid}")
-
-    # Suppliers with saved Playwright sessions → headed browser (logged in)
-    _SESSION_OPEN_SIDS = {"koelner", "reyher", "csavarda", "irontrade", "fabory",
-                          "hopefix", "wasishop", "mekrs", "fastbolt", "schaefer", "kingb2b"}
-    if sid in _SESSION_OPEN_SIDS:
-        asyncio.create_task(_supplier_open_headed(sid, supplier_part_no))
-        return {"status": "opening"}
 
     url = _build_supplier_url(sid, supplier_part_no)
     return {"status": "redirect", "url": url}
