@@ -30,8 +30,23 @@
   .hidden{display:none!important}
 
   /* ── LOGIN ── */
-  #login-page{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:radial-gradient(ellipse 80% 60% at 50% -10%,rgba(0,159,230,.12) 0%,transparent 60%),radial-gradient(ellipse 60% 40% at 90% 100%,rgba(22,27,99,.06) 0%,transparent 50%),var(--bg)}
-  .login-card{background:var(--white);border-radius:var(--r);box-shadow:var(--shmd);width:100%;max-width:420px;overflow:hidden}
+  #login-page{position:relative;isolation:isolate;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:28px;overflow:hidden;background:linear-gradient(135deg,#0d1437 0%,#121b4e 42%,#173f66 100%)}
+  .login-bg-photo{position:absolute;inset:-4%;background-image:linear-gradient(135deg,rgba(7,16,46,.84) 0%,rgba(22,27,99,.72) 32%,rgba(0,159,230,.38) 100%),url('https://images.unsplash.com/photo-1647427060142-c18ea9536019?auto=format&fit=crop&fm=jpg&ixlib=rb-4.1.0&q=80&w=2400');background-size:cover;background-position:center;filter:saturate(.88) contrast(1.04);transform:scale(1.04);z-index:-4}
+  .login-bg-mesh{position:absolute;inset:0;z-index:-3;background:
+    linear-gradient(rgba(255,255,255,.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.045) 1px, transparent 1px);
+    background-size:34px 34px;
+    mask-image:radial-gradient(circle at center, rgba(0,0,0,.95), rgba(0,0,0,.28) 72%, transparent 100%);
+    opacity:.42}
+  .login-bg-vignette{position:absolute;inset:0;z-index:-2;background:
+    radial-gradient(circle at 18% 18%, rgba(0,159,230,.22) 0%, transparent 24%),
+    radial-gradient(circle at 84% 82%, rgba(92,184,17,.16) 0%, transparent 22%),
+    radial-gradient(circle at 50% 50%, transparent 0%, rgba(9,14,38,.18) 58%, rgba(7,11,26,.72) 100%)}
+  .login-spotlight{position:absolute;left:var(--spot-x,50%);top:var(--spot-y,40%);width:var(--spot-size,280px);height:var(--spot-size,280px);transform:translate(-50%,-50%);border-radius:50%;pointer-events:none;z-index:-1;transition:width .28s ease,height .28s ease,opacity .28s ease;background:
+    radial-gradient(circle, rgba(0,159,230,.34) 0%, rgba(0,159,230,.22) 26%, rgba(22,27,99,.08) 48%, transparent 72%);
+    filter:blur(10px);opacity:.96}
+  .login-stage{position:relative;z-index:2;display:flex;align-items:center;justify-content:center;max-width:460px;width:100%}
+  .login-card{background:rgba(255,255,255,.96);border:1px solid rgba(255,255,255,.78);backdrop-filter:blur(12px);border-radius:var(--r);box-shadow:var(--shmd);width:100%;max-width:420px;overflow:hidden}
   .login-hdr{background:linear-gradient(135deg,var(--navy) 0%,var(--navy2) 100%);padding:36px 36px 28px;position:relative;overflow:hidden}
   .login-hdr::before{content:'';position:absolute;right:-40px;top:-40px;width:160px;height:160px;border-radius:50%;background:rgba(0,159,230,.15)}
   .login-hdr::after{content:'';position:absolute;right:20px;top:30px;width:80px;height:80px;border-radius:50%;background:rgba(255,255,255,.05)}
@@ -350,6 +365,10 @@
   @media(max-width:680px){
     /* General */
     body{overflow-x:hidden}
+    #login-page{padding:18px}
+    .login-stage{max-width:none}
+    .login-card{max-width:none}
+    .login-body,.login-hdr{padding-left:22px;padding-right:22px}
     .app-main{padding:20px 16px}
     .query-card,.pipeline-card{padding:20px}
     .results-grid{grid-template-columns:1fr}
@@ -380,29 +399,35 @@
 
 <!-- LOGIN -->
 <div id="login-page">
-  <div class="login-card">
-    <div class="login-hdr">
-      <img src="/logo.png" alt="Gép-Coop" style="height:52px;width:auto;filter:brightness(0) invert(1);position:relative;z-index:1">
-      <div class="login-sub" style="margin-top:10px">Beszerző Platform</div>
-    </div>
-    <div class="login-body">
-      <h2>Bejelentkezés</h2>
-      <div class="field">
-        <label>Felhasználónév</label>
-        <input type="text" id="login-user" placeholder="Felhasználónév" autocomplete="username">
+  <div class="login-bg-photo" aria-hidden="true"></div>
+  <div class="login-bg-mesh" aria-hidden="true"></div>
+  <div class="login-bg-vignette" aria-hidden="true"></div>
+  <div class="login-spotlight" id="login-spotlight" aria-hidden="true"></div>
+  <div class="login-stage">
+    <div class="login-card">
+      <div class="login-hdr">
+        <img src="/logo.png" alt="Gép-Coop" style="height:52px;width:auto;filter:brightness(0) invert(1);position:relative;z-index:1">
+        <div class="login-sub" style="margin-top:10px">Beszerző Platform</div>
       </div>
-      <div class="field">
-        <label>Jelszó</label>
-        <div class="pw-wrap">
-          <input type="password" id="login-pass" placeholder="Jelszó" autocomplete="current-password">
-          <button type="button" class="btn-eye" id="btn-eye" title="Show / hide password">
-            <svg id="icon-eye" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-            <svg id="icon-eye-off" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
-          </button>
+      <div class="login-body">
+        <h2>Bejelentkezés</h2>
+        <div class="field">
+          <label>Felhasználónév</label>
+          <input type="text" id="login-user" placeholder="Felhasználónév" autocomplete="username">
         </div>
+        <div class="field">
+          <label>Jelszó</label>
+          <div class="pw-wrap">
+            <input type="password" id="login-pass" placeholder="Jelszó" autocomplete="current-password">
+            <button type="button" class="btn-eye" id="btn-eye" title="Show / hide password">
+              <svg id="icon-eye" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              <svg id="icon-eye-off" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+            </button>
+          </div>
+        </div>
+        <button class="btn-primary" id="btn-login"><span id="login-btn-txt">Bejelentkezés</span></button>
+        <div id="login-err" class="err-msg hidden"></div>
       </div>
-      <button class="btn-primary" id="btn-login"><span id="login-btn-txt">Bejelentkezés</span></button>
-      <div id="login-err" class="err-msg hidden"></div>
     </div>
   </div>
 </div>
@@ -814,6 +839,30 @@ document.getElementById('btn-eye').addEventListener('click', () => {
   on.style.display  = show ? 'none' : '';
   off.style.display = show ? '' : 'none';
 });
+
+const loginPage = document.getElementById('login-page');
+const loginSpotlight = document.getElementById('login-spotlight');
+let loginMoveTimer = null;
+
+function setLoginSpotlight(x, y, moving) {
+  if (!loginSpotlight) return;
+  loginSpotlight.style.setProperty('--spot-x', `${x}px`);
+  loginSpotlight.style.setProperty('--spot-y', `${y}px`);
+  loginSpotlight.style.setProperty('--spot-size', moving ? '220px' : '300px');
+}
+
+if (loginPage && loginSpotlight) {
+  const seedX = Math.round(window.innerWidth * 0.72);
+  const seedY = Math.round(window.innerHeight * 0.42);
+  setLoginSpotlight(seedX, seedY, false);
+
+  window.addEventListener('mousemove', (e) => {
+    if (loginPage.classList.contains('hidden')) return;
+    setLoginSpotlight(e.clientX, e.clientY, true);
+    if (loginMoveTimer) clearTimeout(loginMoveTimer);
+    loginMoveTimer = setTimeout(() => setLoginSpotlight(e.clientX, e.clientY, false), 160);
+  });
+}
 
 async function doLogin() {
   const user = document.getElementById('login-user').value.trim();
@@ -1859,8 +1908,9 @@ function admRenderSuppliers(suppliers) {
         <div class="field">
           <label>Jelszó</label>
           <div class="pw-wrap">
-            <input type="password" id="sup-pass-${s.id}" value="${escAttr(s.password)}"
-                   autocomplete="off" readonly onfocus="this.removeAttribute('readonly')">
+            <input type="password" id="sup-pass-${s.id}" value=""
+                   autocomplete="new-password" readonly onfocus="this.removeAttribute('readonly')"
+                   placeholder="Csak módosításkor töltse ki">
             <button type="button" class="btn-eye" id="sup-eye-btn-${s.id}"
                     onclick="admToggleSupPw('${s.id}')" title="Jelszó megjelenítése">
               <span id="sup-eye-${s.id}">${EYE_ON}</span>
@@ -1898,9 +1948,9 @@ async function admSaveSupplier(sid) {
   });
 
   msgEl.className = 'hidden';
-  if (!username || !password) {
+  if (!username) {
     msgEl.className = 'adm-msg err';
-    msgEl.textContent = '⚠ Felhasználónév és jelszó megadása kötelező.';
+    msgEl.textContent = '⚠ Felhasználónév megadása kötelező.';
     msgEl.classList.remove('hidden');
     return;
   }
@@ -1914,7 +1964,10 @@ async function admSaveSupplier(sid) {
     const d = await res.json();
     if (!res.ok) throw new Error(d.detail || 'Mentés sikertelen.');
     msgEl.className = 'adm-msg ok';
-    msgEl.textContent = `✓ ${sid} belépési adatok frissítve.`;
+    msgEl.textContent = password
+      ? `✓ ${sid} belépési adatok frissítve, az új jelszó elmentve.`
+      : `✓ ${sid} adatai frissítve, a meglévő jelszó változatlan maradt.`;
+    document.getElementById(`sup-pass-${sid}`).value = '';
     msgEl.classList.remove('hidden');
   } catch(err) {
     msgEl.className = 'adm-msg err';
