@@ -18,6 +18,8 @@ _fx_cache: dict = {}   # e.g. {"CZK": {"rate": 18.5, "ts": ...}, "EUR": {"rate":
 _FX_TTL = 3600
 
 MAPPING_FILE = Path(__file__).parent.parent / "assets" / "mapping.csv"
+_part_numbers_cache: dict[str, object] = {"parts": [], "loaded_at": 0.0}
+_PARTS_CACHE_TTL = 300
 
 # ── Supabase client (optional — falls back to CSV if not configured) ──────────
 _supabase = None
@@ -192,6 +194,12 @@ def lookup_mapping_all(internal_part_no: str) -> list[dict]:
 
 def get_all_part_numbers() -> list[str]:
     """Return every Gép-Coop internal part number. Supabase only (CSV fallback disabled for testing)."""
+    now = time.time()
+    cached_parts = _part_numbers_cache.get("parts") or []
+    loaded_at = float(_part_numbers_cache.get("loaded_at") or 0.0)
+    if cached_parts and (now - loaded_at) < _PARTS_CACHE_TTL:
+        return list(cached_parts)
+
     sb = _get_supabase()
     if sb is None:
         raise RuntimeError("Supabase not configured (SUPABASE_URL / SUPABASE_KEY missing).")
@@ -211,22 +219,18 @@ def get_all_part_numbers() -> list[str]:
         if len(res.data) < page_size:
             break
         offset += page_size
+    _part_numbers_cache["parts"] = parts
+    _part_numbers_cache["loaded_at"] = now
     return parts
 
 
 def search_part_numbers(q: str, limit: int = 20) -> list[str]:
     """Return up to `limit` Gép-Coop part numbers whose gepcoop_part_no starts with `q` (case-insensitive)."""
-    sb = _get_supabase()
-    if sb is None:
-        raise RuntimeError("Supabase not configured (SUPABASE_URL / SUPABASE_KEY missing).")
-    res = (
-        sb.table("article_mapping")
-        .select("gepcoop_part_no")
-        .ilike("gepcoop_part_no", f"{q}%")
-        .limit(limit)
-        .execute()
-    )
-    return [r["gepcoop_part_no"] for r in res.data if r.get("gepcoop_part_no")]
+    query = (q or "").strip().upper()
+    if not query:
+        return []
+    parts = get_all_part_numbers()
+    return [part for part in parts if part.upper().startswith(query)][:limit]
 
 
 def lookup_mapping(internal_part_no: str) -> dict:
