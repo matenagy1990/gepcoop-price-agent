@@ -167,13 +167,13 @@
   .err-banner{background:rgba(254,26,0,.06);border:1px solid rgba(254,26,0,.2);border-radius:12px;padding:16px 20px;margin-bottom:24px;font-size:14px;color:var(--red);display:flex;align-items:flex-start;gap:10px;animation:slideDown .3s ease;max-width:100%}
 
   /* ── RECOMMENDATION ── */
-  .reco-card{border-radius:var(--r);overflow:hidden;margin-bottom:24px;box-shadow:var(--shmd);animation:slideDown .4s ease;max-width:100%}
+  .reco-card{border-radius:var(--r);overflow:visible;margin-bottom:24px;box-shadow:var(--shmd);animation:slideDown .4s ease;max-width:100%;position:relative;z-index:2}
   .reco-card.winner-csavarda{border-top:4px solid var(--blue)}
   .reco-card.winner-irontrade{border-top:4px solid var(--navy)}
   .reco-card.winner-koelner{border-top:4px solid #E84C0B}
   .reco-card.winner-mekrs{border-top:4px solid #8B5CF6}
   .reco-card.winner-none{border-top:4px solid var(--amber)}
-  .reco-hdr{padding:18px 24px;display:flex;align-items:center;gap:14px}
+  .reco-hdr{padding:18px 24px;display:flex;align-items:center;gap:14px;border-radius:calc(var(--r) - 1px) calc(var(--r) - 1px) 0 0;position:relative;z-index:3}
   .reco-card.winner-csavarda .reco-hdr{background:linear-gradient(135deg,rgba(0,159,230,.08) 0%,rgba(0,159,230,.02) 100%)}
   .reco-card.winner-irontrade .reco-hdr{background:linear-gradient(135deg,rgba(22,27,99,.06) 0%,rgba(31,73,119,.02) 100%)}
   .reco-card.winner-koelner .reco-hdr{background:linear-gradient(135deg,rgba(232,76,11,.07) 0%,rgba(232,76,11,.02) 100%)}
@@ -188,7 +188,26 @@
   .reco-card.winner-koelner .reco-winner{color:#E84C0B}
   .reco-card.winner-mekrs .reco-winner{color:#8B5CF6}
   .reco-reason{font-size:13px;color:var(--muted);margin-top:4px;line-height:1.5}
-  .reco-savings{display:flex;gap:12px;padding:14px 24px 18px;flex-wrap:wrap;background:var(--white)}
+  .reco-feedback{display:flex;align-items:center;gap:10px;flex-shrink:0;margin-left:auto;position:relative;min-width:116px;justify-content:flex-end}
+  .reco-fb-btn{width:46px;height:46px;border-radius:14px;border:1px solid rgba(255,255,255,.72);background:rgba(255,255,255,.86);display:inline-flex;align-items:center;justify-content:center;font-size:25px;line-height:1;cursor:pointer;box-shadow:0 10px 24px rgba(22,27,99,.13);transition:transform .18s ease,box-shadow .18s ease,background .18s ease,border-color .18s ease,opacity .18s ease,filter .18s ease;position:relative}
+  .reco-fb-btn:hover{transform:translateY(-3px) scale(1.06);box-shadow:0 14px 28px rgba(22,27,99,.18)}
+  .reco-fb-btn:active{transform:scale(.9) rotate(-4deg)}
+  .reco-fb-btn::after{content:attr(data-tip);position:absolute;right:50%;bottom:calc(100% + 10px);transform:translateX(50%) translateY(4px) scale(.96);background:var(--navy);color:#fff;border-radius:9px;padding:7px 10px;font-family:'Inter',sans-serif;font-size:12px;font-weight:800;line-height:1;white-space:nowrap;box-shadow:0 10px 22px rgba(22,27,99,.2);opacity:0;pointer-events:none;transition:opacity .16s ease,transform .16s ease;z-index:5}
+  .reco-fb-btn::before{content:'';position:absolute;right:50%;bottom:calc(100% + 4px);transform:translateX(50%) translateY(4px);border:6px solid transparent;border-top-color:var(--navy);opacity:0;pointer-events:none;transition:opacity .16s ease,transform .16s ease;z-index:5}
+  .reco-fb-btn:hover::after,.reco-fb-btn:focus-visible::after{opacity:1;transform:translateX(50%) translateY(0) scale(1)}
+  .reco-fb-btn:hover::before,.reco-fb-btn:focus-visible::before{opacity:1;transform:translateX(50%) translateY(0)}
+  .reco-fb-btn.positive{background:linear-gradient(135deg,rgba(92,184,17,.18),rgba(255,255,255,.92))}
+  .reco-fb-btn.negative{background:linear-gradient(135deg,rgba(254,26,0,.12),rgba(255,255,255,.92))}
+  .reco-fb-btn.positive:hover,.reco-fb-btn.positive.selected{border-color:rgba(92,184,17,.5);filter:saturate(1.25)}
+  .reco-fb-btn.negative:hover,.reco-fb-btn.negative.selected{border-color:rgba(254,26,0,.38);filter:saturate(1.25)}
+  .reco-feedback.locked .reco-fb-btn{pointer-events:none}
+  .reco-feedback.done .reco-fb-btn{animation:fbFlyOut .42s ease forwards}
+  .reco-feedback.done .reco-fb-btn:nth-child(2){animation-delay:.06s}
+  .reco-fb-thanks{display:flex;align-items:center;gap:8px;background:var(--navy);color:#fff;border-radius:14px;padding:9px 13px;font-size:12px;font-weight:800;box-shadow:var(--shmd);animation:fbThanksIn .44s cubic-bezier(.2,1.35,.35,1);white-space:nowrap}
+  .reco-fb-thanks-icon{font-size:25px;line-height:1}
+  @keyframes fbFlyOut{0%{opacity:1;transform:translateY(0) scale(1)}55%{opacity:1;transform:translateY(-8px) scale(1.16) rotate(5deg)}100%{opacity:0;transform:translateY(15px) scale(.72) rotate(-10deg);width:0;margin-left:-10px}}
+  @keyframes fbThanksIn{0%{opacity:0;transform:translateY(10px) scale(.72)}65%{opacity:1;transform:translateY(-2px) scale(1.08)}100%{opacity:1;transform:translateY(0) scale(1)}}
+  .reco-savings{display:flex;gap:12px;padding:14px 24px 18px;flex-wrap:wrap;background:var(--white);border-radius:0 0 var(--r) var(--r)}
   .reco-stat{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:10px 16px;display:flex;flex-direction:column;gap:2px}
   .reco-stat-label{font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.7px}
   .reco-stat-value{font-family:'Oswald',sans-serif;font-size:18px;font-weight:600;color:var(--navy)}
@@ -428,6 +447,8 @@
     .guide-upload-row{grid-template-columns:1fr}
     .guide-file-label{min-width:0;width:100%}
     .sup-filter-label{display:none}
+    .reco-hdr{align-items:flex-start;flex-wrap:wrap}
+    .reco-feedback{width:100%;justify-content:flex-end;margin-left:0}
     .reco-savings{flex-direction:column}
 
     /* Header — prevent overflow */
@@ -866,16 +887,21 @@
               </div>
             </div>
             <div class="adm-section">
-              <div class="adm-section-title">Részletes futáslista</div>
+              <div class="adm-section-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+                <span>Részletes futáslista</span>
+                <button class="btn-upload" id="adm-btn-export-runs" style="font-size:13px;padding:6px 16px">Excel export</button>
+              </div>
               <div class="adm-table-wrap">
                 <table class="adm-table">
                   <thead>
                     <tr>
                       <th>Run ID</th>
+                      <th>User</th>
                       <th>Cikkszám</th>
                       <th>Indítva</th>
                       <th>Státusz</th>
                       <th>Idő (ms)</th>
+                      <th>Feedback</th>
                       <th>Sikeres</th>
                       <th>Hibás</th>
                       <th>Hibaüzenet</th>
@@ -1450,7 +1476,7 @@ function handleError(data) { showError(data.message || 'Váratlan hiba történt
 
 /* ══ RENDER RESULTS ════════════════════════════════════════════ */
 function renderResults(data) {
-  const {internal_part_no, suppliers={}, recommendation={}} = data;
+  const {internal_part_no, run_id='', suppliers={}, recommendation={}} = data;
   const winner = recommendation.winner;
 
   // ── Recommendation card ──────────────────────────────────────
@@ -1499,6 +1525,14 @@ function renderResults(data) {
         <div class="reco-title">Vásárlási javaslat</div>
         <div class="reco-winner">Rendelés innen: ${winnerLabel}</div>
         <div class="reco-reason">${recommendation.reason||''}</div>
+      </div>
+      <div class="reco-feedback" data-run-id="${run_id || ''}">
+        <button type="button" class="reco-fb-btn positive" data-tip="Király, segített!" title="Király, segített!" aria-label="Király, segített!" onclick="sendRecommendationFeedback('positive', this)">🚀</button>
+        <button type="button" class="reco-fb-btn negative" data-tip="Valami nem oké!" title="Valami nem oké!" aria-label="Valami nem oké!" onclick="sendRecommendationFeedback('negative', this)">🛠️</button>
+        <div class="reco-fb-thanks hidden" aria-live="polite">
+          <span class="reco-fb-thanks-icon">🙏</span>
+          <span>Köszi a feedbacket!</span>
+        </div>
       </div>
     </div>
     ${statsHtml ? `<div class="reco-savings">${statsHtml}</div>` : ''}`;
@@ -1611,6 +1645,48 @@ function renderResults(data) {
   }
 
   grid.classList.remove('hidden');
+}
+
+async function sendRecommendationFeedback(feedback, btn) {
+  const box = btn.closest('.reco-feedback');
+  if (!box || box.classList.contains('locked')) return;
+  const runId = box.dataset.runId || '';
+  if (!runId) return;
+
+  const buttons = box.querySelectorAll('.reco-fb-btn');
+  box.classList.add('locked');
+  buttons.forEach(b => b.disabled = true);
+  btn.classList.add('selected');
+
+  try {
+    const res = await fetch('/query/feedback', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${authToken}`
+      },
+      body: JSON.stringify({run_id: runId, feedback})
+    });
+    if (!res.ok) {
+      let msg = `Feedback mentés sikertelen: ${res.status}`;
+      try {
+        const data = await res.json();
+        if (data.detail) msg = data.detail;
+      } catch {}
+      throw new Error(msg);
+    }
+    box.classList.add('done');
+    window.setTimeout(() => {
+      buttons.forEach(b => b.classList.add('hidden'));
+      box.querySelector('.reco-fb-thanks')?.classList.remove('hidden');
+    }, 360);
+  } catch (err) {
+    box.classList.remove('locked');
+    box.classList.remove('done');
+    btn.classList.remove('selected');
+    buttons.forEach(b => b.disabled = false);
+    showError(err.message || 'Feedback mentés sikertelen.');
+  }
 }
 
 async function openSupplierSite(sid, supplierPartNo, btn) {
@@ -1797,31 +1873,67 @@ function admClose() {
 // ── futásnapló ────────────────────────────────────────────────────
 async function admLoadRuns() {
   const tbody = document.getElementById('adm-runs-tbody');
-  tbody.innerHTML = '<tr><td colspan="8" class="adm-empty">Betöltés…</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="10" class="adm-empty">Betöltés…</td></tr>';
   try {
     const res = await fetch('/admin/runs', { headers: admHeaders() });
     const d   = await res.json();
     if (!d.runs || !d.runs.length) {
-      tbody.innerHTML = '<tr><td colspan="8" class="adm-empty">Nincs rögzített futás.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="10" class="adm-empty">Nincs rögzített futás.</td></tr>';
       return;
     }
     const statusIcon = s => ({ ok: '✅', partial: '⚠️', error: '❌', running: '⏳' }[s] ?? s);
+    const feedbackLabel = f => ({ positive: '👍 Elégedett', negative: '👎 Nem elégedett' }[f] ?? '—');
     tbody.innerHTML = d.runs.map(r => `<tr>
       <td><code>${r.run_id ?? ''}</code></td>
+      <td>${r.username ?? '—'}</td>
       <td>${r.gepcoop_part_no ?? ''}</td>
       <td>${r.started_at ? fmtTs(r.started_at) : ''}</td>
       <td>${statusIcon(r.status)} ${r.status ?? ''}</td>
       <td>${r.duration_ms ?? '—'}</td>
+      <td>${feedbackLabel(r.recommendation_feedback)}</td>
       <td>${(r.suppliers_ok  ?? []).join(', ') || '—'}</td>
       <td>${(r.suppliers_error ?? []).join(', ') || '—'}</td>
       <td style="max-width:200px;white-space:normal;font-size:11px;color:var(--red)">${r.error_message ?? ''}</td>
     </tr>`).join('');
   } catch(err) {
-    tbody.innerHTML = `<tr><td colspan="8" class="adm-empty">⚠ ${err.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="adm-empty">⚠ ${err.message}</td></tr>`;
   }
 }
 document.getElementById('adm-btn-refresh-runs').addEventListener('click', admLoadRuns);
 document.getElementById('adm-btn-refresh-runs').addEventListener('click', () => admLoadRunsChart(admRunsRange));
+document.getElementById('adm-btn-export-runs').addEventListener('click', admExportRuns);
+
+async function admExportRuns() {
+  const btn = document.getElementById('adm-btn-export-runs');
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Export…';
+  try {
+    const res = await fetch('/admin/runs/export', { headers: admHeaders() });
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try {
+        const d = await res.json();
+        msg = d.detail || msg;
+      } catch (_) {}
+      throw new Error(msg);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `futasnaplo_${new Date().toISOString().slice(0,10)}.xlsx`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    alert(`Export sikertelen: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
 
 async function admLoadRunsChart(range = 'week') {
   admRunsRange = range;

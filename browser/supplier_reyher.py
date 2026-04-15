@@ -219,10 +219,29 @@ async def _extract_header_text(page) -> str:
 
 
 async def _open_product_modal(page) -> None:
-    link = page.locator("a.productlist_item_anchor.js-Modal").first
-    if await link.count() == 0:
-        raise RuntimeError("Reyher product modal trigger was not found in the first result row.")
-    await link.click(timeout=8000)
+    candidates = (
+        "table.table tbody tr:first-child a.productlist_item_anchor",
+        "table.table tbody tr:first-child a[data-title]",
+        "table.table tbody tr:first-child td:nth-child(2) a",
+        "a.productlist_item_anchor.js-Modal",
+        "a.productlist_item_anchor",
+    )
+    clicked_selector = None
+    for selector in candidates:
+        link = page.locator(selector).first
+        if await link.count() == 0:
+            continue
+        try:
+            await link.click(timeout=8000)
+            clicked_selector = selector
+            break
+        except Exception as exc:
+            log.warning("Reyher product modal click failed for %s: %s", selector, exc)
+
+    if not clicked_selector:
+        raise RuntimeError("Reyher product link was not found in the first result row.")
+
+    log.info("Reyher product modal opened via selector: %s", clicked_selector)
     await page.wait_for_function(
         """() => {
             const txt = document.body ? (document.body.innerText || '') : '';
@@ -421,8 +440,8 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 await _open_product_modal(page)
                 modal_info = await _extract_modal_price_info(page)
                 log.info("Reyher modal info: %r", modal_info)
-            except PlaywrightTimeout:
-                log.warning("Reyher product modal did not expose Own price within timeout")
+            except (PlaywrightTimeout, RuntimeError) as exc:
+                log.warning("Reyher product modal unavailable, will use search-table fallback: %s", exc)
 
             if modal_info and modal_info.get("own_price"):
                 price_raw = _parse_price(modal_info["own_price"])

@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from pathlib import Path
+import pandas as pd
 from agent.tools import lookup_mapping_all, fetch_supplier_price, get_all_part_numbers, search_part_numbers
 
 logging.basicConfig(
@@ -579,6 +580,10 @@ class UpdatePasswordRequest(BaseModel):
     supplier_id: str
     password: str
 
+class RunFeedbackRequest(BaseModel):
+    run_id: str
+    feedback: str
+
 
 # ── Routes ────────────────────────────────────────────────────────────
 @app.get("/")
@@ -721,25 +726,54 @@ def _get_supabase_main():
 
 def _save_run(run_id, part_no, started_at, status,
               suppliers_queried, suppliers_ok, suppliers_error,
-              error_message, duration_ms):
+              error_message, duration_ms, username=None):
     sb = _get_supabase_main()
     if sb is None:
         return
+    payload = {
+        "run_id":           run_id,
+        "gepcoop_part_no":  part_no,
+        "started_at":       started_at.isoformat(),
+        "finished_at":      datetime.now(timezone.utc).isoformat(),
+        "status":           status,
+        "suppliers_queried": suppliers_queried,
+        "suppliers_ok":     suppliers_ok,
+        "suppliers_error":  suppliers_error,
+        "error_message":    error_message,
+        "duration_ms":      duration_ms,
+    }
+    if username:
+        payload["username"] = username
     try:
-        sb.table("query_runs").upsert({
-            "run_id":           run_id,
-            "gepcoop_part_no":  part_no,
-            "started_at":       started_at.isoformat(),
-            "finished_at":      datetime.now(timezone.utc).isoformat(),
-            "status":           status,
-            "suppliers_queried": suppliers_queried,
-            "suppliers_ok":     suppliers_ok,
-            "suppliers_error":  suppliers_error,
-            "error_message":    error_message,
-            "duration_ms":      duration_ms,
-        }, on_conflict="run_id").execute()
+        sb.table("query_runs").upsert(payload, on_conflict="run_id").execute()
     except Exception as exc:
+        if username and "username" in str(exc).lower():
+            payload.pop("username", None)
+            try:
+                sb.table("query_runs").upsert(payload, on_conflict="run_id").execute()
+                log.warning("query_runs.username oszlop hiányzik; futás user nélkül mentve. Futtasd a deploy/supabase_query_runs_username.sql migrációt.")
+                return
+            except Exception as retry_exc:
+                exc = retry_exc
         log.warning(f"run log mentés sikertelen: {exc}")
+
+
+def _is_missing_feedback_columns(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return (
+        "recommendation_feedback" in msg
+        or "recommendation_feedback_at" in msg
+        or "recommendation_feedback_by" in msg
+    )
+
+
+def _require_feedback_columns(exc: Exception):
+    if _is_missing_feedback_columns(exc):
+        raise HTTPException(
+            status_code=503,
+            detail="A feedback oszlopok hiányoznak. Futtasd a deploy/supabase_query_runs_feedback.sql migrációt.",
+        )
+    raise HTTPException(status_code=500, detail=f"Feedback mentés sikertelen: {exc}")
 
 
 @app.get("/query/stream")
@@ -748,7 +782,7 @@ async def query_stream(
     suppliers: str | None = None,
     authorization: str | None = Header(default=None),
 ):
-    _get_username(authorization)
+    run_username = _get_username(authorization)
 
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -867,7 +901,15 @@ async def query_stream(
             recommendation = compute_recommendation(results)
             log.info(f"[{run_id}] Recommendation: {recommendation}")
 
+            duration_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
+            await asyncio.to_thread(
+                _save_run, run_id, part, started_at, _run_status,
+                _suppliers_queried, _suppliers_ok, _suppliers_error,
+                _error_message, duration_ms, run_username,
+            )
+
             await queue.put(("result", {
+                "run_id":           run_id,
                 "internal_part_no": part,
                 "suppliers":        results,
                 "recommendation":   recommendation,
@@ -882,7 +924,7 @@ async def query_stream(
             await asyncio.to_thread(
                 _save_run, run_id, part, started_at, _run_status,
                 _suppliers_queried, _suppliers_ok, _suppliers_error,
-                _error_message, duration_ms,
+                _error_message, duration_ms, run_username,
             )
             await queue.put(None)
 
@@ -902,6 +944,53 @@ async def query_stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.post("/query/feedback")
+def save_query_feedback(
+    req: RunFeedbackRequest,
+    authorization: str | None = Header(default=None),
+):
+    username = _get_username(authorization)
+    run_id = (req.run_id or "").strip()
+    feedback = (req.feedback or "").strip().lower()
+    if not run_id:
+        raise HTTPException(status_code=400, detail="Hiányzó run_id.")
+    if feedback not in {"positive", "negative"}:
+        raise HTTPException(status_code=400, detail="Érvénytelen feedback érték.")
+
+    sb = _get_supabase_main()
+    if sb is None:
+        raise HTTPException(status_code=503, detail="Supabase nincs konfigurálva.")
+
+    try:
+        existing = (
+            sb.table("query_runs")
+            .select("run_id,recommendation_feedback")
+            .eq("run_id", run_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        _require_feedback_columns(exc)
+
+    row = (existing.data or [None])[0]
+    if not row:
+        raise HTTPException(status_code=404, detail="A futás nem található.")
+    if row.get("recommendation_feedback"):
+        return {"saved": False, "already_set": True}
+
+    payload = {
+        "recommendation_feedback": feedback,
+        "recommendation_feedback_at": datetime.now(timezone.utc).isoformat(),
+        "recommendation_feedback_by": username,
+    }
+    try:
+        sb.table("query_runs").update(payload).eq("run_id", run_id).execute()
+    except Exception as exc:
+        _require_feedback_columns(exc)
+
+    return {"saved": True}
 
 
 @app.get("/parts")
@@ -1410,17 +1499,103 @@ def admin_get_runs(
     if sb is None:
         return {"runs": []}
     try:
-        res = (
-            sb.table("query_runs")
-            .select("run_id,gepcoop_part_no,started_at,finished_at,status,suppliers_queried,suppliers_ok,suppliers_error,error_message,duration_ms")
-            .order("started_at", desc=True)
-            .limit(10)
-            .execute()
+        select_cols = (
+            "run_id,username,gepcoop_part_no,started_at,finished_at,status,"
+            "suppliers_queried,suppliers_ok,suppliers_error,error_message,duration_ms,"
+            "recommendation_feedback,recommendation_feedback_at,recommendation_feedback_by"
         )
+        try:
+            res = (
+                sb.table("query_runs")
+                .select(select_cols)
+                .order("started_at", desc=True)
+                .limit(10)
+                .execute()
+            )
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "username" not in msg and not _is_missing_feedback_columns(exc):
+                raise
+            res = (
+                sb.table("query_runs")
+                .select("run_id,gepcoop_part_no,started_at,finished_at,status,suppliers_queried,suppliers_ok,suppliers_error,error_message,duration_ms")
+                .order("started_at", desc=True)
+                .limit(10)
+                .execute()
+            )
         return {"runs": res.data or []}
     except Exception as exc:
         log.warning(f"admin_get_runs hiba: {exc}")
         return {"runs": []}
+
+
+@app.get("/admin/runs/export")
+def admin_export_runs(
+    authorization: str | None = Header(default=None),
+):
+    _get_admin(authorization)
+    sb = _get_supabase_main()
+    if sb is None:
+        raise HTTPException(status_code=503, detail="Supabase nincs konfigurálva.")
+
+    select_cols = (
+        "run_id,username,gepcoop_part_no,started_at,finished_at,status,"
+        "suppliers_queried,suppliers_ok,suppliers_error,error_message,duration_ms,"
+        "recommendation_feedback,recommendation_feedback_at,recommendation_feedback_by"
+    )
+    try:
+        try:
+            res = (
+                sb.table("query_runs")
+                .select(select_cols)
+                .order("started_at", desc=True)
+                .limit(5000)
+                .execute()
+            )
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "username" not in msg and not _is_missing_feedback_columns(exc):
+                raise
+            res = (
+                sb.table("query_runs")
+                .select("run_id,gepcoop_part_no,started_at,finished_at,status,suppliers_queried,suppliers_ok,suppliers_error,error_message,duration_ms")
+                .order("started_at", desc=True)
+                .limit(5000)
+                .execute()
+            )
+
+        rows = []
+        for row in res.data or []:
+            rows.append({
+                "Run ID": row.get("run_id", ""),
+                "User": row.get("username", ""),
+                "Cikkszám": row.get("gepcoop_part_no", ""),
+                "Indítva": row.get("started_at", ""),
+                "Befejezve": row.get("finished_at", ""),
+                "Státusz": row.get("status", ""),
+                "Idő (ms)": row.get("duration_ms", ""),
+                "Javaslat feedback": row.get("recommendation_feedback", "") or "",
+                "Feedback időpont": row.get("recommendation_feedback_at", "") or "",
+                "Feedback user": row.get("recommendation_feedback_by", "") or "",
+                "Lekérdezett beszállítók": ", ".join(row.get("suppliers_queried") or []),
+                "Sikeres beszállítók": ", ".join(row.get("suppliers_ok") or []),
+                "Hibás beszállítók": ", ".join(row.get("suppliers_error") or []),
+                "Hibaüzenet": row.get("error_message", "") or "",
+            })
+
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            pd.DataFrame(rows).to_excel(writer, sheet_name="Futásnapló", index=False)
+        buf.seek(0)
+        filename = f"futasnaplo_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+    except Exception as exc:
+        log.warning(f"admin_export_runs hiba: {exc}")
+        raise HTTPException(status_code=500, detail=f"Export sikertelen: {exc}")
 
 
 @app.get("/admin/runs/chart")
