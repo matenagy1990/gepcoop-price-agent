@@ -197,7 +197,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
             await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
             # Wait for search results container or empty-state indicator
-            await page.wait_for_selector(".products, .item, [class*='no-result'], h1", state="attached", timeout=8000)
+            await page.wait_for_selector(".products, .item, [class*='no-result'], h1, .alert-message", state="attached", timeout=8000)
             log.info(f"Search page loaded: {page.url}")
 
             body_text = await page.locator("body").inner_text(timeout=10000)
