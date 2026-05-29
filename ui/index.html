@@ -757,6 +757,9 @@
           <button class="adm-nav-item" data-tab="runs">
             <span class="adm-nav-icon">📊</span>Futásnapló
           </button>
+          <button class="adm-nav-item" data-tab="fx">
+            <span class="adm-nav-icon">💱</span>Árfolyam
+          </button>
         </nav>
         <div class="adm-nav-backdrop" id="adm-nav-backdrop"></div>
 
@@ -909,6 +912,23 @@
                   </thead>
                   <tbody id="adm-runs-tbody"></tbody>
                 </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="adm-tab hidden" id="adm-tab-fx">
+            <div class="adm-section">
+              <div class="adm-section-title">EUR → HUF árfolyam</div>
+              <p class="adm-hint">Az itt megadott árfolyammal számoljuk át az EUR alapú webshopok árait forintra. Mentés után azonnal érvényes, és felülírja a korábbi értéket.</p>
+              <div style="max-width:420px;display:flex;flex-direction:column;gap:12px">
+                <div class="field" style="margin-bottom:0">
+                  <label>1 EUR = ennyi HUF</label>
+                  <input type="number" id="adm-eur-rate" min="0.01" step="0.01" placeholder="pl. 395,50">
+                </div>
+                <div>
+                  <button class="btn-upload" id="adm-save-fx">Mentés</button>
+                </div>
+                <div id="adm-fx-msg" class="hidden"></div>
               </div>
             </div>
           </div>
@@ -1592,7 +1612,7 @@ function renderResults(data) {
         // Show HUF-converted price as primary; original currency price as secondary
         ppdb      = fmtNum(r.price_per_db_huf, 4);
         priceUnit = 'HUF';
-        fxNote    = `≈ ${fmtNum(r.price_per_db, 4)} ${cur}/db (1 ${cur} = ${fmtNum(r.fx_huf_rate, 2)} HUF, open.er-api.com)`;
+        fxNote    = `≈ ${fmtNum(r.price_per_db, 4)} ${cur}/db (1 ${cur} = ${fmtNum(r.fx_huf_rate, 2)} HUF, admin beállítás)`;
         rawStr    = r.price_raw != null && r.price_unit_qty != null
           ? `Eredeti: ${fmtNum(r.price_raw, 2)} ${cur} / ${fmtInt(r.price_unit_qty)} db`
           : '';
@@ -1849,6 +1869,9 @@ function admSwitchTab(tab) {
     admLoadRuns();
     admLoadRunsChart(admRunsRange);
   }
+  if (tab === 'fx') {
+    admLoadFxSettings();
+  }
   if (admIsMobile()) admSetNavOpen(false);
 }
 document.querySelectorAll('.adm-nav-item').forEach(btn => {
@@ -1902,6 +1925,67 @@ async function admLoadRuns() {
 document.getElementById('adm-btn-refresh-runs').addEventListener('click', admLoadRuns);
 document.getElementById('adm-btn-refresh-runs').addEventListener('click', () => admLoadRunsChart(admRunsRange));
 document.getElementById('adm-btn-export-runs').addEventListener('click', admExportRuns);
+
+async function admLoadFxSettings() {
+  const input = document.getElementById('adm-eur-rate');
+  const msgEl = document.getElementById('adm-fx-msg');
+  msgEl.className = 'hidden';
+  try {
+    const res = await fetch('/admin/fx-settings', { headers: admHeaders() });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || 'Az árfolyam betöltése sikertelen.');
+    input.value = d.eur_to_huf_rate != null ? String(d.eur_to_huf_rate).replace('.', ',') : '';
+  } catch (err) {
+    msgEl.className = 'adm-msg err';
+    msgEl.textContent = `⚠ ${err.message}`;
+    msgEl.classList.remove('hidden');
+  }
+}
+
+document.getElementById('adm-save-fx').addEventListener('click', async () => {
+  const input = document.getElementById('adm-eur-rate');
+  const msgEl = document.getElementById('adm-fx-msg');
+  const btn = document.getElementById('adm-save-fx');
+  const raw = (input.value || '').trim().replace(',', '.');
+
+  msgEl.className = 'hidden';
+  if (!raw) {
+    msgEl.className = 'adm-msg err';
+    msgEl.textContent = '⚠ Az EUR → HUF árfolyam megadása kötelező.';
+    msgEl.classList.remove('hidden');
+    return;
+  }
+
+  const rate = Number(raw);
+  if (!Number.isFinite(rate) || rate <= 0) {
+    msgEl.className = 'adm-msg err';
+    msgEl.textContent = '⚠ Az árfolyamnak pozitív számnak kell lennie.';
+    msgEl.classList.remove('hidden');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Mentés…';
+  try {
+    const res = await fetch('/admin/fx-settings', {
+      method: 'POST',
+      headers: admHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ eur_to_huf_rate: rate }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || 'Az árfolyam mentése sikertelen.');
+    input.value = String(d.eur_to_huf_rate).replace('.', ',');
+    msgEl.className = 'adm-msg ok';
+    msgEl.textContent = `✓ Mentve: 1 EUR = ${fmtNum(d.eur_to_huf_rate, 2)} HUF`;
+  } catch (err) {
+    msgEl.className = 'adm-msg err';
+    msgEl.textContent = `⚠ ${err.message}`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Mentés';
+    msgEl.classList.remove('hidden');
+  }
+});
 
 async function admExportRuns() {
   const btn = document.getElementById('adm-btn-export-runs');

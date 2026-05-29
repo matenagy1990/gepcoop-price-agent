@@ -1,21 +1,15 @@
 import asyncio
 import csv
-import json
 import logging
 import re
 import os
-import time
-import urllib.request
 from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
 
 log = logging.getLogger(__name__)
-
-# 1-hour module-level cache for foreign currency → HUF rates, keyed by currency code
-_fx_cache: dict = {}   # e.g. {"CZK": {"rate": 18.5, "ts": ...}, "EUR": {"rate": 395.0, "ts": ...}}
-_FX_TTL = 3600
+_DEFAULT_EUR_TO_HUF = 400.0
 
 MAPPING_FILE = Path(__file__).parent.parent / "assets" / "mapping.csv"
 _part_numbers_cache: dict[str, object] = {"parts": [], "loaded_at": 0.0}
@@ -120,30 +114,29 @@ def parse_stock_string(s: str) -> int:
 # Column names follow the pattern  {supplier_id}_part_no
 # ---------------------------------------------------------------------------
 
-async def _get_huf_rate(currency: str) -> float | None:
-    """open.er-api.com (free, no key) → {currency}/HUF rate. Cached per currency for 1 hour."""
-    cached = _fx_cache.get(currency)
-    if cached and time.time() - cached.get("ts", 0) < _FX_TTL:
-        return cached["rate"]
+def _get_manual_huf_rate(currency: str) -> float | None:
+    """Return the admin-configured HUF conversion rate for supported foreign currencies."""
+    currency = (currency or "").strip().upper()
+    if currency == "HUF":
+        return 1.0
+    if currency != "EUR":
+        return None
 
-    def _fetch():
-        req = urllib.request.Request(
-            f"https://open.er-api.com/v6/latest/{currency}",
-            headers={"User-Agent": "gepcoop-price-agent/1.0"},
-        )
-        with urllib.request.urlopen(req, timeout=5) as r:
-            return json.loads(r.read())
+    raw = (os.environ.get("EUR_TO_HUF_RATE", "") or "").strip()
+    if not raw:
+        return _DEFAULT_EUR_TO_HUF
 
     try:
-        data = await asyncio.to_thread(_fetch)
-        rate = float(data["rates"]["HUF"])
-        _fx_cache[currency] = {"rate": rate, "ts": time.time()}
-        updated = data.get("time_last_update_utc", "?")[:16]
-        log.info(f"{currency}→HUF árfolyam: {rate} (open.er-api.com, {updated})")
-        return rate
-    except Exception as exc:
-        log.warning(f"{currency}→HUF árfolyam lekérése sikertelen: {exc}")
-        return None
+        rate = float(raw.replace(",", "."))
+    except ValueError:
+        log.warning("Érvénytelen EUR_TO_HUF_RATE érték a környezetben: %r", raw)
+        return _DEFAULT_EUR_TO_HUF
+
+    if rate <= 0:
+        log.warning("Nem pozitív EUR_TO_HUF_RATE érték a környezetben: %r", raw)
+        return _DEFAULT_EUR_TO_HUF
+
+    return rate
 
 
 def _row_to_suppliers(row: dict) -> list[dict]:
@@ -314,10 +307,10 @@ async def fetch_supplier_price(supplier_id: str, supplier_part_no: str, on_progr
     # Normalise: price per 1 db
     raw["price_per_db"] = round(raw["price_raw"] / raw["price_unit_qty"], 6)
 
-    # For non-HUF results, add a HUF-comparable price via open.er-api.com live rate
+    # For EUR-based suppliers, add a HUF-comparable price via the admin-maintained manual rate
     currency = raw.get("currency", "HUF")
     if currency != "HUF":
-        rate = await _get_huf_rate(currency)
+        rate = _get_manual_huf_rate(currency)
         if rate is not None:
             raw["price_per_db_huf"] = round(raw["price_per_db"] * rate, 6)
             raw["fx_huf_rate"]      = round(rate, 4)

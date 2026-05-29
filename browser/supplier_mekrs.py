@@ -26,7 +26,8 @@ Data extraction (product card layout):
   Unit:  span.text-black.font-medium.text-sm.leading-none    → "/ 100 pcs"
 
 Price normalisation:
-  price_raw=50.63, price_unit_qty=100 → tools.py yields price_per_db=0.5063 CZK/db
+  price_raw=50.63, price_unit_qty=100 → tools.py yields price_per_db=0.5063 in the
+  currently selected webshop currency (EUR is enforced before search)
 """
 
 import logging
@@ -60,13 +61,16 @@ def _parse_stock(s: str) -> int:
     return int("".join(digit_groups)) if digit_groups else 0
 
 
-def _parse_czk_price(price_str: str) -> float:
-    """Parse CZK price from either '50.63 Kč' or '50,63 Kč'."""
+def _parse_price_value(price_str: str) -> float:
+    """Parse a numeric price from strings like '50.63 Kč', '50,63 Kč', or '1,226.44 EUR'."""
     clean = re.sub(r"[^\d.,]", "", price_str).strip()
     if not clean:
-        raise ValueError("Empty CZK price string")
+        raise ValueError("Empty price string")
     if "," in clean and "." in clean:
-        clean = clean.replace(",", "")
+        if clean.rfind(",") > clean.rfind("."):
+            clean = clean.replace(".", "").replace(",", ".")
+        else:
+            clean = clean.replace(",", "")
     elif "," in clean:
         clean = clean.replace(",", ".")
     return float(clean)
@@ -143,14 +147,110 @@ async def _capture_auth_signals(page) -> dict:
     return data
 
 
-async def _extract_price_block(container):
-    return await container.evaluate("""(root) => {
+async def _get_currency_switcher_state(page) -> dict | None:
+    """Return the header currency select index and current value, if present."""
+    return await page.evaluate(
+        """() => {
+            const selects = Array.from(document.querySelectorAll('select'));
+            for (let i = 0; i < selects.length; i++) {
+                const values = Array.from(selects[i].options)
+                    .map(opt => ((opt.value || opt.textContent || '').trim()).toUpperCase());
+                if (values.includes('CZK') && values.includes('EUR')) {
+                    return {
+                        index: i,
+                        value: (selects[i].value || '').trim().toUpperCase(),
+                        values,
+                    };
+                }
+            }
+            return null;
+        }"""
+    )
+
+
+async def _get_currency_cookie(page) -> str | None:
+    cookies = await page.context.cookies([HOME_URL])
+    for cookie in cookies:
+        if cookie.get("name") == "currency":
+            value = (cookie.get("value") or "").strip().upper()
+            if value in {"CZK", "EUR"}:
+                return value
+    return None
+
+
+async def _ensure_currency_eur(page, emit: Callable | None = None) -> None:
+    """
+    Mekrs stores the active price currency in a cookie. Force `currency=EUR`,
+    then reload so both the header selector and the rendered prices update.
+    """
+    cookie_currency = await _get_currency_cookie(page)
+    if cookie_currency == "EUR":
+        log.info("Mekrs currency cookie already set to EUR")
+        return
+
+    if emit:
+        await emit("Switching Mekrs currency to EUR…")
+
+    await page.context.add_cookies([{
+        "name": "currency",
+        "value": "EUR",
+        "domain": "eshop.mekrs.cz",
+        "path": "/",
+        "secure": True,
+        "httpOnly": False,
+        "sameSite": "Lax",
+    }])
+
+    try:
+        await page.reload(wait_until="domcontentloaded", timeout=20000)
+    except PlaywrightTimeout:
+        raise RuntimeError("Mekrs currency switch to EUR did not complete in time.")
+
+    try:
+        await page.wait_for_load_state("networkidle", timeout=8000)
+    except PlaywrightTimeout:
+        log.info("Mekrs currency switch did not reach networkidle in time — continuing")
+
+    cookie_currency = await _get_currency_cookie(page)
+    if cookie_currency != "EUR":
+        raise RuntimeError(f"Mekrs currency cookie stayed at {cookie_currency!r} after EUR switch.")
+
+    state = await _get_currency_switcher_state(page)
+    if state and (state.get("value") or "").upper() != "EUR":
+        raise RuntimeError("Mekrs currency selector did not reflect EUR after reload.")
+
+    log.info("Mekrs currency switched to EUR successfully")
+
+
+def _price_currency_pattern(currency_code: str) -> str:
+    if currency_code == "EUR":
+        return r"(?:EUR|€)"
+    return r"(?:Kč|CZK)"
+
+
+async def _current_mekrs_currency(page) -> str:
+    cookie_currency = await _get_currency_cookie(page)
+    if cookie_currency in {"CZK", "EUR"}:
+        return cookie_currency
+
+    state = await _get_currency_switcher_state(page)
+    current = (state or {}).get("value") or ""
+    current = current.strip().upper()
+    if current in {"CZK", "EUR"}:
+        return current
+    return "EUR"
+
+
+async def _extract_price_block(container, currency_code: str):
+    currency_pattern = _price_currency_pattern(currency_code)
+    return await container.evaluate("""(root, currencyPattern) => {
         const leaves = Array.from(root.querySelectorAll('*'))
             .filter(el => el.childElementCount === 0)
             .map(el => ({ el, text: (el.textContent || '').trim() }))
             .filter(item => item.text);
 
-        const isPrice = (text) => /[\\d][\\d.,]*\\s*Kč/.test(text);
+        const priceRe = new RegExp(`[\\\\d][\\\\d.,]*\\\\s*${currencyPattern}`, 'i');
+        const isPrice = (text) => priceRe.test(text);
         const isPcsUnit = (text) => /\\/\\s*\\d[\\d,]*\\s*pcs/i.test(text);
 
         const pairs = [];
@@ -174,34 +274,39 @@ async def _extract_price_block(container):
 
         pairs.sort((a, b) => b.qty - a.qty);
         return [pairs[0].price, pairs[0].unit, pairs[0].html];
-    }""")
+    }""", currency_pattern)
 
 
-async def _extract_results_page_data(page):
+async def _extract_results_page_data(page, currency_code: str):
     """Extract the first priced B2B result from the authenticated results page text."""
+    currency_pattern = _price_currency_pattern(currency_code)
     return await page.evaluate(
-        """() => {
+        """({ currencyCode, currencyPattern }) => {
             const body = (document.body.innerText || '').replace(/\\s+/g, ' ').trim();
             const stockMatch = body.match(/In stock\\s+([\\d.,\\s]+)\\s*pcs/i);
-            const unitPriceMatch = body.match(/([\\d][\\d.,]*)\\s*Kč\\s*\\/\\s*(\\d[\\d,]*)\\s*pcs\\s*without VAT/i);
+            const unitPriceMatch = body.match(
+                new RegExp(`([\\\\d][\\\\d.,]*)\\\\s*${currencyPattern}\\\\s*\\\\/\\\\s*(\\\\d[\\\\d,]*)\\\\s*pcs\\\\s*without VAT`, 'i')
+            );
             if (!unitPriceMatch) return null;
 
             return {
-                price_str: `${unitPriceMatch[1]} Kč`,
+                price_str: `${unitPriceMatch[1]} ${currencyCode}`,
                 unit_str: `/ ${unitPriceMatch[2]} pcs`,
                 price_html: null,
                 stock_str: stockMatch ? `In stock ${stockMatch[1]} pcs` : '',
                 block_html: body.slice(0, 3000),
                 text: body.slice(0, 3000),
             };
-        }"""
+        }""",
+        {"currencyCode": currency_code, "currencyPattern": currency_pattern},
     )
 
 
-async def _extract_detail_data(page, supplier_part_no: str):
+async def _extract_detail_data(page, supplier_part_no: str, currency_code: str):
     """Extract price and qty from the checked Mekrs variant row on detail pages."""
+    currency_pattern = _price_currency_pattern(currency_code)
     return await page.evaluate(
-        """(partNo) => {
+        """({ partNo, currencyPattern }) => {
             const checked = document.querySelector('input[name="variant"]:checked');
             const row = checked ? checked.closest('.relative') || checked.parentElement : null;
             if (!row) return null;
@@ -216,7 +321,7 @@ async def _extract_detail_data(page, supplier_part_no: str):
             const lines = Array.from(row.querySelectorAll('div.grid.grid-flow-col.items-baseline'))
                 .map(line => {
                     const priceNode = Array.from(line.querySelectorAll('*'))
-                        .find(node => /[\\d][\\d.,]*\\s*Kč/.test((node.textContent || '').trim()));
+                        .find(node => new RegExp(`[\\\\d][\\\\d.,]*\\\\s*${currencyPattern}`, 'i').test((node.textContent || '').trim()));
                     const unitNode = Array.from(line.querySelectorAll('*'))
                         .find(node => /\\/\\s*(packaging|pcs)/i.test((node.textContent || '').trim()));
                     return {
@@ -242,7 +347,7 @@ async def _extract_detail_data(page, supplier_part_no: str):
                 block_html: row.innerHTML.slice(0, 3000),
             };
         }""",
-        supplier_part_no,
+        {"partNo": supplier_part_no, "currencyPattern": currency_pattern},
     )
 
 
@@ -319,6 +424,9 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     else:
                         log.info("Session valid after retry — login skipped")
 
+                await _ensure_currency_eur(page, emit=emit)
+                await save_session(context, _SESSION_FILE)
+
             # ── Step 2: full login (if needed) ───────────────────────────────
             if not use_session:
                 await page.goto(HOME_URL, wait_until="domcontentloaded")
@@ -358,6 +466,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     )
 
                 log.info(f"Login successful — URL: {page.url}")
+                await _ensure_currency_eur(page, emit=emit)
                 await save_session(context, _SESSION_FILE)
 
             # ── Step 3: search via autocomplete ──────────────────────────────
@@ -377,6 +486,9 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 await search_inp.press("Backspace")
             await search_inp.type(supplier_part_no, delay=50)
             log.info(f"Typed '{supplier_part_no}' into search box, waiting for Mekrs search suggestions…")
+            current_currency = await _current_mekrs_currency(page)
+            log.info("Mekrs active currency before search: %s", current_currency)
+
             try:
                 await page.wait_for_function(
                     """(partNo) => {
@@ -415,7 +527,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
             try:
                 await page.wait_for_function(
-                    "() => location.pathname.includes('/products') && document.body.innerText.includes('Kč')",
+                    "() => location.pathname.includes('/products')",
                     timeout=10000,
                 )
             except PlaywrightTimeout:
@@ -427,14 +539,22 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 )
             except PlaywrightTimeout:
                 log.warning("Mekrs results page did not show 'without VAT' in time")
+
+            current_currency = await _current_mekrs_currency(page)
+            log.info("Mekrs active currency on results page: %s", current_currency)
+            currency_pattern = _price_currency_pattern(current_currency)
             try:
                 await page.wait_for_function(
-                    "() => document.body.innerText.includes('Kč')",
+                    """(pattern) => {
+                        const text = document.body.innerText || '';
+                        return new RegExp(`[\\\\d][\\\\d.,]*\\\\s*${pattern}`, 'i').test(text);
+                    }""",
+                    arg=currency_pattern,
                     timeout=10000,
                 )
-                log.info("Kč price text detected in DOM")
+                log.info("Mekrs %s price text detected in DOM", current_currency)
             except PlaywrightTimeout:
-                log.warning("Kč not found in DOM after 10s — attempting extraction anyway")
+                log.warning("Mekrs %s price text not found in DOM after 10s — attempting extraction anyway", current_currency)
             log.info(f"Results page loaded: {page.url}")
             signals = await _capture_auth_signals(page)
             if signals["body_has_login_prompt"] or (
@@ -450,7 +570,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
             # ── Step 4: extract data ──────────────────────────────────────────
             await emit("Reading price and stock from eshop.mekrs.cz…")
-            results_data = await _extract_results_page_data(page)
+            results_data = await _extract_results_page_data(page, current_currency)
             if not results_data:
                 raise RuntimeError(
                     f"Part {supplier_part_no} was not found on eshop.mekrs.cz "
@@ -477,7 +597,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     f"Part {supplier_part_no} has no visible price on eshop.mekrs.cz."
                 )
 
-            price_raw = _parse_czk_price(price_str)
+            price_raw = _parse_price_value(price_str)
 
             qty_match = re.search(r"([\d,]+)\s*pcs", unit_str)
             if qty_match:
@@ -487,13 +607,13 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 log.warning(f"Could not parse unit qty from '{unit_str}', assuming 1")
 
             stock = _parse_stock(stock_str)
-            log.info(f"Parsed: {price_raw} CZK / {price_unit_qty} pcs, stock: {stock}")
+            log.info("Parsed: %s %s / %s pcs, stock: %s", price_raw, current_currency, price_unit_qty, stock)
 
             result = {
                 "supplier_part_no": supplier_part_no,
                 "price_raw":        price_raw,
                 "price_unit_qty":   price_unit_qty,
-                "currency":         "CZK",
+                "currency":         current_currency,
                 "unit":             "db",
                 "stock":            stock,
                 "queried_at":       datetime.now().isoformat(timespec="seconds"),

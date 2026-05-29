@@ -32,6 +32,7 @@ SCRAPER_LIMIT = asyncio.Semaphore(4)
 
 # ── .env helpers ──────────────────────────────────────────────────────
 ENV_FILE = Path(__file__).parent / ".env"
+DEFAULT_EUR_TO_HUF_RATE = 400.0
 
 def _update_env_file(updates: dict[str, str]) -> None:
     """Update or append key=value pairs in the .env file, then reload os.environ."""
@@ -53,6 +54,21 @@ def _update_env_file(updates: dict[str, str]) -> None:
     ENV_FILE.write_text("".join(new_lines), encoding="utf-8")
     for key, val in updates.items():
         os.environ[key] = val
+
+
+def _get_manual_eur_huf_rate() -> float:
+    raw = (os.environ.get("EUR_TO_HUF_RATE", "") or "").strip()
+    if not raw:
+        return DEFAULT_EUR_TO_HUF_RATE
+    try:
+        rate = float(raw.replace(",", "."))
+    except ValueError:
+        log.warning("Érvénytelen EUR_TO_HUF_RATE érték a környezetben: %r", raw)
+        return DEFAULT_EUR_TO_HUF_RATE
+    if rate <= 0:
+        log.warning("Nem pozitív EUR_TO_HUF_RATE érték a környezetben: %r", raw)
+        return DEFAULT_EUR_TO_HUF_RATE
+    return rate
 
 # ── Auth / Supabase-backed app users ─────────────────────────────────
 PBKDF2_ITERATIONS = 240_000
@@ -443,8 +459,8 @@ def _fmt_stock(stock) -> str:
 def compute_recommendation(supplier_results: dict) -> dict:
     """
     Compare supplier results and return a purchase recommendation.
-    All suppliers are ranked together. Non-HUF suppliers (e.g. mekrs, reyher)
-    are included using their live-converted price_per_db_huf value.
+    All suppliers are ranked together. Non-HUF suppliers (currently EUR-based)
+    are included using the admin-configured EUR→HUF conversion.
     """
     available = {
         sid: r for sid, r in supplier_results.items()
@@ -472,7 +488,7 @@ def compute_recommendation(supplier_results: dict) -> dict:
         rate = r.get("fx_huf_rate", "?")
         return (
             f"{_hu(r['price_per_db'])} {curr}/db"
-            f" ≈ {_hu(huf_price)} HUF/db (1 {curr} = {_hu(rate, 2)} HUF, open.er-api.com)"
+            f" ≈ {_hu(huf_price)} HUF/db (1 {curr} = {_hu(rate, 2)} HUF, admin beállítás)"
         )
 
     # All suppliers with a usable HUF-comparable price enter the ranking
@@ -583,6 +599,10 @@ class UpdatePasswordRequest(BaseModel):
 class RunFeedbackRequest(BaseModel):
     run_id: str
     feedback: str
+
+
+class UpdateFxSettingsRequest(BaseModel):
+    eur_to_huf_rate: float
 
 
 # ── Routes ────────────────────────────────────────────────────────────
@@ -1527,6 +1547,35 @@ def admin_get_runs(
     except Exception as exc:
         log.warning(f"admin_get_runs hiba: {exc}")
         return {"runs": []}
+
+
+@app.get("/admin/fx-settings")
+def admin_get_fx_settings(
+    authorization: str | None = Header(default=None),
+):
+    _get_admin(authorization)
+    return {
+        "eur_to_huf_rate": round(_get_manual_eur_huf_rate(), 4),
+        "source": "admin",
+    }
+
+
+@app.post("/admin/fx-settings")
+def admin_update_fx_settings(
+    req: UpdateFxSettingsRequest,
+    authorization: str | None = Header(default=None),
+):
+    _get_admin(authorization)
+    rate = float(req.eur_to_huf_rate)
+    if rate <= 0:
+        raise HTTPException(status_code=400, detail="Az EUR → HUF árfolyamnak pozitív számnak kell lennie.")
+    normalized = f"{rate:.4f}".rstrip("0").rstrip(".")
+    _update_env_file({"EUR_TO_HUF_RATE": normalized})
+    log.info("Admin EUR árfolyam frissítve: 1 EUR = %s HUF", normalized)
+    return {
+        "eur_to_huf_rate": round(float(normalized), 4),
+        "saved": True,
+    }
 
 
 @app.get("/admin/runs/export")
