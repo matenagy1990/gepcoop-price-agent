@@ -258,7 +258,7 @@ async def _extract_modal_price_info(page) -> dict | None:
         const joined = texts.join('\\n');
         if (!joined.includes('Own price')) return null;
 
-        const priceMatch = joined.match(/Own price\\s*\\/\\s*(\\d+)\\s*Pcs[\\s\\S]*?(\\d+[\\.,]\\d+)\\s*€/i);
+        const priceMatch = joined.match(/Own price\\s*\\/\\s*(\\d+)\\s*Pcs[\\s\\S]*?([\\d.,]+)\\s*€/i);
         const qtyPuMatch = joined.match(/Quantity\\/PU:\\s*(\\d+)\\s*pcs/i);
         const stockMatch = joined.match(/Available quantity:\\s*(\\d+)/i);
 

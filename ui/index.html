@@ -276,6 +276,14 @@
 
   /* ── ADMIN OVERLAY ── */
   #adm-overlay{position:fixed;inset:0;background:rgba(22,27,99,.55);backdrop-filter:blur(3px);z-index:500;display:flex;align-items:flex-start;justify-content:center;padding:32px 24px;overflow-y:auto}
+  #login-helper-overlay{position:fixed;inset:0;background:rgba(22,27,99,.55);backdrop-filter:blur(3px);z-index:500;display:flex;align-items:flex-start;justify-content:center;padding:32px 24px;overflow-y:auto}
+  .lh-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 14px;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;background:var(--bg)}
+  .lh-name{font-family:'Oswald',sans-serif;font-weight:600;letter-spacing:.6px;color:var(--navy2);min-width:92px}
+  .lh-spacer{flex:1}
+  .lh-btn{padding:7px 12px;border:1.5px solid var(--border);border-radius:8px;background:var(--white);font-family:'Inter',sans-serif;font-size:12.5px;font-weight:500;color:var(--navy2);cursor:pointer;transition:all .15s}
+  .lh-btn:hover{border-color:var(--navy);color:var(--navy);background:rgba(22,27,99,.05)}
+  .lh-btn.primary{background:var(--navy);color:#fff;border-color:var(--navy)}
+  .lh-btn.copied{background:#1f9d57;color:#fff;border-color:#1f9d57}
   .adm-card{background:var(--white);border-radius:var(--r);box-shadow:0 8px 48px rgba(22,27,99,.22);width:100%;max-width:980px}
   .adm-hdr{background:linear-gradient(135deg,var(--navy) 0%,var(--navy2) 100%);padding:18px 28px;display:flex;align-items:center;justify-content:space-between;border-radius:var(--r) var(--r) 0 0}
   .adm-hdr-title{font-family:'Oswald',sans-serif;font-size:17px;font-weight:700;color:#fff;letter-spacing:2px}
@@ -471,6 +479,7 @@
 
   @media(max-width:768px){
     #adm-overlay{padding:0}
+    #login-helper-overlay{padding:0}
     .adm-card{max-width:none;height:100dvh;min-height:100dvh;border-radius:0;position:relative;overflow:hidden}
     .adm-hdr{padding:14px 16px;gap:10px}
     .adm-hdr-title{font-size:15px;letter-spacing:1.4px}
@@ -571,6 +580,7 @@
     </div>
     <div class="hdr-right">
       <div class="user-chip" id="user-display"></div>
+      <button class="btn-admin hidden" id="btn-webshop-login">🔑 Webshop belépés</button>
       <button class="btn-admin" id="btn-admin">⚙ Admin</button>
       <button class="btn-logout" id="btn-logout">Kijelentkezés</button>
     </div>
@@ -720,6 +730,29 @@
         <button class="pw-btn" id="pw-save-btn">Admin megnyitása</button>
       </div>
       <div class="pw-msg" id="pw-msg"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ WEBSHOP LOGIN HELPER OVERLAY ═══════════════════════════════ -->
+<div id="login-helper-overlay" class="hidden">
+  <div class="adm-card" style="max-width:720px">
+    <div class="adm-hdr">
+      <div class="adm-hdr-title">🔑 Webshop belépés</div>
+      <div class="adm-hdr-right">
+        <button class="adm-btn-close" id="login-helper-close" title="Bezárás">✕</button>
+      </div>
+    </div>
+    <div style="padding:24px 28px">
+      <p class="adm-hint" style="margin-top:0">
+        Lépj be egyszer minden webshopba a saját böngésződben. Nyisd meg a belépő oldalt,
+        másold be a felhasználónevet és a jelszót, majd lépj be. A böngésződ megjegyzi a belépést,
+        és utána a „Tovább a honlapra” gomb egyből a bejelentkezett termékoldalra visz.
+      </p>
+      <div style="margin:14px 0">
+        <button class="btn-upload" id="login-helper-open-all">🌐 Összes belépő oldal megnyitása</button>
+      </div>
+      <div id="login-helper-list"></div>
     </div>
   </div>
 </div>
@@ -1154,6 +1187,7 @@ function showApp(){
   document.getElementById('app-page').classList.remove('hidden');
   document.getElementById('user-display').textContent = username || 'User';
   document.getElementById('btn-admin').classList.toggle('hidden', !isAdminUser);
+  document.getElementById('btn-webshop-login').classList.remove('hidden');
   document.getElementById('guide-admin-panel').classList.toggle('hidden', !isPrimaryAdminUser);
   adminToken = isAdminUser ? authToken : null;
   syncResponsiveLayout();
@@ -1170,6 +1204,7 @@ function doLogout(clearLoginFields = true) {
   sessionStorage.removeItem('gc_token'); sessionStorage.removeItem('gc_user'); sessionStorage.removeItem('gc_is_admin'); sessionStorage.removeItem('gc_is_primary_admin');
   authToken=null; username=null; isAdminUser=false; isPrimaryAdminUser=false; adminToken=null;
   document.getElementById('btn-admin').classList.add('hidden');
+  document.getElementById('btn-webshop-login').classList.add('hidden');
   document.getElementById('guide-admin-panel').classList.add('hidden');
   document.getElementById('app-page').classList.add('hidden');
   document.getElementById('login-page').classList.remove('hidden');
@@ -1721,7 +1756,10 @@ async function openSupplierSite(sid, supplierPartNo, btn) {
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    if (data.status === 'redirect' && data.url) {
+    if (data.url) {
+      // Open the product page in the buyer's own browser (a new tab). The
+      // buyer logs in to the webshop there once; afterwards the page shows the
+      // authenticated prices directly.
       const link = document.createElement('a');
       link.href = data.url;
       link.target = '_blank';
@@ -1730,11 +1768,15 @@ async function openSupplierSite(sid, supplierPartNo, btn) {
       document.body.appendChild(link);
       link.click();
       link.remove();
-    } else {
-      // Playwright browser is opening — give brief feedback
-      btn.innerHTML = '✓ Böngésző megnyitva';
-      setTimeout(() => { btn.disabled = false; btn.innerHTML = origText; }, 4000);
-      return;
+
+      // Suppliers without a product deep-link (e.g. kingb2b's SPA) open on the
+      // home/portal page — copy the part number so the buyer can paste & search.
+      if (data.is_product_link === false && supplierPartNo) {
+        try { await navigator.clipboard.writeText(supplierPartNo); } catch {}
+        btn.innerHTML = '📋 Cikkszám vágólapon — keress rá!';
+        setTimeout(() => { btn.disabled = false; btn.innerHTML = origText; }, 4000);
+        return;
+      }
     }
   } catch (err) {
     alert('Nem sikerült megnyitni: ' + err.message);
@@ -1856,6 +1898,95 @@ function openAdminOverlay() {
 }
 
 document.getElementById('btn-admin').addEventListener('click', openAdminOverlay);
+
+// ── Webshop login helper ──────────────────────────────────────────
+const SUPPLIER_LABELS = {
+  csavarda:'Csavarda', irontrade:'Irontrade', koelner:'Koelner', mekrs:'Mekrs',
+  fabory:'Fabory', reyher:'Reyher', hopefix:'Hopefix', fastbolt:'Fastbolt',
+  schaefer:'Schaefer', kingb2b:'King', wasishop:'Wasi'
+};
+let _loginHelperData = [];
+
+async function copyToClip(btn, value, origLabel) {
+  try {
+    await navigator.clipboard.writeText(value);
+    btn.classList.add('copied');
+    btn.textContent = '✓ Másolva';
+    setTimeout(() => { btn.classList.remove('copied'); btn.textContent = origLabel; }, 1500);
+  } catch {
+    alert('A másolás nem sikerült — másold ki kézzel: ' + value);
+  }
+}
+
+function renderLoginHelper() {
+  const listEl = document.getElementById('login-helper-list');
+  listEl.innerHTML = '';
+  _loginHelperData.forEach(s => {
+    const row = document.createElement('div');
+    row.className = 'lh-row';
+
+    const nameEl = document.createElement('div');
+    nameEl.className = 'lh-name';
+    nameEl.textContent = SUPPLIER_LABELS[s.id] || (s.id || '').toUpperCase();
+    row.appendChild(nameEl);
+
+    const spacer = document.createElement('div');
+    spacer.className = 'lh-spacer';
+    row.appendChild(spacer);
+
+    const openBtn = document.createElement('button');
+    openBtn.className = 'lh-btn primary';
+    openBtn.textContent = 'Login megnyitása';
+    openBtn.addEventListener('click', () => window.open(s.login_url, '_blank', 'noopener,noreferrer'));
+    row.appendChild(openBtn);
+
+    const addCopy = (label, value) => {
+      if (!value) return;
+      const b = document.createElement('button');
+      b.className = 'lh-btn';
+      const labelText = label + ' másol';
+      b.textContent = labelText;
+      b.addEventListener('click', () => copyToClip(b, value, labelText));
+      row.appendChild(b);
+    };
+    addCopy('Felh.', s.username);
+    addCopy('Jelszó', s.password);
+    (s.extra || []).forEach(e => addCopy(e.label, e.value));
+
+    listEl.appendChild(row);
+  });
+}
+
+async function openLoginHelper() {
+  if (!authToken) return;
+  const listEl = document.getElementById('login-helper-list');
+  listEl.innerHTML = '<p class="adm-hint">Betöltés…</p>';
+  document.getElementById('login-helper-overlay').classList.remove('hidden');
+  try {
+    const res = await fetch('/supplier/login-info', { headers: { 'Authorization': `Bearer ${authToken}` } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    _loginHelperData = data.suppliers || [];
+    renderLoginHelper();
+  } catch (err) {
+    listEl.innerHTML = `<p class="adm-hint">Nem sikerült betölteni a belépési adatokat: ${err.message}</p>`;
+  }
+}
+
+function closeLoginHelper() {
+  document.getElementById('login-helper-overlay').classList.add('hidden');
+}
+
+document.getElementById('btn-webshop-login').addEventListener('click', openLoginHelper);
+document.getElementById('login-helper-close').addEventListener('click', closeLoginHelper);
+document.getElementById('login-helper-overlay').addEventListener('click', e => {
+  if (e.target === document.getElementById('login-helper-overlay')) closeLoginHelper();
+});
+document.getElementById('login-helper-open-all').addEventListener('click', () => {
+  _loginHelperData.forEach((s, i) => {
+    if (s.login_url) setTimeout(() => window.open(s.login_url, '_blank', 'noopener,noreferrer'), i * 250);
+  });
+});
 
 // ── Admin sidebar tab switching ───────────────────────────────────
 function admSwitchTab(tab) {

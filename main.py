@@ -1027,17 +1027,40 @@ def search_parts(q: str = "", authorization: str | None = Header(default=None)):
     return {"parts": search_part_numbers(q, limit=20)}
 
 
-# Search URL templates used by /supplier/open for non-session suppliers
+# Product/search deep-link templates used by /supplier/open.
+# These open in the buyer's OWN browser, so they work both locally and when the
+# app is hosted (e.g. on Hetzner). When the buyer is logged in to the webshop in
+# that browser, the page shows the same authenticated prices the scraper found.
+# kingb2b is a pure SPA with no product deep-link, so it can only open the portal
+# home — the buyer searches the part number there manually.
 _SUPPLIER_SEARCH_URLS: dict[str, str] = {
     "csavarda":  "https://csavarda.hu/pest/kereso?search={part_no}",
     "irontrade": "https://irontrade.hu/kereso?name={part_no}",
+    "koelner":   "https://webshop.koelner.hu/termekek/?keres={part_no}",
     "fabory":    "https://www.fabory.com/hu/search?text={part_no}",
     "fastbolt":  "https://fbonline.fastbolt.com/matrix/{part_no}",
-    "mekrs":     "https://eshop.mekrs.cz/en",
+    "mekrs":     "https://eshop.mekrs.cz/en/products?nazev={part_no}&onStock=false",
+    "wasishop":  "https://www.wasishop.de/de/handel/Artikelliste.php?search={part_no}",
     "hopefix":   "https://www.hopefix.cz/en",
+    "schaefer":  "https://shop.schaefer-peters.com/b2b/en/search/?query={part_no}",
+    "kingb2b":   "https://kingb2b.it/PORTAL/",
+}
+
+
+# Login-page URLs per supplier, used by the "log in to webshops" helper.
+# Values mirror each scraper's LOGIN_URL constant (kingb2b logs in on its portal).
+_SUPPLIER_LOGIN_URLS: dict[str, str] = {
+    "csavarda":  "https://csavarda.hu/bejelentkezes",
+    "irontrade": "https://irontrade.hu/bejelentkezes",
+    "koelner":   "https://webshop.koelner.hu/belepes/",
+    "mekrs":     "https://eshop.mekrs.cz/en",
+    "fabory":    "https://www.fabory.com/hu/login",
+    "reyher":    "https://rio.reyher.de/hu/customer/account/login",
+    "hopefix":   "https://www.hopefix.cz/en/login",
+    "fastbolt":  "https://fbonline.fastbolt.com/login",
     "schaefer":  "https://shop.schaefer-peters.com/sp/en/login/",
     "kingb2b":   "https://kingb2b.it/PORTAL/",
-    "wasishop":  "https://www.wasishop.de",
+    "wasishop":  "https://www.wasishop.de/login_form.php",
 }
 
 
@@ -1056,9 +1079,17 @@ def _build_supplier_url(sid: str, supplier_part_no: str = "") -> str:
 @app.post("/supplier/open")
 async def supplier_open(req: Request, authorization: str | None = Header(default=None)):
     """
-    Open a supplier's website for the buyer.
-    Always return a URL so the frontend can open it in a new tab.
-    Any webshop login is handled manually by the user in their own browser.
+    Open a supplier's product page for the buyer.
+
+    Returns a deep-link URL that the frontend opens in the buyer's OWN browser
+    (a new tab). This works both locally and when the app is hosted, because the
+    server only hands over a URL — it does not try to open a window itself. When
+    the buyer is logged in to the webshop in that browser, the page shows the
+    same authenticated prices the scraper found.
+
+    `is_product_link` tells the frontend whether the URL points at the specific
+    part (true) or only the supplier home/portal (false, e.g. kingb2b's SPA),
+    so it can hint the buyer to search the part number manually.
     """
     _get_username(authorization)
     data = await req.json()
@@ -1069,7 +1100,42 @@ async def supplier_open(req: Request, authorization: str | None = Header(default
         raise HTTPException(status_code=400, detail=f"Ismeretlen beszállító: {sid}")
 
     url = _build_supplier_url(sid, supplier_part_no)
-    return {"status": "redirect", "url": url}
+    template = _SUPPLIER_SEARCH_URLS.get(sid, "")
+    is_product_link = bool(supplier_part_no) and "{part_no}" in template
+    return {
+        "status": "redirect",
+        "url": url,
+        "is_product_link": is_product_link,
+        "supplier_part_no": supplier_part_no,
+    }
+
+
+@app.get("/supplier/login-info")
+def supplier_login_info(authorization: str | None = Header(default=None)):
+    """
+    Return the login page + shared company credentials for every supplier, so the
+    buyer can log in to each webshop once in their own browser. After that the
+    browser remembers the session and the "Tovább a honlapra" deep-links land on
+    the authenticated product page.
+
+    Requires a logged-in app user (not admin). The credentials are the shared
+    company webshop accounts the buyers already use.
+    """
+    _get_username(authorization)
+    result = []
+    for sid, meta in SUPPLIER_META.items():
+        creds = SUPPLIER_CREDS.get(sid, {})
+        result.append({
+            "id":        sid,
+            "login_url": _SUPPLIER_LOGIN_URLS.get(sid, meta.get("url", "")),
+            "username":  creds.get("username", ""),
+            "password":  creds.get("password", ""),
+            "extra": [
+                {"label": ex["label"], "value": creds.get(ex["key"], "")}
+                for ex in meta.get("extra", [])
+            ],
+        })
+    return {"suppliers": result}
 
 
 async def _supplier_open_headed(sid: str, supplier_part_no: str) -> None:

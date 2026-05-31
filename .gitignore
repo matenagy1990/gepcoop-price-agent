@@ -21,3 +21,6 @@ assets/user.csv
 
 # Claude local permission config
 .claude/
+
+# Local work folders
+WORK/
