@@ -586,11 +586,18 @@ class UpdateAppUserRequest(BaseModel):
 class UpdateUserRoleRequest(BaseModel):
     is_admin: bool
 
+class SupplierInfoItemRequest(BaseModel):
+    label: str = ""
+    value: str = ""
+    sort_order: int | None = None
+    is_active: bool = True
+
 class UpdateSupplierRequest(BaseModel):
     supplier_id: str
     username: str
     password: str = ""
     extra: dict | None = None
+    info_items: list[SupplierInfoItemRequest] | None = None
 
 class UpdatePasswordRequest(BaseModel):
     supplier_id: str
@@ -714,6 +721,9 @@ async def query_lookup(
     part = internal_part_no.strip()
     suppliers = lookup_mapping_all(part)
     name = _lookup_part_name(part)
+    info_by_supplier = _supplier_info_items_for([s["supplier_id"] for s in suppliers])
+    for supplier in suppliers:
+        supplier["info_items"] = info_by_supplier.get(supplier["supplier_id"], [])
 
     found_ids = {s["supplier_id"] for s in suppliers}
     unavailable = [
@@ -742,6 +752,100 @@ def _get_supabase_main():
         log.warning(f"Supabase (main) init failed: {exc}")
         _sb_main = None
     return _sb_main
+
+
+def _supplier_info_items_for(supplier_ids: list[str]) -> dict[str, list[dict]]:
+    """Return active ordering info rows grouped by supplier id."""
+    clean_ids = sorted({(sid or "").strip().lower() for sid in supplier_ids if (sid or "").strip()})
+    if not clean_ids:
+        return {}
+    sb = _get_supabase_main()
+    if sb is None:
+        return {sid: [] for sid in clean_ids}
+    try:
+        res = (
+            sb.table("supplier_info_items")
+            .select("supplier_id,label,value,sort_order,is_active,updated_at")
+            .in_("supplier_id", clean_ids)
+            .eq("is_active", True)
+            .order("sort_order", desc=False)
+            .execute()
+        )
+    except Exception as exc:
+        log.warning(f"supplier_info_items lekérés sikertelen: {exc}")
+        return {sid: [] for sid in clean_ids}
+
+    grouped = {sid: [] for sid in clean_ids}
+    for row in res.data or []:
+        sid = (row.get("supplier_id") or "").strip().lower()
+        label = (row.get("label") or "").strip()
+        value = (row.get("value") or "").strip()
+        if not sid or not label or not value:
+            continue
+        grouped.setdefault(sid, []).append({
+            "label": label,
+            "value": value,
+            "sort_order": row.get("sort_order"),
+            "is_active": bool(row.get("is_active", True)),
+            "updated_at": row.get("updated_at"),
+        })
+    return {sid: items[:5] for sid, items in grouped.items()}
+
+
+def _sanitize_supplier_info_items(items: list[SupplierInfoItemRequest] | None) -> list[dict]:
+    if not items:
+        return []
+    cleaned = []
+    for idx, item in enumerate(items):
+        label = (item.label or "").strip()
+        value = (item.value or "").strip()
+        if not label or not value or not bool(item.is_active):
+            continue
+        cleaned.append({
+            "label": label[:80],
+            "value": value[:500],
+            "sort_order": item.sort_order if item.sort_order is not None else idx + 1,
+            "is_active": True,
+        })
+    if len(cleaned) > 5:
+        raise HTTPException(status_code=400, detail="Webshoponként legfeljebb 5 aktív információs sor menthető.")
+    for idx, item in enumerate(cleaned, start=1):
+        item["sort_order"] = idx
+    return cleaned
+
+
+def _replace_supplier_info_items(supplier_id: str, items: list[SupplierInfoItemRequest] | None, updated_by: str) -> list[dict]:
+    supplier_id = (supplier_id or "").strip().lower()
+    cleaned = _sanitize_supplier_info_items(items)
+    sb = _get_supabase_main()
+    if sb is None:
+        if cleaned:
+            raise HTTPException(status_code=503, detail="Supabase nincs konfigurálva, az információs sorok nem menthetők.")
+        return []
+    try:
+        sb.table("supplier_info_items").delete().eq("supplier_id", supplier_id).execute()
+        if cleaned:
+            now = datetime.now(timezone.utc).isoformat()
+            rows = [
+                {
+                    "supplier_id": supplier_id,
+                    "label": item["label"],
+                    "value": item["value"],
+                    "sort_order": item["sort_order"],
+                    "is_active": True,
+                    "updated_at": now,
+                    "updated_by": updated_by,
+                }
+                for item in cleaned
+            ]
+            sb.table("supplier_info_items").insert(rows).execute()
+    except Exception as exc:
+        log.warning(f"supplier_info_items mentés sikertelen: {exc}")
+        raise HTTPException(
+            status_code=503,
+            detail="A rendelési információk mentése sikertelen. Futtasd a deploy/supabase_supplier_info_items.sql migrációt.",
+        )
+    return _supplier_info_items_for([supplier_id]).get(supplier_id, [])
 
 
 def _save_run(run_id, part_no, started_at, status,
@@ -901,6 +1005,10 @@ async def query_stream(
             await asyncio.gather(*[fetch_one(s) for s in supplier_list])
 
             # ── Collect ok/error per supplier ──────────────────────
+            info_by_supplier = _supplier_info_items_for(_suppliers_queried)
+            for sid, result in results.items():
+                result["info_items"] = info_by_supplier.get(sid, [])
+
             for sid, r in results.items():
                 if "error" in r:
                     _suppliers_error.append(sid)
@@ -1766,12 +1874,14 @@ def admin_get_suppliers(
 ):
     _get_admin(authorization)
     result = []
+    info_by_supplier = _supplier_info_items_for(list(SUPPLIER_CREDS.keys()))
     for sid, creds in SUPPLIER_CREDS.items():
         meta = SUPPLIER_META.get(sid, {})
         entry = {
             "id":       sid,
             "url":      creds.get("url", ""),
             "username": creds.get("username", ""),
+            "info_items": info_by_supplier.get(sid, []),
             "extra":    [
                 {"key": ex["key"], "label": ex["label"], "value": creds.get(ex["key"], "")}
                 for ex in meta.get("extra", [])
@@ -1786,7 +1896,7 @@ def admin_update_supplier(
     req: UpdateSupplierRequest,
     authorization: str | None = Header(default=None),
 ):
-    _get_admin(authorization)
+    admin_username = _get_admin(authorization)
     if req.supplier_id not in SUPPLIER_CREDS:
         raise HTTPException(status_code=400, detail=f"Ismeretlen beszállító: {req.supplier_id}")
     if not req.username.strip():
@@ -1809,8 +1919,15 @@ def admin_update_supplier(
 
     _update_env_file(env_updates)
     _apply_suppliers_to_env(SUPPLIER_CREDS)
+    saved_info_items = None
+    if req.info_items is not None:
+        saved_info_items = _replace_supplier_info_items(req.supplier_id, req.info_items, admin_username)
     log.info(f"Beszállítói adatok frissítve: {req.supplier_id}, username={req.username.strip()}")
-    return {"supplier_id": req.supplier_id, "username": req.username.strip()}
+    return {
+        "supplier_id": req.supplier_id,
+        "username": req.username.strip(),
+        "info_items": saved_info_items if saved_info_items is not None else _supplier_info_items_for([req.supplier_id]).get(req.supplier_id, []),
+    }
 
 
 @app.get("/admin/users")

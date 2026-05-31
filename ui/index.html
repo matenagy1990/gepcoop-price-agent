@@ -254,6 +254,14 @@
 
   .sup-divider{height:1px;background:var(--border);margin:14px 0}
   .sup-ts{font-size:11px;color:var(--muted);text-align:right}
+  .supplier-info-box{border:1px solid rgba(0,159,230,.22);background:#f8fbff;border-radius:10px;padding:12px 14px;margin-top:14px}
+  .supplier-info-title{font-size:12px;font-weight:700;color:var(--navy);margin-bottom:8px;display:flex;align-items:center;gap:6px}
+  .supplier-info-line{font-size:12.5px;line-height:1.45;color:var(--text);margin-top:5px;word-break:break-word}
+  .supplier-info-line strong{color:var(--navy2);font-weight:700}
+  .supplier-info-more{margin-top:8px}
+  .supplier-info-more summary{cursor:pointer;font-size:12px;font-weight:700;color:var(--blue);list-style:none}
+  .supplier-info-more summary::-webkit-details-marker{display:none}
+  .supplier-info-more[open] summary{margin-bottom:8px}
   .sup-footer{padding:12px 22px 16px;border-top:1px solid var(--border)}
   .btn-goto-supplier{width:100%;padding:9px 16px;background:var(--bg);border:1.5px solid var(--border);border-radius:10px;font-family:'Oswald',sans-serif;font-size:13px;font-weight:600;letter-spacing:.8px;color:var(--navy2);cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:6px}
   .btn-goto-supplier:hover{background:var(--navy);color:#fff;border-color:var(--navy)}
@@ -364,6 +372,23 @@
   .adm-sup-url:hover{text-decoration:underline}
   .adm-sup-fields{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap}
   .adm-sup-fields .field{flex:1;min-width:200px;margin-bottom:0}
+  .adm-info-block{margin-top:16px;padding-top:14px;border-top:1px solid var(--border)}
+  .adm-info-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+  .adm-info-title{font-size:11px;font-weight:800;letter-spacing:.9px;text-transform:uppercase;color:var(--navy)}
+  .adm-info-add{padding:7px 12px;border:1.5px solid var(--border);border-radius:8px;background:#fff;color:var(--navy2);font-size:12px;font-weight:700;cursor:pointer}
+  .adm-info-add:hover:not(:disabled){border-color:var(--blue);color:var(--navy)}
+  .adm-info-add:disabled{opacity:.45;cursor:not-allowed}
+  .adm-info-list{display:flex;flex-direction:column;gap:8px}
+  .adm-info-row{display:grid;grid-template-columns:28px minmax(120px,180px) minmax(180px,1fr) 34px 34px 34px;gap:8px;align-items:center}
+  .adm-info-index{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--muted);text-align:right}
+  .adm-info-row input{width:100%;padding:9px 10px;border:1.5px solid var(--border);border-radius:8px;font-family:'Inter',sans-serif;font-size:13px;color:var(--text)}
+  .adm-info-row input:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px rgba(0,159,230,.08)}
+  .adm-info-icon{width:34px;height:34px;border:1.5px solid var(--border);border-radius:8px;background:#fff;color:var(--navy2);cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center}
+  .adm-info-icon:hover:not(:disabled){border-color:var(--blue);color:var(--navy)}
+  .adm-info-icon.danger{color:var(--red);border-color:rgba(254,26,0,.24)}
+  .adm-info-icon.danger:hover{border-color:var(--red);background:rgba(254,26,0,.05)}
+  .adm-info-icon:disabled{opacity:.35;cursor:not-allowed}
+  .adm-info-empty{font-size:12px;color:var(--muted);padding:8px 0}
 
   /* ── ADMIN SIDEBAR LAYOUT ── */
   .adm-layout{display:flex;min-height:520px}
@@ -512,6 +537,8 @@
     }
     .adm-card.adm-nav-open .adm-nav-backdrop{display:block}
     .adm-content{padding:18px 16px 24px;height:calc(100dvh - 64px);overflow-y:auto;-webkit-overflow-scrolling:touch}
+    .adm-info-row{grid-template-columns:24px 1fr 1fr 32px 32px 32px;gap:6px}
+    .adm-info-icon{width:32px;height:32px}
     .adm-section{margin-bottom:24px}
     .adm-upload-row,
     .adm-sup-fields,
@@ -1529,6 +1556,31 @@ function handleResult(data) {
 
 function handleError(data) { showError(data.message || 'Váratlan hiba történt.'); }
 
+function renderSupplierInfo(items) {
+  const clean = (items || [])
+    .filter(item => item && String(item.label || '').trim() && String(item.value || '').trim())
+    .slice(0, 5);
+  if (clean.length === 0) return '';
+
+  const visible = clean.slice(0, 2).map(item => `
+    <div class="supplier-info-line"><strong>${escHtml(item.label)}:</strong> ${escHtml(item.value)}</div>
+  `).join('');
+  const hidden = clean.slice(2).map(item => `
+    <div class="supplier-info-line"><strong>${escHtml(item.label)}:</strong> ${escHtml(item.value)}</div>
+  `).join('');
+
+  return `
+    <div class="supplier-info-box">
+      <div class="supplier-info-title">ⓘ Rendelési infó</div>
+      ${visible}
+      ${hidden ? `
+        <details class="supplier-info-more">
+          <summary>+${clean.length - 2} további információ</summary>
+          ${hidden}
+        </details>` : ''}
+    </div>`;
+}
+
 /* ══ RENDER RESULTS ════════════════════════════════════════════ */
 function renderResults(data) {
   const {internal_part_no, run_id='', suppliers={}, recommendation={}} = data;
@@ -1681,6 +1733,7 @@ function renderResults(data) {
         </div>
         ${r.queried_at ? `<div class="sup-ts">🕐 ${fmtTs(r.queried_at)}</div>` : ''}`;
     }
+    bodyHtml += renderSupplierInfo(r.info_items);
 
     const safePartNo = (r.supplier_part_no||'').replace(/'/g, "\\'");
     card.innerHTML = `
@@ -2373,6 +2426,83 @@ async function admLoadSuppliers() {
   } catch(e) {}
 }
 
+function admInfoRowsHtml(sid, items) {
+  const rows = (items || []).slice(0, 5);
+  if (rows.length === 0) {
+    return `<div class="adm-info-empty" id="sup-info-empty-${sid}">Nincs megadott rendelési információ.</div>`;
+  }
+  return rows.map((item, idx) => `
+    <div class="adm-info-row" data-supplier="${escAttr(sid)}">
+      <div class="adm-info-index">${idx + 1}.</div>
+      <input type="text" class="sup-info-label" value="${escAttr(item.label || '')}" maxlength="80" placeholder="Címke">
+      <input type="text" class="sup-info-value" value="${escAttr(item.value || '')}" maxlength="500" placeholder="Érték">
+      <button type="button" class="adm-info-icon" onclick="admMoveInfoRow('${sid}', this, -1)" title="Fel">↑</button>
+      <button type="button" class="adm-info-icon" onclick="admMoveInfoRow('${sid}', this, 1)" title="Le">↓</button>
+      <button type="button" class="adm-info-icon danger" onclick="admRemoveInfoRow('${sid}', this)" title="Törlés">×</button>
+    </div>`).join('');
+}
+
+function admRefreshInfoControls(sid) {
+  const list = document.getElementById(`sup-info-list-${sid}`);
+  const rows = Array.from(list.querySelectorAll('.adm-info-row'));
+  const addBtn = document.getElementById(`sup-info-add-${sid}`);
+  if (addBtn) addBtn.disabled = rows.length >= 5;
+  rows.forEach((row, idx) => {
+    row.querySelector('.adm-info-index').textContent = `${idx + 1}.`;
+    const buttons = row.querySelectorAll('.adm-info-icon');
+    buttons[0].disabled = idx === 0;
+    buttons[1].disabled = idx === rows.length - 1;
+  });
+  let empty = document.getElementById(`sup-info-empty-${sid}`);
+  if (rows.length === 0 && !empty) {
+    list.insertAdjacentHTML('beforeend', `<div class="adm-info-empty" id="sup-info-empty-${sid}">Nincs megadott rendelési információ.</div>`);
+  } else if (rows.length > 0 && empty) {
+    empty.remove();
+  }
+}
+
+function admAddInfoRow(sid) {
+  const list = document.getElementById(`sup-info-list-${sid}`);
+  if (!list || list.querySelectorAll('.adm-info-row').length >= 5) return;
+  const empty = document.getElementById(`sup-info-empty-${sid}`);
+  if (empty) empty.remove();
+  list.insertAdjacentHTML('beforeend', admInfoRowsHtml(sid, [{label:'', value:''}]));
+  admRefreshInfoControls(sid);
+  const last = list.querySelector('.adm-info-row:last-child .sup-info-label');
+  if (last) last.focus();
+}
+
+function admRemoveInfoRow(sid, btn) {
+  const row = btn.closest('.adm-info-row');
+  if (row) row.remove();
+  admRefreshInfoControls(sid);
+}
+
+function admMoveInfoRow(sid, btn, direction) {
+  const row = btn.closest('.adm-info-row');
+  if (!row) return;
+  if (direction < 0 && row.previousElementSibling && row.previousElementSibling.classList.contains('adm-info-row')) {
+    row.parentNode.insertBefore(row, row.previousElementSibling);
+  } else if (direction > 0 && row.nextElementSibling && row.nextElementSibling.classList.contains('adm-info-row')) {
+    row.parentNode.insertBefore(row.nextElementSibling, row);
+  }
+  admRefreshInfoControls(sid);
+}
+
+function admCollectInfoItems(sid) {
+  const list = document.getElementById(`sup-info-list-${sid}`);
+  if (!list) return [];
+  const items = [];
+  list.querySelectorAll('.adm-info-row').forEach((row, idx) => {
+    const label = row.querySelector('.sup-info-label').value.trim();
+    const value = row.querySelector('.sup-info-value').value.trim();
+    if (label && value) {
+      items.push({ label, value, sort_order: idx + 1, is_active: true });
+    }
+  });
+  return items.slice(0, 5);
+}
+
 function admRenderSuppliers(suppliers) {
   const wrap = document.getElementById('adm-suppliers-wrap');
   wrap.innerHTML = suppliers.map(s => `
@@ -2410,8 +2540,18 @@ function admRenderSuppliers(suppliers) {
                   onclick="admSaveSupplier('${s.id}')">Mentés</button>
         </div>
       </div>
+      <div class="adm-info-block">
+        <div class="adm-info-head">
+          <div class="adm-info-title">Rendelési információk</div>
+          <button type="button" class="adm-info-add" id="sup-info-add-${s.id}" onclick="admAddInfoRow('${s.id}')">+ Sor</button>
+        </div>
+        <div class="adm-info-list" id="sup-info-list-${s.id}">
+          ${admInfoRowsHtml(s.id, s.info_items || [])}
+        </div>
+      </div>
       <div id="sup-msg-${s.id}" class="hidden"></div>
     </div>`).join('');
+  suppliers.forEach(s => admRefreshInfoControls(s.id));
 }
 
 function admToggleSupPw(sid) {
@@ -2434,6 +2574,7 @@ async function admSaveSupplier(sid) {
     const key = el.id.replace(`sup-extra-${sid}-`, '');
     extra[key] = el.value.trim();
   });
+  const info_items = admCollectInfoItems(sid);
 
   msgEl.className = 'hidden';
   if (!username) {
@@ -2447,7 +2588,7 @@ async function admSaveSupplier(sid) {
     const res = await fetch('/admin/update-supplier', {
       method: 'POST',
       headers: admHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ supplier_id: sid, username, password, extra }),
+      body: JSON.stringify({ supplier_id: sid, username, password, extra, info_items }),
     });
     const d = await res.json();
     if (!res.ok) throw new Error(d.detail || 'Mentés sikertelen.');
@@ -2456,6 +2597,11 @@ async function admSaveSupplier(sid) {
       ? `✓ ${sid} belépési adatok frissítve, az új jelszó elmentve.`
       : `✓ ${sid} adatai frissítve, a meglévő jelszó változatlan maradt.`;
     document.getElementById(`sup-pass-${sid}`).value = '';
+    const infoList = document.getElementById(`sup-info-list-${sid}`);
+    if (infoList && Array.isArray(d.info_items)) {
+      infoList.innerHTML = admInfoRowsHtml(sid, d.info_items);
+      admRefreshInfoControls(sid);
+    }
     msgEl.classList.remove('hidden');
   } catch(err) {
     msgEl.className = 'adm-msg err';
