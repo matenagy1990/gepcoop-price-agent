@@ -1147,6 +1147,7 @@ _SUPPLIER_SEARCH_URLS: dict[str, str] = {
     "koelner":   "https://webshop.koelner.hu/termekek/?keres={part_no}",
     "fabory":    "https://www.fabory.com/hu/search?text={part_no}",
     "fastbolt":  "https://fbonline.fastbolt.com/matrix/{part_no}",
+    "reyher":    "https://rio.reyher.de/hu/catalogsearch/advanced/result/?sku={part_no}&q=",
     "mekrs":     "https://eshop.mekrs.cz/en/products?nazev={part_no}&onStock=false",
     "wasishop":  "https://www.wasishop.de/de/handel/Artikelliste.php?search={part_no}",
     "hopefix":   "https://www.hopefix.cz/en",
