@@ -33,6 +33,7 @@ from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
+from browser.messages import MSG_NOT_FOUND, MSG_NOT_PRICED, has_numeric_price
 
 load_dotenv()
 
@@ -191,10 +192,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     timeout=8000,
                 )
             except PlaywrightTimeout:
-                raise RuntimeError(
-                    f"Part {supplier_part_no} was not found on hopefix.cz "
-                    "(no autocomplete suggestion appeared)."
-                )
+                raise RuntimeError(MSG_NOT_FOUND)
 
             suggestion = page.locator("#ui-id-1 li").filter(has_text=supplier_part_no).first
             await suggestion.click(timeout=5000)
@@ -205,21 +203,19 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             try:
                 await page.locator("tr").filter(has_text=supplier_part_no).first.wait_for(timeout=8000)
             except PlaywrightTimeout:
-                raise RuntimeError(f"Part {supplier_part_no} row not found on hopefix.cz.")
+                raise RuntimeError(MSG_NOT_FOUND)
             log.info(f"Product page: {page.url}")
 
             await emit("Reading price and stock from hopefix.cz…")
 
             row = page.locator("tr").filter(has_text=supplier_part_no).first
             if await row.count() == 0:
-                raise RuntimeError(f"Part {supplier_part_no} row not found on hopefix.cz.")
+                raise RuntimeError(MSG_NOT_FOUND)
 
             toggle = row.locator(".toggle-expander")
             if await toggle.count() == 0:
-                raise RuntimeError(
-                    f"Part {supplier_part_no} has no pricing available on hopefix.cz "
-                    "(product may be out of stock or not offered to this account)."
-                )
+                # The product row is present, but no pricing panel is offered.
+                raise RuntimeError(MSG_NOT_PRICED)
 
             await toggle.click()
 
@@ -265,9 +261,8 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                         break
 
             if expander is None:
-                raise RuntimeError(
-                    f"Part {supplier_part_no} pricing panel did not open on hopefix.cz."
-                )
+                # The product row is present, but the pricing panel did not open.
+                raise RuntimeError(MSG_NOT_PRICED)
 
             box_option = expander.locator("select.package_type option").first
             data_price = await box_option.get_attribute("data-price")
@@ -275,7 +270,8 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             log.info(f"Expander data-price={data_price!r}, data-qty={data_qty!r}")
 
             if not data_price or not data_qty or float(data_price) == 0:
-                raise RuntimeError(f"Part {supplier_part_no} has no pricing available on hopefix.cz.")
+                # The pricing panel opened, but no usable price is set.
+                raise RuntimeError(MSG_NOT_PRICED)
 
             price_raw      = float(data_price)
             price_unit_qty = int(round(float(data_qty) * 100))

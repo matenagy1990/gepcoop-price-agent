@@ -30,6 +30,7 @@ from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
+from browser.messages import MSG_NOT_FOUND, MSG_NOT_PRICED, has_numeric_price
 
 load_dotenv()
 
@@ -249,10 +250,8 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             except PlaywrightTimeout:
                 body_text = await page.locator("body").inner_text()
                 if _has_no_results(body_text):
-                    raise RuntimeError(f"Part {supplier_part_no} was not found on schaefer-peters.")
-                raise RuntimeError(
-                    f"Search for {supplier_part_no} did not resolve to a product or results page on schaefer-peters."
-                )
+                    raise RuntimeError(MSG_NOT_FOUND)
+                raise RuntimeError(MSG_NOT_FOUND)
             log.info(f"After search: {page.url}")
 
             # If still on a search results page, open only an exact matching result
@@ -260,7 +259,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 body_text = await page.locator("body").inner_text()
                 if _has_no_results(body_text):
                     raise RuntimeError(
-                        f"Part {supplier_part_no} was not found on schaefer-peters."
+                        MSG_NOT_FOUND
                     )
                 try:
                     await page.wait_for_function(
@@ -270,20 +269,16 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     body_text = await page.locator("body").inner_text()
                     if _has_no_results(body_text):
                         raise RuntimeError(
-                            f"Part {supplier_part_no} was not found on schaefer-peters."
+                            MSG_NOT_FOUND
                         )
                     opened = await _open_exact_result_from_search(page, supplier_part_no)
                     if not opened:
-                        raise RuntimeError(
-                            f"Search results loaded for {supplier_part_no}, but no exact result row could be identified on schaefer-peters."
-                        )
+                        raise RuntimeError(MSG_NOT_FOUND)
                     await page.wait_for_load_state("domcontentloaded")
                     await page.wait_for_selector("span[itemprop='price']", timeout=8000)
                     log.info(f"Product page: {page.url}")
                 except PlaywrightTimeout:
-                    raise RuntimeError(
-                        f"Search results for {supplier_part_no} did not finish loading on schaefer-peters."
-                    )
+                    raise RuntimeError(MSG_NOT_FOUND)
 
             await emit("Reading price and stock from schaefer-peters…")
             log.info(f"Extracting from: {page.url}")
@@ -291,10 +286,9 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             # --- Price via machine-readable itemprop ---
             price_el = page.locator("span[itemprop='price']")
             price_content = await price_el.get_attribute("content", timeout=8000)
-            if not price_content:
-                raise RuntimeError(
-                    "Could not read price from schaefer-peters. Page layout may have changed."
-                )
+            if not price_content or not has_numeric_price(price_content):
+                # The product page is open, but no usable price is shown.
+                raise RuntimeError(MSG_NOT_PRICED)
             price_raw = float(price_content)
             log.info(f"Price (itemprop): {price_raw} EUR")
 

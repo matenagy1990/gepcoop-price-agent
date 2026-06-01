@@ -35,6 +35,7 @@ from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
+from browser.messages import MSG_NOT_FOUND, MSG_NOT_PRICED, has_numeric_price
 
 load_dotenv()
 
@@ -163,18 +164,19 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
             # If redirected away, the part number does not exist on fastbolt
             if f"/matrix/{supplier_part_no}" not in page.url:
-                raise RuntimeError(f"Part {supplier_part_no} was not found on fastbolt.")
+                raise RuntimeError(MSG_NOT_FOUND)
 
             # Click the specific cell in the matrix table to add it to the enquiry panel
             matrix_cell, match_count = await _find_matrix_cell(page, supplier_part_no)
             if not matrix_cell:
-                raise RuntimeError(f"Part {supplier_part_no} not found in matrix table on fastbolt.")
+                raise RuntimeError(MSG_NOT_FOUND)
             log.info("Fastbolt matrix candidates for %s: %s", supplier_part_no, match_count)
             try:
                 await matrix_cell.click()
                 log.info(f"Clicked visible matrix cell for {supplier_part_no}")
             except PlaywrightTimeout:
-                raise RuntimeError(f"Part {supplier_part_no} not found in matrix table on fastbolt.")
+                # The matrix cell exists but could not be opened to load a price.
+                raise RuntimeError(MSG_NOT_PRICED)
 
             # Wait for the enquiry panel to register the selected part.
             qty_selector = f"input#enquiry-item-{supplier_part_no}"
@@ -198,13 +200,13 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     })"""
                 )
                 log.warning("Fastbolt enquiry panel snapshot: %s", panel_snapshot)
-                raise RuntimeError(f"Enquiry panel did not load for {supplier_part_no} on fastbolt.")
+                raise RuntimeError(MSG_NOT_PRICED)
 
             await emit("Reading price and stock from fastbolt…")
 
             item_locator = await _find_enquiry_item(page, supplier_part_no)
             if not item_locator:
-                raise RuntimeError(f"Fastbolt enquiry item for {supplier_part_no} could not be identified.")
+                raise RuntimeError(MSG_NOT_PRICED)
 
             # Type "1" into the quantity field and click the checkmark to trigger price load
             qty_input = item_locator.locator(qty_selector)
@@ -245,13 +247,14 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             if not price_data or "EUR" not in price_data:
                 body = await page.locator("body").inner_text()
                 log.error(f"Price not found. Body snippet: {body[:500]}")
-                raise RuntimeError("Could not read price from fastbolt. Page layout may have changed.")
+                # Product is in the enquiry panel, but no usable price is shown.
+                raise RuntimeError(MSG_NOT_PRICED)
 
             # Parse: "3.10 EUR\n/ 100\n= 7.75 EUR"
             # Price value
             price_match = re.search(r"([\d.,]+)\s*EUR", price_data)
             if not price_match:
-                raise RuntimeError(f"Could not parse price from: {price_data!r}")
+                raise RuntimeError(MSG_NOT_PRICED)
             price_str = price_match.group(1)
             # German/English format: dots as thousands sep, comma as decimal — or just dot as decimal
             if "," in price_str and "." in price_str:

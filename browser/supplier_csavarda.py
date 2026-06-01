@@ -31,6 +31,7 @@ from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
+from browser.messages import MSG_NOT_FOUND, MSG_NOT_PRICED, has_numeric_price
 
 load_dotenv()
 
@@ -236,19 +237,17 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
             zero_results = await page.locator("text=0 találat").count()
             if zero_results > 0:
-                raise RuntimeError(f"Part {supplier_part_no} was not found on csavarda.hu.")
+                raise RuntimeError(MSG_NOT_FOUND)
 
             product_links = await page.locator("a[href*='/pest/termek/']").count()
             log.info(f"Product links found: {product_links}")
             if product_links == 0:
-                raise RuntimeError(f"No product links found for part {supplier_part_no} on csavarda.hu.")
+                raise RuntimeError(MSG_NOT_FOUND)
 
             # ── Step 4: open exact product drawer ────────────────────────────
             exact_link = await _find_exact_product_link(page, supplier_part_no)
             if not exact_link:
-                raise RuntimeError(
-                    f"Part {supplier_part_no} was listed on csavarda.hu, but no exact product link could be identified."
-                )
+                raise RuntimeError(MSG_NOT_FOUND)
 
             link_text = (await exact_link.inner_text()).strip()
             log.info("Clicking exact Csavarda result for %s (link text=%r)", supplier_part_no, link_text)
@@ -258,7 +257,8 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 await page.wait_for_selector("text=Nettó egységár:", timeout=15000)
                 log.info("Product drawer opened — 'Nettó egységár:' label found")
             except PlaywrightTimeout:
-                raise RuntimeError("csavarda.hu page layout may have changed — price selector not found.")
+                # Product drawer opened but no price line is shown.
+                raise RuntimeError(MSG_NOT_PRICED)
 
             # ── Step 5: extract price and stock ──────────────────────────────
             await emit("Reading price and stock from csavarda.hu…")
@@ -268,8 +268,9 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
             log.info(f"Raw extracted values — price: '{price_str}', budapest: '{buda_str}', vecsés: '{vecs_str}'")
 
-            if not price_str:
-                raise RuntimeError("Could not read price from csavarda.hu. Page layout may have changed.")
+            if not price_str or not has_numeric_price(price_str):
+                # Product page is open, but the price is missing or shown as text.
+                raise RuntimeError(MSG_NOT_PRICED)
 
             from agent.tools import parse_price_string, parse_stock_string
             price_raw, price_unit_qty, unit = parse_price_string(price_str)

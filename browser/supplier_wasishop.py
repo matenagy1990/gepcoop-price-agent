@@ -38,6 +38,7 @@ from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
+from browser.messages import MSG_NOT_FOUND, MSG_NOT_PRICED, has_numeric_price
 
 load_dotenv()
 
@@ -171,7 +172,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
             body_text = await page.locator("body").inner_text()
             if "keine Artikel" in body_text or "momentan keine Artikel" in body_text:
-                raise RuntimeError(f"Part {supplier_part_no} was not found on wasishop.de.")
+                raise RuntimeError(MSG_NOT_FOUND)
 
             await emit("Reading price and stock from wasishop.de…")
 
@@ -228,9 +229,8 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 price_raw = _parse_eur(singles[0])
                 log.info(f"Single price: {singles[0]!r} → {price_raw}")
             else:
-                raise RuntimeError(
-                    "Could not read price from wasishop.de. Page layout may have changed."
-                )
+                # The product is listed, but neither a tiered nor a single price is shown.
+                raise RuntimeError(MSG_NOT_PRICED)
 
             price_unit_qty = 100  # always per 100 pcs
 

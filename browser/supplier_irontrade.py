@@ -29,6 +29,7 @@ from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
+from browser.messages import MSG_NOT_FOUND, MSG_NOT_PRICED, has_numeric_price
 
 load_dotenv()
 
@@ -222,20 +223,18 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
             if "Találat: 0" in body_text:
                 log.warning(f"Zero results for part {supplier_part_no}")
-                raise RuntimeError(f"Part {supplier_part_no} was not found on irontrade.hu.")
+                raise RuntimeError(MSG_NOT_FOUND)
 
             rows = await page.locator("table tbody tr").count()
             log.info(f"Search result rows found: {rows}")
 
             if rows == 0:
-                raise RuntimeError(f"Part {supplier_part_no} was not found on irontrade.hu.")
+                raise RuntimeError(MSG_NOT_FOUND)
 
             # ── Step 5: navigate to exact product page ───────────────────────
             exact_row = await _find_exact_result_row(page, supplier_part_no)
             if not exact_row:
-                raise RuntimeError(
-                    f"Part {supplier_part_no} was listed on irontrade.hu, but no exact result row could be identified."
-                )
+                raise RuntimeError(MSG_NOT_FOUND)
 
             product_link = exact_row.locator(f"a[data-sku='{supplier_part_no}']").first
             if not await product_link.count():
@@ -254,9 +253,8 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 log.info("Product page loaded — 'Nettó ár:' label found")
             except PlaywrightTimeout:
                 log.error(f"Price label not found on product page: {page.url}")
-                raise RuntimeError(
-                    "irontrade.hu page layout may have changed — price selector not found."
-                )
+                # Product page opened but no price line is shown.
+                raise RuntimeError(MSG_NOT_PRICED)
 
             # ── Step 6: extract price and stock ──────────────────────────────
             await emit("Reading price and stock from irontrade.hu…")
@@ -265,10 +263,9 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
             log.info(f"Raw extracted values — price: '{price_str}', stock: '{stock_str}'")
 
-            if not price_str:
-                raise RuntimeError(
-                    "Could not read price from irontrade.hu. Page layout may have changed."
-                )
+            if not price_str or not has_numeric_price(price_str):
+                # Product page is open, but the price is missing or shown as text.
+                raise RuntimeError(MSG_NOT_PRICED)
 
             from agent.tools import parse_price_string, parse_stock_string
             price_raw, price_unit_qty, unit = parse_price_string(price_str)

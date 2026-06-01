@@ -25,6 +25,7 @@ from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from browser.session_utils import invalidate_session, load_session, save_session
+from browser.messages import MSG_NOT_FOUND, MSG_NOT_PRICED, has_numeric_price
 
 load_dotenv()
 
@@ -204,7 +205,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
             if "Keresés a termékek között (0)" in body_text:
                 log.warning(f"Zero results for part {supplier_part_no}")
-                raise RuntimeError(f"Part {supplier_part_no} was not found on webshop.koelner.hu.")
+                raise RuntimeError(MSG_NOT_FOUND)
 
             # ── Step 4: collect product-group links ───────────────────────────
             item_links = await page.locator(".item a.products__link").all()
@@ -218,7 +219,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
             log.info(f"Product groups found (unique): {len(item_hrefs)}")
             if not item_hrefs:
-                raise RuntimeError(f"Part {supplier_part_no} was not found on webshop.koelner.hu.")
+                raise RuntimeError(MSG_NOT_FOUND)
 
             # ── Step 5: find the item-selected row ────────────────────────────
             await emit("Reading price and stock from webshop.koelner.hu…")
@@ -256,20 +257,16 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 log.info("  No item-selected row on this group page")
 
             if target_row is None:
-                raise RuntimeError(
-                    f"Article '{supplier_part_no}' was not found in any koelner.hu product group."
-                )
+                raise RuntimeError(MSG_NOT_FOUND)
 
             # ── Step 6: read price ────────────────────────────────────────────
             price_text = await target_row.locator("td.NETTO").inner_text(timeout=5000)
             price_text = price_text.strip()
             log.info(f"Nettó egységár raw: '{price_text}'")
 
-            if not price_text:
-                raise RuntimeError(
-                    "Could not read Nettó egységár from koelner.hu variant row. "
-                    "Page layout may have changed."
-                )
+            if not price_text or not has_numeric_price(price_text):
+                # The variant row was found, but no usable net unit price is shown.
+                raise RuntimeError(MSG_NOT_PRICED)
 
             price_raw      = _parse_hu_price(price_text)
             price_unit_qty = 1      # Nettó egységár is already per-piece

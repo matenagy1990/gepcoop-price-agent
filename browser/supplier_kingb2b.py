@@ -41,6 +41,7 @@ from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
+from browser.messages import MSG_NOT_FOUND, MSG_NOT_PRICED, has_numeric_price
 
 load_dotenv()
 
@@ -252,7 +253,7 @@ async def _login_and_locate_row(page, supplier_part_no: str, emit: Callable):
     # Check for "not found"
     body_text = await page.locator("body").inner_text()
     if "nessun risultato" in body_text.lower() or "nessun articolo" in body_text.lower():
-        raise RuntimeError(f"Part {supplier_part_no} was not found on kingb2b.it.")
+        raise RuntimeError(MSG_NOT_FOUND)
 
     article_row = page.locator(f'tr.articoli-row[id="{supplier_part_no}"]')
 
@@ -261,7 +262,7 @@ async def _login_and_locate_row(page, supplier_part_no: str, emit: Callable):
         family_count = await family_rows.count()
         if family_count == 0:
             await _log_results_state(page, supplier_part_no, prefix="KingB2B no-family-no-row")
-            raise RuntimeError(f"Part {supplier_part_no} was not found on kingb2b.it.")
+            raise RuntimeError(MSG_NOT_FOUND)
 
         log.info("Opening KingB2B family result")
         await family_rows.first.click()
@@ -278,9 +279,7 @@ async def _login_and_locate_row(page, supplier_part_no: str, emit: Callable):
             )
         except PlaywrightTimeout:
             await _log_results_state(page, supplier_part_no, prefix="KingB2B family-expand-timeout")
-            raise RuntimeError(
-                f"Part {supplier_part_no} article row did not appear after opening the matching family result on kingb2b.it."
-            )
+            raise RuntimeError(MSG_NOT_FOUND)
 
     # Resolve row locator
     article_row = page.locator(f'tr.articoli-row[id="{supplier_part_no}"]')
@@ -294,9 +293,7 @@ async def _login_and_locate_row(page, supplier_part_no: str, emit: Callable):
         return exact_text_row
 
     await _log_results_state(page, supplier_part_no, prefix="KingB2B no-row-found")
-    raise RuntimeError(
-        f"Part {supplier_part_no} did not populate as a visible article row on kingb2b.it."
-    )
+    raise RuntimeError(MSG_NOT_FOUND)
 
 
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
@@ -360,10 +357,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 )
             except PlaywrightTimeout:
                 await _log_results_state(page, supplier_part_no, prefix="KingB2B price-timeout")
-                raise RuntimeError(
-                    "Could not read price from kingb2b.it — PREZZO cell did not populate. "
-                    "Check login status."
-                )
+                raise RuntimeError(MSG_NOT_PRICED)
 
             # ── Extract price ──────────────────────────────────────────
             if await row_locator.locator('td[data-cell="PREZZO"]').count():
@@ -373,10 +367,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 row_text = (await row_locator.inner_text()).strip()
                 m = re.search(r'(\d+[,.]\d+)\s*(%|N)\b', row_text)
                 if not m:
-                    raise RuntimeError(
-                        "Could not parse PREZZO from kingb2b.it article row. "
-                        "The row rendered, but the price format was unexpected."
-                    )
+                    raise RuntimeError(MSG_NOT_PRICED)
                 prezzo_text = f"{m.group(1)} {m.group(2)}"
             log.info(f"PREZZO cell: {prezzo_text!r}")
 

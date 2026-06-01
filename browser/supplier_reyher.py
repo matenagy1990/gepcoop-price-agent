@@ -36,6 +36,7 @@ from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
+from browser.messages import MSG_NOT_FOUND, MSG_NOT_PRICED, has_numeric_price
 
 load_dotenv()
 
@@ -423,12 +424,12 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             # ── Step 3: validate result count (structured first) ───────────────
             result_rows = await page.locator("table.table tbody tr").count()
             if result_rows == 0:
-                raise RuntimeError(f"Part {supplier_part_no} was not found on rio.reyher.de.")
+                raise RuntimeError(MSG_NOT_FOUND)
 
             # Text fallback for "no results" pages that still render the table skeleton
             body_text = await page.locator("body").inner_text()
             if "Nem található" in body_text or "0 árucikket eredményezett" in body_text:
-                raise RuntimeError(f"Part {supplier_part_no} was not found on rio.reyher.de.")
+                raise RuntimeError(MSG_NOT_FOUND)
 
             log.info(f"{result_rows} result row(s) found for {supplier_part_no}")
 
@@ -475,14 +476,12 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 log.info(f"Price cell raw text: {price_cell_text!r}")
 
                 if not price_cell_text or "EUR" not in price_cell_text:
-                    raise RuntimeError(
-                        f"Price not found for {supplier_part_no} on rio.reyher.de. "
-                        "Neither the product modal Own price nor the search table price was available."
-                    )
+                    # The product row is present, but no usable price is shown.
+                    raise RuntimeError(MSG_NOT_PRICED)
 
                 price_match = re.search(r"([\d,.]+)\s*\xa0?EUR", price_cell_text)
                 if not price_match:
-                    raise RuntimeError(f"Could not parse EUR price from: {price_cell_text!r}")
+                    raise RuntimeError(MSG_NOT_PRICED)
                 price_raw = _parse_price(price_match.group(1))
 
                 price_unit_qty = await _extract_row_unit_qty(page, price_cell_text)

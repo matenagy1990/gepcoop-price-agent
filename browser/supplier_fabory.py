@@ -30,6 +30,7 @@ from urllib.parse import quote
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
+from browser.messages import MSG_NOT_FOUND, MSG_NOT_PRICED, has_numeric_price
 
 load_dotenv()
 
@@ -229,7 +230,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
             body_text = await page.locator("body").inner_text()
             if "0 találat" in body_text or "no results" in body_text.lower():
-                raise RuntimeError(f"Part {supplier_part_no} was not found on fabory.com.")
+                raise RuntimeError(MSG_NOT_FOUND)
 
             if "/search" in page.url:
                 log.info("On search results page, clicking first product link")
@@ -242,7 +243,8 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     )
                     log.info(f"Product page: {page.url}")
                 except PlaywrightTimeout:
-                    raise RuntimeError(f"No product links found for {supplier_part_no} on fabory.com.")
+                    # Search returned results, but the product page/price did not load.
+                    raise RuntimeError(MSG_NOT_PRICED)
 
             try:
                 await page.wait_for_function(
@@ -277,7 +279,8 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                         body_text,
                     )
                     if not price_match:
-                        raise RuntimeError("Could not read price from fabory.com. Page layout may have changed.")
+                        # Product page is open, but no usable price is shown.
+                        raise RuntimeError(MSG_NOT_PRICED)
                     price_raw = float(re.sub(r"[\s\u00a0]", "", price_match.group(1)))
                     unit_qty = int(price_match.group(2))
                     log.info("Price extracted via body-text fallback")

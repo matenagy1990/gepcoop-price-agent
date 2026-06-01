@@ -39,6 +39,7 @@ from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
+from browser.messages import MSG_NOT_FOUND, MSG_NOT_PRICED, has_numeric_price
 
 load_dotenv()
 
@@ -500,10 +501,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     timeout=8000,
                 )
             except PlaywrightTimeout:
-                raise RuntimeError(
-                    f"Part {supplier_part_no} was not found on eshop.mekrs.cz "
-                    "(autocomplete returned no results)."
-                )
+                raise RuntimeError(MSG_NOT_FOUND)
 
             current_value = await search_inp.input_value()
             if current_value != supplier_part_no:
@@ -531,7 +529,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                     timeout=10000,
                 )
             except PlaywrightTimeout:
-                raise RuntimeError(f"Part {supplier_part_no} was not found on eshop.mekrs.cz.")
+                raise RuntimeError(MSG_NOT_FOUND)
             try:
                 await page.wait_for_function(
                     "() => document.body.innerText.includes('without VAT')",
@@ -572,10 +570,11 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             await emit("Reading price and stock from eshop.mekrs.cz…")
             results_data = await _extract_results_page_data(page, current_currency)
             if not results_data:
-                raise RuntimeError(
-                    f"Part {supplier_part_no} was not found on eshop.mekrs.cz "
-                    "(authenticated results page did not expose a priced result block)."
-                )
+                # A product card present without a usable price = found but not priced;
+                # no card at all = the product is not in the webshop.
+                if card_count > 0:
+                    raise RuntimeError(MSG_NOT_PRICED)
+                raise RuntimeError(MSG_NOT_FOUND)
             price_str = results_data["price_str"]
             unit_str = results_data["unit_str"]
             price_elem_html = results_data["price_html"]
@@ -591,11 +590,9 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             log.info(f"Price element HTML: {price_elem_html}")
             log.info(f"Raw — price: '{price_str}', unit: '{unit_str}', stock: '{stock_str}'")
 
-            if not price_str:
+            if not price_str or not has_numeric_price(price_str):
                 log.error(f"Price not found in target card — card HTML snippet:\n{card_snippet}")
-                raise RuntimeError(
-                    f"Part {supplier_part_no} has no visible price on eshop.mekrs.cz."
-                )
+                raise RuntimeError(MSG_NOT_PRICED)
 
             price_raw = _parse_price_value(price_str)
 

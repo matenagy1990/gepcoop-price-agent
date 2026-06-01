@@ -288,6 +288,11 @@ async def fetch_supplier_price(supplier_id: str, supplier_part_no: str, on_progr
         try:
             raw = await fetch_price(supplier_part_no, on_progress=on_progress)
         except RuntimeError as exc:
+            # "Not found" / "not priced" are definitive buyer-facing outcomes —
+            # surface them as-is instead of falling back to the manual-open card.
+            from browser.messages import MSG_NOT_FOUND, MSG_NOT_PRICED
+            if str(exc) in (MSG_NOT_FOUND, MSG_NOT_PRICED):
+                raise
             log.warning(f"Reyher automation failed, falling back to manual open: {exc}")
             if on_progress:
                 await on_progress({
