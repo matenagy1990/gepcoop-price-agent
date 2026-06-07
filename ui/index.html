@@ -1143,7 +1143,7 @@ async function loadHomepageInfo() {
     const text = (data.text || '').trim();
     if (!text) { card.classList.add('hidden'); return; }
     document.getElementById('info-body').textContent = text;
-    document.getElementById('info-meta').textContent = data.updated_by ? ('Frissítette: ' + data.updated_by) : '';
+    document.getElementById('info-meta').textContent = '';
     card.classList.remove('hidden');
   } catch {
     card.classList.add('hidden');
