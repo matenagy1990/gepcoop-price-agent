@@ -321,6 +321,7 @@ when the server is running on the buyer's own graphical machine.
 - `GET /admin/fx-settings`
 - `POST /admin/fx-settings`
 - `GET /admin/suppliers`
+- `POST /admin/supplier-info`
 - `POST /admin/update-supplier`
 - `GET /admin/users`
 - `GET /admin/app-user`

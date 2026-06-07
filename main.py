@@ -597,6 +597,10 @@ class SupplierInfoItemRequest(BaseModel):
     sort_order: int | None = None
     is_active: bool = True
 
+class UpdateSupplierInfoRequest(BaseModel):
+    supplier_id: str
+    info_items: list[SupplierInfoItemRequest]
+
 class UpdateSupplierRequest(BaseModel):
     supplier_id: str
     username: str
@@ -1904,6 +1908,23 @@ def admin_update_supplier(
         "supplier_id": req.supplier_id,
         "username": req.username.strip(),
         "info_items": saved_info_items if saved_info_items is not None else _supplier_info_items_for([req.supplier_id]).get(req.supplier_id, []),
+    }
+
+
+@app.post("/admin/supplier-info")
+def admin_update_supplier_info(
+    req: UpdateSupplierInfoRequest,
+    authorization: str | None = Header(default=None),
+):
+    admin_username = _get_admin(authorization)
+    supplier_id = req.supplier_id.strip().lower()
+    if supplier_id not in SUPPLIER_CREDS:
+        raise HTTPException(status_code=400, detail=f"Ismeretlen beszállító: {supplier_id}")
+    saved_info_items = _replace_supplier_info_items(supplier_id, req.info_items, admin_username)
+    log.info(f"Beszállítói rendelési információk frissítve: {supplier_id}")
+    return {
+        "supplier_id": supplier_id,
+        "info_items": saved_info_items,
     }
 
 

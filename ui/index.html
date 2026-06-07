@@ -388,11 +388,16 @@
   .adm-info-add{padding:7px 12px;border:1.5px solid var(--border);border-radius:8px;background:#fff;color:var(--navy2);font-size:12px;font-weight:700;cursor:pointer}
   .adm-info-add:hover:not(:disabled){border-color:var(--blue);color:var(--navy)}
   .adm-info-add:disabled{opacity:.45;cursor:not-allowed}
+  .adm-info-status{margin-left:auto;font-size:11px;font-weight:600;color:var(--muted);min-width:74px;text-align:right}
+  .adm-info-status.saving{color:var(--blue)}
+  .adm-info-status.saved{color:var(--green)}
+  .adm-info-status.error{color:var(--red)}
   .adm-info-list{display:flex;flex-direction:column;gap:8px}
   .adm-info-row{display:grid;grid-template-columns:28px minmax(120px,180px) minmax(180px,1fr) 34px 34px 34px;gap:8px;align-items:center}
   .adm-info-index{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--muted);text-align:right}
   .adm-info-row input{width:100%;padding:9px 10px;border:1.5px solid var(--border);border-radius:8px;font-family:'Inter',sans-serif;font-size:13px;color:var(--text)}
   .adm-info-row input:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px rgba(0,159,230,.08)}
+  .adm-info-row input.invalid{border-color:var(--red);background:rgba(254,26,0,.025)}
   .adm-info-icon{width:34px;height:34px;border:1.5px solid var(--border);border-radius:8px;background:#fff;color:var(--navy2);cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center}
   .adm-info-icon:hover:not(:disabled){border-color:var(--blue);color:var(--navy)}
   .adm-info-icon.danger{color:var(--red);border-color:rgba(254,26,0,.24)}
@@ -2438,6 +2443,7 @@ document.getElementById('adm-btn-upload').addEventListener('click', async () => 
 // ── supplier credentials ──────────────────────────────────────────
 const EYE_ON  = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
 const EYE_OFF = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+const admInfoSaveState = new Map();
 
 function escAttr(s) {
   return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -2464,8 +2470,10 @@ function admInfoRowsHtml(sid, items) {
   return rows.map((item, idx) => `
     <div class="adm-info-row" data-supplier="${escAttr(sid)}">
       <div class="adm-info-index">${idx + 1}.</div>
-      <input type="text" class="sup-info-label" value="${escAttr(item.label || '')}" maxlength="80" placeholder="Címke">
-      <input type="text" class="sup-info-value" value="${escAttr(item.value || '')}" maxlength="500" placeholder="Érték">
+      <input type="text" class="sup-info-label" value="${escAttr(item.label || '')}" maxlength="80" placeholder="Címke"
+             oninput="admScheduleInfoSave('${sid}')">
+      <input type="text" class="sup-info-value" value="${escAttr(item.value || '')}" maxlength="500" placeholder="Érték"
+             oninput="admScheduleInfoSave('${sid}')">
       <button type="button" class="adm-info-icon" onclick="admMoveInfoRow('${sid}', this, -1)" title="Fel">↑</button>
       <button type="button" class="adm-info-icon" onclick="admMoveInfoRow('${sid}', this, 1)" title="Le">↓</button>
       <button type="button" class="adm-info-icon danger" onclick="admRemoveInfoRow('${sid}', this)" title="Törlés">×</button>
@@ -2506,6 +2514,7 @@ function admRemoveInfoRow(sid, btn) {
   const row = btn.closest('.adm-info-row');
   if (row) row.remove();
   admRefreshInfoControls(sid);
+  admScheduleInfoSave(sid, true);
 }
 
 function admMoveInfoRow(sid, btn, direction) {
@@ -2517,20 +2526,100 @@ function admMoveInfoRow(sid, btn, direction) {
     row.parentNode.insertBefore(row.nextElementSibling, row);
   }
   admRefreshInfoControls(sid);
+  admScheduleInfoSave(sid, true);
 }
 
-function admCollectInfoItems(sid) {
+function admCollectInfoItems(sid, validate = false) {
   const list = document.getElementById(`sup-info-list-${sid}`);
-  if (!list) return [];
+  if (!list) return { items: [], complete: true };
   const items = [];
+  let complete = true;
   list.querySelectorAll('.adm-info-row').forEach((row, idx) => {
-    const label = row.querySelector('.sup-info-label').value.trim();
-    const value = row.querySelector('.sup-info-value').value.trim();
+    const labelInput = row.querySelector('.sup-info-label');
+    const valueInput = row.querySelector('.sup-info-value');
+    const label = labelInput.value.trim();
+    const value = valueInput.value.trim();
+    const rowComplete = Boolean(label && value);
+    if (validate) {
+      labelInput.classList.toggle('invalid', !label);
+      valueInput.classList.toggle('invalid', !value);
+    }
+    if (!rowComplete) complete = false;
     if (label && value) {
       items.push({ label, value, sort_order: idx + 1, is_active: true });
     }
   });
-  return items.slice(0, 5);
+  return { items: items.slice(0, 5), complete };
+}
+
+function admSetInfoStatus(sid, kind, text) {
+  const el = document.getElementById(`sup-info-status-${sid}`);
+  if (!el) return;
+  el.className = `adm-info-status${kind ? ` ${kind}` : ''}`;
+  el.textContent = text;
+  el.title = '';
+}
+
+function admGetInfoSaveState(sid) {
+  if (!admInfoSaveState.has(sid)) {
+    admInfoSaveState.set(sid, { timer: null, inFlight: false, queued: false, version: 0 });
+  }
+  return admInfoSaveState.get(sid);
+}
+
+function admScheduleInfoSave(sid, immediate = false) {
+  const state = admGetInfoSaveState(sid);
+  state.version += 1;
+  state.queued = true;
+  if (state.timer) clearTimeout(state.timer);
+  admSetInfoStatus(sid, 'saving', immediate ? 'Mentés…' : 'Mentésre vár');
+  if (immediate) {
+    state.timer = null;
+    admSaveInfoItems(sid);
+  } else {
+    state.timer = setTimeout(() => {
+      state.timer = null;
+      admSaveInfoItems(sid);
+    }, 500);
+  }
+}
+
+async function admSaveInfoItems(sid) {
+  const state = admGetInfoSaveState(sid);
+  if (state.inFlight) return;
+
+  const collected = admCollectInfoItems(sid, true);
+  if (!collected.complete) {
+    state.queued = false;
+    admSetInfoStatus(sid, 'error', 'Hiányos sor');
+    return;
+  }
+
+  state.inFlight = true;
+  state.queued = false;
+  const saveVersion = state.version;
+  admSetInfoStatus(sid, 'saving', 'Mentés…');
+  try {
+    const res = await fetch('/admin/supplier-info', {
+      method: 'POST',
+      headers: admHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ supplier_id: sid, info_items: collected.items }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || 'Mentés sikertelen.');
+    if (state.version === saveVersion) {
+      admSetInfoStatus(sid, 'saved', 'Mentve');
+    }
+  } catch (err) {
+    admSetInfoStatus(sid, 'error', 'Mentési hiba');
+    const statusEl = document.getElementById(`sup-info-status-${sid}`);
+    if (statusEl) statusEl.title = err.message;
+  } finally {
+    state.inFlight = false;
+    if (state.queued || state.version !== saveVersion) {
+      admSaveInfoItems(sid);
+    }
+  }
 }
 
 function admRenderSuppliers(suppliers) {
@@ -2573,6 +2662,7 @@ function admRenderSuppliers(suppliers) {
       <div class="adm-info-block">
         <div class="adm-info-head">
           <div class="adm-info-title">Rendelési információk</div>
+          <div class="adm-info-status" id="sup-info-status-${s.id}"></div>
           <button type="button" class="adm-info-add" id="sup-info-add-${s.id}" onclick="admAddInfoRow('${s.id}')">+ Sor</button>
         </div>
         <div class="adm-info-list" id="sup-info-list-${s.id}">
@@ -2604,7 +2694,6 @@ async function admSaveSupplier(sid) {
     const key = el.id.replace(`sup-extra-${sid}-`, '');
     extra[key] = el.value.trim();
   });
-  const info_items = admCollectInfoItems(sid);
 
   msgEl.className = 'hidden';
   if (!username) {
@@ -2618,7 +2707,7 @@ async function admSaveSupplier(sid) {
     const res = await fetch('/admin/update-supplier', {
       method: 'POST',
       headers: admHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ supplier_id: sid, username, password, extra, info_items }),
+      body: JSON.stringify({ supplier_id: sid, username, password, extra }),
     });
     const d = await res.json();
     if (!res.ok) throw new Error(d.detail || 'Mentés sikertelen.');
@@ -2627,11 +2716,6 @@ async function admSaveSupplier(sid) {
       ? `✓ ${sid} belépési adatok frissítve, az új jelszó elmentve.`
       : `✓ ${sid} adatai frissítve, a meglévő jelszó változatlan maradt.`;
     document.getElementById(`sup-pass-${sid}`).value = '';
-    const infoList = document.getElementById(`sup-info-list-${sid}`);
-    if (infoList && Array.isArray(d.info_items)) {
-      infoList.innerHTML = admInfoRowsHtml(sid, d.info_items);
-      admRefreshInfoControls(sid);
-    }
     msgEl.classList.remove('hidden');
   } catch(err) {
     msgEl.className = 'adm-msg err';
