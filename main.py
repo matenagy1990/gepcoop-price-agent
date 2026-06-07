@@ -329,9 +329,10 @@ def _lookup_part_name(part_no: str) -> str:
 
 UI_FILE   = Path(__file__).parent / "ui" / "index.html"
 LOGO_FILE = Path(__file__).parent / "assets" / "logo.png"
-GUIDE_PDF_FILE = Path(__file__).parent / "Gep-Coop-Kft-Belso-hasznalatra-or-2026.pdf"
-GUIDE_STORAGE_BUCKET = os.environ.get("SUPABASE_GUIDE_BUCKET", "internal-docs").strip() or "internal-docs"
-GUIDE_STORAGE_PATH = os.environ.get("SUPABASE_GUIDE_PATH", "guide/current.pdf").strip() or "guide/current.pdf"
+# Admin-editable homepage info block (shown to every logged-in buyer).
+INFO_FILE = Path(__file__).parent / "assets" / "homepage_info.json"   # local mirror
+INFO_STORAGE_BUCKET = os.environ.get("SUPABASE_INFO_BUCKET", "internal-docs").strip() or "internal-docs"
+INFO_STORAGE_PATH = os.environ.get("SUPABASE_INFO_PATH", "homepage/info.json").strip() or "homepage/info.json"
 
 
 def _get_username_from_token(token: str | None) -> str:
@@ -362,7 +363,7 @@ def _get_admin(authorization: str | None) -> str:
     raise HTTPException(status_code=401, detail="Invalid or expired admin token")
 
 
-def _guide_storage_bucket(create_if_missing: bool = False):
+def _info_storage_bucket(create_if_missing: bool = False):
     sb = _get_supabase_main()
     if sb is None:
         return None
@@ -373,61 +374,65 @@ def _guide_storage_bucket(create_if_missing: bool = False):
                     (b.get("name") or b.get("id") or "").strip()
                     for b in (sb.storage.list_buckets() or [])
                 }
-                if GUIDE_STORAGE_BUCKET not in bucket_names:
-                    sb.storage.create_bucket(
-                        GUIDE_STORAGE_BUCKET,
-                        options={"public": False, "allowed_mime_types": ["application/pdf"]},
-                    )
-                    log.info(f"Guide storage bucket létrehozva: {GUIDE_STORAGE_BUCKET}")
+                if INFO_STORAGE_BUCKET not in bucket_names:
+                    sb.storage.create_bucket(INFO_STORAGE_BUCKET, options={"public": False})
+                    log.info(f"Info storage bucket létrehozva: {INFO_STORAGE_BUCKET}")
             except Exception as exc:
                 if "already exists" not in str(exc).lower():
                     raise
-        return sb.storage.from_(GUIDE_STORAGE_BUCKET)
+        return sb.storage.from_(INFO_STORAGE_BUCKET)
     except Exception as exc:
-        log.warning(f"Guide storage bucket elérése sikertelen: {exc}")
+        log.warning(f"Info storage bucket elérése sikertelen: {exc}")
         return None
 
 
-def _read_guide_pdf_bytes() -> bytes | None:
-    bucket = _guide_storage_bucket(create_if_missing=False)
+def _read_homepage_info() -> dict:
+    """Return the admin homepage info: {text, updated_at, updated_by}."""
+    default = {"text": "", "updated_at": None, "updated_by": None}
+    bucket = _info_storage_bucket(create_if_missing=False)
     if bucket is not None:
         try:
-            if bucket.exists(GUIDE_STORAGE_PATH):
-                return bucket.download(GUIDE_STORAGE_PATH)
+            if bucket.exists(INFO_STORAGE_PATH):
+                raw = bucket.download(INFO_STORAGE_PATH)
+                data = json.loads(raw.decode("utf-8"))
+                if isinstance(data, dict):
+                    return {**default, **data}
         except Exception as exc:
-            log.warning(f"Guide PDF olvasása Storage-ból sikertelen: {exc}")
-    if GUIDE_PDF_FILE.exists():
-        content = GUIDE_PDF_FILE.read_bytes()
-        if bucket is not None:
-            try:
-                bucket.upload(
-                    GUIDE_STORAGE_PATH,
-                    content,
-                    {"content-type": "application/pdf", "upsert": "true"},
-                )
-                log.info(f"Guide PDF automatikusan feltöltve Storage-ba: {GUIDE_STORAGE_BUCKET}/{GUIDE_STORAGE_PATH}")
-            except Exception as exc:
-                log.warning(f"Guide PDF automatikus Storage feltöltése sikertelen: {exc}")
-        return content
-    return None
+            log.warning(f"Homepage info olvasása Storage-ból sikertelen: {exc}")
+    if INFO_FILE.exists():
+        try:
+            data = json.loads(INFO_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return {**default, **data}
+        except Exception as exc:
+            log.warning(f"Helyi homepage info olvasása sikertelen: {exc}")
+    return default
 
 
-def _write_guide_pdf_bytes(content: bytes) -> None:
-    bucket = _guide_storage_bucket(create_if_missing=True)
-    if bucket is None:
-        raise RuntimeError("A Supabase Storage nem érhető el a dokumentum mentéséhez.")
+def _write_homepage_info(text: str, username: str) -> dict:
+    data = {
+        "text": text,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_by": username,
+    }
+    raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    saved_anywhere = False
+    bucket = _info_storage_bucket(create_if_missing=True)
+    if bucket is not None:
+        try:
+            bucket.upload(INFO_STORAGE_PATH, raw, {"content-type": "application/json", "upsert": "true"})
+            saved_anywhere = True
+        except Exception as exc:
+            log.warning(f"Homepage info Storage mentése sikertelen: {exc}")
     try:
-        bucket.upload(
-            GUIDE_STORAGE_PATH,
-            content,
-            {"content-type": "application/pdf", "upsert": "true"},
-        )
+        INFO_FILE.parent.mkdir(parents=True, exist_ok=True)
+        INFO_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        saved_anywhere = True
     except Exception as exc:
-        raise RuntimeError(f"A dokumentum Storage mentése sikertelen: {exc}") from exc
-    try:
-        GUIDE_PDF_FILE.write_bytes(content)
-    except Exception as exc:
-        log.warning(f"Helyi guide PDF tükör mentése sikertelen: {exc}")
+        log.warning(f"Helyi homepage info mentése sikertelen: {exc}")
+    if not saved_anywhere:
+        raise RuntimeError("A tájékoztató mentése sikertelen (sem Storage, sem helyi fájl).")
+    return data
 
 
 def _hu(n: float, dec: int = 4) -> str:
@@ -612,6 +617,10 @@ class UpdateFxSettingsRequest(BaseModel):
     eur_to_huf_rate: float
 
 
+class HomepageInfoRequest(BaseModel):
+    text: str = ""
+
+
 # ── Routes ────────────────────────────────────────────────────────────
 @app.get("/")
 def serve_ui():
@@ -623,57 +632,24 @@ def serve_logo():
     return FileResponse(LOGO_FILE, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
 
 
-@app.get("/guide/pdf")
-def serve_guide_pdf(
-    download: int = 0,
-    token: str | None = None,
-    authorization: str | None = Header(default=None),
-):
-    if token:
-        _get_username_from_token(token)
-    else:
-        _get_username(authorization)
-    content = _read_guide_pdf_bytes()
-    if not content:
-        raise HTTPException(status_code=404, detail="Guide PDF not found")
-    disposition = "attachment" if download else "inline"
-    return Response(
-        content=content,
-        media_type="application/pdf",
-        headers={
-            "Cache-Control": "no-store",
-            "Content-Disposition": f'{disposition}; filename="{GUIDE_PDF_FILE.name}"',
-        },
-    )
+@app.get("/homepage-info")
+def get_homepage_info(authorization: str | None = Header(default=None)):
+    """Return the admin-managed homepage info block (any logged-in user)."""
+    _get_username(authorization)
+    return _read_homepage_info()
 
 
-@app.post("/admin/guide/upload")
-async def admin_upload_guide_pdf(
-    file: UploadFile = File(...),
+@app.post("/admin/homepage-info")
+def set_homepage_info(
+    req: HomepageInfoRequest,
     authorization: str | None = Header(default=None),
 ):
+    """Save the homepage info block shown to all buyers (admin only)."""
     admin_username = _get_admin(authorization)
-    if not _is_primary_admin_user(admin_username):
-        raise HTTPException(status_code=403, detail="Csak a fő admin cserélheti a dokumentumot.")
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="Fájl megadása kötelező.")
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Csak PDF fájl tölthető fel.")
-
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="Az üres fájl nem tölthető fel.")
-    if not content.startswith(b"%PDF"):
-        raise HTTPException(status_code=400, detail="A feltöltött fájl nem érvényes PDF.")
-
-    _write_guide_pdf_bytes(content)
-    log.info(f"Guide PDF frissítve: uploaded_by={admin_username}, filename={file.filename}")
-    return {
-        "filename": GUIDE_PDF_FILE.name,
-        "uploaded_by": admin_username,
-        "storage_bucket": GUIDE_STORAGE_BUCKET,
-        "storage_path": GUIDE_STORAGE_PATH,
-    }
+    text = (req.text or "").strip()
+    data = _write_homepage_info(text, admin_username)
+    log.info(f"Homepage info frissítve: by={admin_username}, length={len(text)}")
+    return data
 
 
 @app.post("/login")

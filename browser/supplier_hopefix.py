@@ -280,6 +280,14 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
             log.info(f"Parsed — {price_raw} EUR / {price_unit_qty} pcs, stock: {stock_value}")
 
+            # The autocomplete navigation lands on the exact product page
+            # (…/en/products/<slug>#<part>). The slug isn't derivable from the part
+            # number, but we are already on that page — hand the URL back so
+            # "Tovább a honlapra" opens the product directly (the listing/home is
+            # /en/products without a slug, so require a slug segment).
+            product_url = page.url if "/en/products/" in page.url else None
+            log.info(f"Product detail URL: {product_url}")
+
             return {
                 "supplier_part_no": supplier_part_no,
                 "price_raw":        price_raw,
@@ -287,6 +295,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 "currency":         "EUR",
                 "unit":             "db",
                 "stock":            stock_value,
+                "product_url":      product_url,
                 "queried_at":       datetime.now().isoformat(timespec="seconds"),
             }
 

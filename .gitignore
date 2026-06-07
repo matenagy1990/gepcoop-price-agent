@@ -24,3 +24,6 @@ assets/user.csv
 
 # Local work folders
 WORK/
+
+# Runtime-generated local mirror of the homepage info (source of truth is Supabase)
+assets/homepage_info.json

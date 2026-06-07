@@ -320,6 +320,15 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
             log.info(f"Parsed — {price_raw} EUR / {price_unit_qty} pcs, stock: {stock_value}")
 
+            # The scrape ends on the exact product detail page
+            # (…/b2b/en/<slug>-p<id>/). Hand that URL back so "Tovább a honlapra"
+            # opens the product directly, instead of the fuzzy /search/?query=
+            # results list. The slug varies (iso-…, art-…, din-…, etc.), so accept
+            # any /b2b/en/ product page that is not the search listing — at this
+            # point a price was already extracted, so we are on a product page.
+            product_url = page.url if ("/b2b/en/" in page.url and "/search/" not in page.url) else None
+            log.info(f"Product detail URL: {product_url}")
+
             return {
                 "supplier_part_no": supplier_part_no,
                 "price_raw":        price_raw,
@@ -327,6 +336,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 "currency":         "EUR",
                 "unit":             "db",
                 "stock":            stock_value,
+                "product_url":      product_url,
                 "queried_at":       datetime.now().isoformat(timespec="seconds"),
             }
 

@@ -284,6 +284,12 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 stock = "X"
                 log.warning("Stock element not found, assuming out of stock")
 
+            # The scrape ends on the exact product-group page with the variant
+            # selected (…?cid=…&cikkszam=<part>). Hand that URL back so
+            # "Tovább a honlapra" opens the product directly, instead of the
+            # ?keres= results list (which may show several product groups).
+            product_url = page.url if "cikkszam=" in page.url else None
+
             result = {
                 "supplier_part_no": supplier_part_no,
                 "price_raw":        price_raw,
@@ -291,6 +297,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 "currency":         "HUF",
                 "unit":             "db",
                 "stock":            stock,
+                "product_url":      product_url,
                 "queried_at":       datetime.now().isoformat(timespec="seconds"),
             }
             log.info(f"Final result: {result}")

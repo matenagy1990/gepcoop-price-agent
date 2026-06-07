@@ -126,6 +126,16 @@
   .guide-msg{font-size:12px;line-height:1.5}
   .guide-msg.ok{color:#3a7a09}
   .guide-msg.err{color:var(--red)}
+  /* Homepage info block (admin-managed announcement) */
+  .info-card{background:linear-gradient(135deg,#fffdf5 0%,#fff7e6 100%);border:1px solid rgba(231,156,2,.28);border-radius:var(--r);box-shadow:var(--sh);padding:18px 22px;margin-bottom:24px}
+  .info-eyebrow{font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#9b6800;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+  .info-body{font-size:14px;color:var(--navy2);line-height:1.6;white-space:pre-wrap;word-break:break-word}
+  .info-meta{font-size:11px;color:var(--muted);margin-top:10px}
+  .adm-info-text{width:100%;min-height:110px;padding:12px 14px;border:1.5px solid var(--border);border-radius:10px;font-family:'Inter',sans-serif;font-size:14px;line-height:1.5;color:var(--navy2);resize:vertical;box-sizing:border-box}
+  .adm-info-text:focus{outline:none;border-color:var(--blue)}
+  .adm-info-msg{font-size:12px}
+  .adm-info-msg.ok{color:#3a7a09}
+  .adm-info-msg.err{color:var(--red)}
 
   /* ── PIPELINE ── */
   .pipeline-card{background:var(--white);border-radius:var(--r);box-shadow:var(--sh);padding:24px 32px;margin-bottom:24px;animation:slideDown .3s ease;max-width:100%}
@@ -615,38 +625,11 @@
 
   <main class="app-main">
 
-    <div class="guide-card" id="guide-card">
-      <div class="guide-top">
-        <div class="guide-copy">
-          <div class="guide-eyebrow">Belső használati útmutató</div>
-          <div class="guide-title">Árfigyelő működési leírás</div>
-          <div class="guide-desc">
-            A rendszer fontosabb működését és használati leírását tartalmazó dokumentum.
-            Belső használatra szánt anyag, minden bejelentkezett user számára elérhető.
-          </div>
-        </div>
-        <div class="guide-actions">
-          <button class="btn-guide-open" id="btn-guide-open">Megnyitás</button>
-          <button class="btn-guide-download" id="btn-guide-download">PDF letöltése</button>
-        </div>
-      </div>
-      <div class="guide-admin hidden" id="guide-admin-panel">
-        <div class="guide-admin-head">
-          <div class="guide-admin-copy">
-            <div class="guide-admin-title">Dokumentum csere</div>
-            <div class="guide-admin-desc">A fő admin itt tud új PDF-et feltölteni, amely azonnal lecseréli a jelenlegi útmutatót minden user számára.</div>
-          </div>
-          <div class="guide-badge">Fő admin</div>
-        </div>
-        <div class="guide-upload-row">
-          <label class="guide-file-label" for="guide-file">
-            📄 <span id="guide-file-name">Válasszon új PDF fájlt...</span>
-          </label>
-          <input type="file" id="guide-file" accept="application/pdf,.pdf">
-          <button class="btn-guide-secondary" id="btn-guide-upload" disabled>Feltöltés mentése</button>
-        </div>
-        <div class="guide-msg" id="guide-upload-msg"></div>
-      </div>
+    <!-- Admin-managed homepage info (shown to every logged-in buyer) -->
+    <div class="info-card hidden" id="info-card">
+      <div class="info-eyebrow">📢 Tájékoztató</div>
+      <div class="info-body" id="info-body"></div>
+      <div class="info-meta" id="info-meta"></div>
     </div>
 
     <!-- Query -->
@@ -776,8 +759,14 @@
         másold be a felhasználónevet és a jelszót, majd lépj be. A böngésződ megjegyzi a belépést,
         és utána a „Tovább a honlapra” gomb egyből a bejelentkezett termékoldalra visz.
       </p>
+      <p class="adm-hint" style="margin-top:0">
+        💡 Tipp: amikor először belépsz, a böngésző felajánlja a <b>jelszó mentését</b> — mentsd el.
+        Ezután az alábbi <b>„🚀 Belépés minden webshopba”</b> gombbal egy kattintással megnyithatod
+        az összes belépő oldalt, és a böngésző automatikusan kitölti a mezőket — már csak a
+        Bejelentkezésre kell kattintanod.
+      </p>
       <div style="margin:14px 0">
-        <button class="btn-upload" id="login-helper-open-all">🌐 Összes belépő oldal megnyitása</button>
+        <button class="btn-upload" id="login-helper-open-all">🚀 Belépés minden webshopba (összes oldal megnyitása)</button>
       </div>
       <div id="login-helper-list"></div>
     </div>
@@ -883,6 +872,15 @@
 
           <!-- Tab: Webshop belépés -->
           <div class="adm-tab hidden" id="adm-tab-suppliers">
+            <div class="adm-section">
+              <div class="adm-section-title">Kezdőoldali tájékoztató</div>
+              <p class="adm-hint">Itt rögzíthetsz általános információt, ami a kezdőoldalon minden bejelentkezett beszerzőnek megjelenik. Üresen hagyva nem jelenik meg.</p>
+              <textarea class="adm-info-text" id="adm-info-text" placeholder="Írd ide a tájékoztatót a beszerzőknek…"></textarea>
+              <div style="margin-top:10px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+                <button class="btn-upload" id="adm-info-save">Tájékoztató mentése</button>
+                <span class="adm-info-msg" id="adm-info-msg"></span>
+              </div>
+            </div>
             <div class="adm-section">
               <div class="adm-section-title">Webshop belépési adatok</div>
               <p class="adm-hint">A beszállítói webshopokba való bejelentkezéshez használt hitelesítő adatok. Mentés után azonnal érvényes.</p>
@@ -1134,58 +1132,62 @@ async function doLogin() {
 }
 function showLoginErr(msg){ const el=document.getElementById('login-err'); el.textContent=msg; el.classList.remove('hidden'); }
 
-function openGuidePdf(download = false) {
-  if (!authToken) {
-    showError('A munkamenet lejárt.');
-    return;
+// ── Homepage info block (admin-managed announcement) ──────────────
+async function loadHomepageInfo() {
+  const card = document.getElementById('info-card');
+  if (!authToken) { card.classList.add('hidden'); return; }
+  try {
+    const res = await fetch('/homepage-info', { headers: { 'Authorization': `Bearer ${authToken}` } });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const text = (data.text || '').trim();
+    if (!text) { card.classList.add('hidden'); return; }
+    document.getElementById('info-body').textContent = text;
+    document.getElementById('info-meta').textContent = data.updated_by ? ('Frissítette: ' + data.updated_by) : '';
+    card.classList.remove('hidden');
+  } catch {
+    card.classList.add('hidden');
   }
-  const url = `/guide/pdf?token=${encodeURIComponent(authToken)}${download ? '&download=1' : ''}`;
-  const link = document.createElement('a');
-  link.href = url;
-  link.target = '_blank';
-  link.rel = 'noopener noreferrer';
-  if (download) link.download = 'Gep-Coop-Kft-Belso-hasznalatra-or-2026.pdf';
-  link.style.display = 'none';
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
 }
 
-document.getElementById('guide-file').addEventListener('change', e => {
-  const f = e.target.files[0];
-  document.getElementById('guide-file-name').textContent = f ? f.name : 'Válasszon új PDF fájlt...';
-  document.getElementById('btn-guide-upload').disabled = !f;
-});
-
-document.getElementById('btn-guide-upload').addEventListener('click', async function () {
-  const fileInput = document.getElementById('guide-file');
-  const msgEl = document.getElementById('guide-upload-msg');
-  const btn = this;
-  if (!fileInput.files[0]) return;
-  msgEl.className = 'guide-msg';
-  msgEl.textContent = '';
-  btn.disabled = true;
-  btn.textContent = 'Mentés folyamatban...';
+// ── Admin: edit the homepage info block (top of the Webshop belépés tab) ──
+async function admLoadHomepageInfo() {
+  const ta = document.getElementById('adm-info-text');
+  const msg = document.getElementById('adm-info-msg');
+  if (msg) { msg.textContent = ''; msg.className = 'adm-info-msg'; }
   try {
-    const form = new FormData();
-    form.append('file', fileInput.files[0]);
-    const res = await fetch('/admin/guide/upload', {
+    const res = await fetch('/homepage-info', { headers: admHeaders() });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    ta.value = data.text || '';
+  } catch {
+    /* leave whatever is there */
+  }
+}
+
+document.getElementById('adm-info-save').addEventListener('click', async function () {
+  const ta = document.getElementById('adm-info-text');
+  const msg = document.getElementById('adm-info-msg');
+  const btn = this;
+  btn.disabled = true;
+  msg.className = 'adm-info-msg';
+  msg.textContent = 'Mentés…';
+  try {
+    const res = await fetch('/admin/homepage-info', {
       method: 'POST',
-      headers: admHeaders(),
-      body: form,
+      headers: { ...admHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: ta.value }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || 'A dokumentum cseréje sikertelen.');
-    msgEl.className = 'guide-msg ok';
-    msgEl.textContent = `Új dokumentum elmentve: ${data.filename}`;
-    fileInput.value = '';
-    document.getElementById('guide-file-name').textContent = 'Válasszon új PDF fájlt...';
+    if (!res.ok) throw new Error(data.detail || 'A mentés sikertelen.');
+    msg.className = 'adm-info-msg ok';
+    msg.textContent = '✓ Elmentve';
+    loadHomepageInfo();   // refresh the homepage card immediately
   } catch (err) {
-    msgEl.className = 'guide-msg err';
-    msgEl.textContent = err.message || 'A dokumentum cseréje sikertelen.';
+    msg.className = 'adm-info-msg err';
+    msg.textContent = err.message || 'A mentés sikertelen.';
   } finally {
-    btn.disabled = !fileInput.files[0];
-    btn.textContent = 'Feltöltés mentése';
+    btn.disabled = false;
   }
 });
 
@@ -1215,8 +1217,8 @@ function showApp(){
   document.getElementById('user-display').textContent = username || 'User';
   document.getElementById('btn-admin').classList.toggle('hidden', !isAdminUser);
   document.getElementById('btn-webshop-login').classList.remove('hidden');
-  document.getElementById('guide-admin-panel').classList.toggle('hidden', !isPrimaryAdminUser);
   adminToken = isAdminUser ? authToken : null;
+  loadHomepageInfo();
   syncResponsiveLayout();
   requestAnimationFrame(() => {
     syncResponsiveLayout();
@@ -1232,7 +1234,7 @@ function doLogout(clearLoginFields = true) {
   authToken=null; username=null; isAdminUser=false; isPrimaryAdminUser=false; adminToken=null;
   document.getElementById('btn-admin').classList.add('hidden');
   document.getElementById('btn-webshop-login').classList.add('hidden');
-  document.getElementById('guide-admin-panel').classList.add('hidden');
+  document.getElementById('info-card').classList.add('hidden');
   document.getElementById('app-page').classList.add('hidden');
   document.getElementById('login-page').classList.remove('hidden');
   document.getElementById('adm-logged-as').textContent = '';
@@ -1245,12 +1247,6 @@ function doLogout(clearLoginFields = true) {
 }
 
 document.getElementById('btn-logout').addEventListener('click', () => doLogout(true));
-document.getElementById('btn-guide-open').addEventListener('click', function () {
-  openGuidePdf(false);
-});
-document.getElementById('btn-guide-download').addEventListener('click', function () {
-  openGuidePdf(true);
-});
 const partInput = document.getElementById('part-input');
 
 partInput.addEventListener('input', () => {
@@ -1745,7 +1741,7 @@ function renderResults(data) {
       </div>
       <div class="sup-body">${bodyHtml}</div>
       <div class="sup-footer">
-        <button class="btn-goto-supplier" onclick="openSupplierSite('${sid}','${safePartNo}',this)">
+        <button class="btn-goto-supplier" data-product-url="${(r.product_url||'').replace(/"/g,'&quot;')}" onclick="openSupplierSite('${sid}','${safePartNo}',this)">
           🌐 Tovább a honlapra!
         </button>
       </div>`;
@@ -1797,7 +1793,24 @@ async function sendRecommendationFeedback(feedback, btn) {
   }
 }
 
+function openUrlInNewTab(url) {
+  const link = document.createElement('a');
+  link.href = url;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
 async function openSupplierSite(sid, supplierPartNo, btn) {
+  // If the scrape captured the exact product detail URL, open it straight away.
+  const directUrl = btn.getAttribute('data-product-url');
+  if (directUrl) {
+    openUrlInNewTab(directUrl);
+    return;
+  }
   btn.disabled = true;
   const origText = btn.innerHTML;
   btn.innerHTML = '⏳ Megnyitás…';
@@ -1948,6 +1961,7 @@ function openAdminOverlay() {
   admLoadMapping();
   admLoadUsers();
   admLoadSuppliers();
+  admLoadHomepageInfo();
 }
 
 document.getElementById('btn-admin').addEventListener('click', openAdminOverlay);
@@ -2035,11 +2049,24 @@ document.getElementById('login-helper-close').addEventListener('click', closeLog
 document.getElementById('login-helper-overlay').addEventListener('click', e => {
   if (e.target === document.getElementById('login-helper-overlay')) closeLoginHelper();
 });
-document.getElementById('login-helper-open-all').addEventListener('click', () => {
-  _loginHelperData.forEach((s, i) => {
-    if (s.login_url) setTimeout(() => window.open(s.login_url, '_blank', 'noopener,noreferrer'), i * 250);
-  });
-});
+// ── "Belépés minden webshopba" — open every login page in one click gesture ───
+function openAllWebshopLogins() {
+  const urls = (_loginHelperData || []).map(s => s.login_url).filter(Boolean);
+  if (!urls.length) return;
+  // Open synchronously inside the click gesture (popup-blocker friendly).
+  urls.forEach(u => window.open(u, '_blank', 'noopener,noreferrer'));
+  // One-time guidance about popups + browser autofill.
+  if (!localStorage.getItem('gc_autologin_hint_seen')) {
+    localStorage.setItem('gc_autologin_hint_seen', '1');
+    setTimeout(() => alert(
+      'Megnyitottam minden webshop belépő oldalát új füleken.\n\n' +
+      '• Ha a böngésző blokkolta a felugró ablakokat, engedélyezd őket ehhez az oldalhoz.\n' +
+      '• A mezők automatikusan kitöltődnek, ha a céges jelszót elmentetted a böngésződbe.\n' +
+      '• A végén minden fülön kattints a Bejelentkezésre.'
+    ), 300);
+  }
+}
+document.getElementById('login-helper-open-all').addEventListener('click', openAllWebshopLogins);
 
 // ── Admin sidebar tab switching ───────────────────────────────────
 function admSwitchTab(tab) {
@@ -2055,6 +2082,9 @@ function admSwitchTab(tab) {
   }
   if (tab === 'fx') {
     admLoadFxSettings();
+  }
+  if (tab === 'suppliers') {
+    admLoadHomepageInfo();
   }
   if (admIsMobile()) admSetNavOpen(false);
 }

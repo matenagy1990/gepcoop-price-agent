@@ -303,10 +303,12 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             await on_progress({"step": "browser", "status": "running", "msg": msg})
 
     session = load_session(SESSION_FILE)
-    # KingB2B keeps enough UI/search state in the portal that restored sessions
-    # can leave the search flow inconsistent. A fresh login is slower, but much
-    # more reliable than reusing a cached session here.
-    use_session = False
+    # Reuse a saved session while it is fresh, so we do NOT log in on every query —
+    # kingb2b temporarily blocks repeated automated logins ("CREDENZIALI ERRATE").
+    # A login only happens when there is no valid session; _login_and_locate_row
+    # detects the logged-in state (DOCUMENTI button) and re-saves the session after
+    # a fresh login. The portal is reloaded cleanly each run, so search state is fine.
+    use_session = bool(session and session_is_fresh(session, SESSION_MAX_AGE_HOURS))
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)

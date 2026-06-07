@@ -273,6 +273,64 @@ async def _extract_modal_price_info(page) -> dict | None:
     }""")
 
 
+async def _check_real_availability(page) -> None:
+    """Reveal the real warehouse stock on the open Reyher product modal.
+
+    Reyher only shows the true "Available quantity" after a quantity is entered
+    and the "Rendelkezésre állás ellenőrzése" (Check availability) button is
+    pressed; by default it just echoes the selected order quantity. We enter a
+    very large quantity so the returned value is the actual stock cap, then the
+    price/stock extractor reads the updated number.
+
+    Best-effort: this only checks availability (it does NOT add to cart) and
+    never raises — on any problem the previously shown value is kept.
+    """
+    PROBE_QTY = "999999999"
+    _AVAIL_JS = r"""() => {
+        const s = document.querySelector('.modal--open') || document.body;
+        const m = (s.innerText || '').match(/Available quantity:\s*([\d.\s ]+)/i);
+        return m ? m[1].replace(/[^\d]/g, '') : null;
+    }"""
+    try:
+        before = await page.evaluate(_AVAIL_JS)
+
+        qty = page.locator("input.inp-spinner__input[name='qty']:visible").first
+        if await qty.count() == 0:
+            qty = page.locator("input.inp-spinner__input[name='qty']").first
+        if await qty.count() == 0:
+            log.info("Reyher availability: qty input not found — keeping default Available quantity")
+            return
+
+        await qty.fill(PROBE_QTY)
+        await qty.dispatch_event("input")
+        await qty.dispatch_event("change")
+
+        btn = page.get_by_role("button", name="Rendelkezésre állás ellenőrzése")
+        if await btn.count() == 0:
+            btn = page.locator("button.button-reyher--secondary")
+        await btn.first.click(timeout=8000)
+
+        try:
+            await page.wait_for_function(
+                r"""(before) => {
+                    const s = document.querySelector('.modal--open') || document.body;
+                    const m = (s.innerText || '').match(/Available quantity:\s*([\d.\s ]+)/i);
+                    if (!m) return false;
+                    const v = m[1].replace(/[^\d]/g, '');
+                    return v && v !== before;
+                }""",
+                arg=before,
+                timeout=12000,
+            )
+        except PlaywrightTimeout:
+            log.info("Reyher availability: value unchanged after check — keeping shown value")
+
+        after = await page.evaluate(_AVAIL_JS)
+        log.info("Reyher real availability: before=%s after=%s", before, after)
+    except Exception as exc:
+        log.warning("Reyher availability check skipped: %s", exc)
+
+
 def _parse_first_int(text: str) -> int | None:
     m = re.search(r"\b(\d{1,6})\b", text or "")
     return int(m.group(1)) if m else None
@@ -439,6 +497,9 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             modal_info = None
             try:
                 await _open_product_modal(page)
+                # Trigger the availability check so "Available quantity" reflects
+                # the real warehouse stock, not the default order quantity.
+                await _check_real_availability(page)
                 modal_info = await _extract_modal_price_info(page)
                 log.info("Reyher modal info: %r", modal_info)
             except (PlaywrightTimeout, RuntimeError) as exc:
