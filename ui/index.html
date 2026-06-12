@@ -136,6 +136,15 @@
   .adm-info-msg{font-size:12px}
   .adm-info-msg.ok{color:#3a7a09}
   .adm-info-msg.err{color:var(--red)}
+  /* Gép-Coop stock: admin drag&drop + result card */
+  .gep-drop{border:2px dashed var(--border);border-radius:12px;padding:26px 18px;text-align:center;color:var(--muted);font-size:14px;line-height:1.5;cursor:pointer;background:var(--bg);transition:all .15s}
+  .gep-drop:hover{border-color:var(--blue);color:var(--navy)}
+  .gep-drop.dragover{border-color:var(--blue);background:rgba(0,159,230,.07);color:var(--navy)}
+  .gep-result-card{border:2px solid var(--navy)}
+  .gep-result-card .sup-card-hdr{background:linear-gradient(135deg,var(--navy) 0%,var(--navy2) 100%)}
+  .gep-result-card .sup-name{color:#fff}
+  .gep-badge{background:rgba(255,255,255,.18);color:#fff}
+  .gep-val{font-size:15px;font-weight:600;color:var(--navy2);word-break:break-word}
 
   /* ── PIPELINE ── */
   .pipeline-card{background:var(--white);border-radius:var(--r);box-shadow:var(--sh);padding:24px 32px;margin-bottom:24px;animation:slideDown .3s ease;max-width:100%}
@@ -652,6 +661,8 @@
       <div class="sup-filter-section">
         <span class="sup-filter-label">Szűrők</span>
         <div class="sup-filter-track" id="sup-filter-bar">
+          <button class="sup-chip chip-active" data-sid="gepcoop" title="Saját Gép-Coop készlet megjelenítése a találatok között">Gép-Coop</button>
+          <div class="sup-chip-sep"></div>
           <button class="sup-chip chip-all" data-sid="all">Összes</button>
           <div class="sup-chip-sep"></div>
           <button class="sup-chip" data-sid="csavarda">Csavarda</button>
@@ -665,6 +676,8 @@
           <button class="sup-chip" data-sid="schaefer">Schaefer</button>
           <button class="sup-chip" data-sid="kingb2b">Kingb2b</button>
           <button class="sup-chip" data-sid="wasishop">Wasishop</button>
+          <button class="sup-chip" data-sid="argip">Argip</button>
+          <button class="sup-chip" data-sid="inoxmare">Inoxmare</button>
         </div>
       </div>
     </div>
@@ -808,6 +821,12 @@
           <button class="adm-nav-item" data-tab="mapping">
             <span class="adm-nav-icon">📋</span>Cikkszám mapping
           </button>
+          <button class="adm-nav-item" data-tab="argip">
+            <span class="adm-nav-icon">📑</span>Argip árlista
+          </button>
+          <button class="adm-nav-item" data-tab="gepcoop">
+            <span class="adm-nav-icon">📦</span>Gépcoop készlet
+          </button>
           <button class="adm-nav-item" data-tab="runs">
             <span class="adm-nav-icon">📊</span>Futásnapló
           </button>
@@ -898,11 +917,12 @@
             <div class="adm-section">
               <div class="adm-section-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px">
                 <span>Mapping feltöltése (.csv vagy .xlsx)</span>
-                <a id="adm-btn-template" href="/admin/mapping-template" download="mapping_sablon.xlsx"
-                   style="padding:6px 14px;background:none;border:1.5px solid var(--blue);border-radius:8px;font-family:'Inter',sans-serif;font-size:12px;font-weight:600;color:var(--blue);text-decoration:none;display:flex;align-items:center;gap:5px;white-space:nowrap">
+                <button type="button" id="adm-btn-template"
+                   style="padding:6px 14px;background:none;border:1.5px solid var(--blue);border-radius:8px;font-family:'Inter',sans-serif;font-size:12px;font-weight:600;color:var(--blue);display:flex;align-items:center;gap:5px;white-space:nowrap;cursor:pointer">
                   ⬇ Sablon letöltése
-                </a>
+                </button>
               </div>
+              <div id="adm-template-msg" class="hidden" style="margin-bottom:10px"></div>
               <div id="adm-col-hint" class="adm-hint">Oszlopok betöltése…</div>
               <div class="adm-upload-row">
                 <label class="adm-file-label" for="adm-file">
@@ -923,6 +943,58 @@
                 <table class="adm-table">
                   <thead id="adm-thead"></thead>
                   <tbody id="adm-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tab: Argip árlista -->
+          <div class="adm-tab hidden" id="adm-tab-argip">
+            <div class="adm-section">
+              <div class="adm-section-title">Argip árlista feltöltése (.xlsx vagy .csv)</div>
+              <p class="adm-hint">Töltsd fel az Argiptől kapott árlistát külön táblába. Várt oszlopok az ügyfélfájl alapján: <b>Argip part #, Customer part #, Argip description EN, Customer description, Base price EUR, Price LVL 1 EUR, MOQ LVL 1 (pcs), Price LVL 2 EUR, MOQ LVL 2 (pcs), Stock (pcs), Box quantity (pcs), SKU</b>. Minden feltöltés a teljes korábbi Argip-árlistát lecseréli.</p>
+              <div id="argip-drop" class="gep-drop">
+                <div>📑 Húzd ide az Argip árlistát, vagy <u>kattints a tallózáshoz</u></div>
+                <input type="file" id="argip-file" accept=".xlsx,.xls,.csv" style="display:none">
+              </div>
+              <div style="margin-top:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+                <button class="btn-upload" id="argip-btn-upload" disabled>Feltöltés mentése</button>
+                <span id="argip-file-name" class="adm-hint">Nincs kiválasztott fájl.</span>
+                <span id="argip-upload-msg" style="font-size:12px"></span>
+              </div>
+            </div>
+            <div class="adm-section">
+              <div class="adm-section-title">Jelenlegi Argip árlista &mdash; <span id="argip-row-count">…</span></div>
+              <div class="adm-table-wrap">
+                <table class="adm-table">
+                  <thead id="argip-thead"></thead>
+                  <tbody id="argip-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tab: Gépcoop készlet -->
+          <div class="adm-tab hidden" id="adm-tab-gepcoop">
+            <div class="adm-section">
+              <div class="adm-section-title">Gép-Coop készlet feltöltése (.xlsx vagy .csv)</div>
+              <p class="adm-hint">Húzd ide az aktuális készlet fájlt, vagy kattints a tallózáshoz. Várt oszlopok: <b>Cikkszám, Cikknév, Eladható, Telephelyi utolsó besz. ár, Telephelyi utolsó besz. dátum, Eladási ár</b>. Minden feltöltés a teljes korábbi tartalmat lecseréli.</p>
+              <div id="gep-drop" class="gep-drop">
+                <div>📦 Húzd ide az Excelt / CSV-t, vagy <u>kattints a tallózáshoz</u></div>
+                <input type="file" id="gep-file" accept=".xlsx,.xls,.csv" style="display:none">
+              </div>
+              <div style="margin-top:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+                <button class="btn-upload" id="gep-btn-upload" disabled>Feltöltés mentése</button>
+                <span id="gep-file-name" class="adm-hint">Nincs kiválasztott fájl.</span>
+                <span id="gep-upload-msg" style="font-size:12px"></span>
+              </div>
+            </div>
+            <div class="adm-section">
+              <div class="adm-section-title">Jelenlegi készlet &mdash; <span id="gep-row-count">…</span></div>
+              <div class="adm-table-wrap">
+                <table class="adm-table">
+                  <thead id="gep-thead"></thead>
+                  <tbody id="gep-tbody"></tbody>
                 </table>
               </div>
             </div>
@@ -1011,6 +1083,7 @@ let isPrimaryAdminUser = sessionStorage.getItem('gc_is_primary_admin') === '1';
 let _pendingPartNo     = null;  // part number waiting for user confirmation
 let _searchStartTs     = null;  // timestamp when scraping started
 let _currentFilterSids = '';    // active supplier filter for the running search
+let _currentPartNo     = '';    // part number of the running/last search (for the Gép-Coop card)
 let _skippedSuppliers  = new Set();
 
 // pipeline state per supplier: {csavarda: [s0,s1,s2,s3], irontrade: [...]}
@@ -1361,7 +1434,7 @@ function showConfirmCard(data) {
 }
 
 /* ══ SUPPLIER CHIP LOGIC ══════════════════════════════════════ */
-const ALL_SIDS = ['csavarda','irontrade','koelner','mekrs','fabory','reyher','hopefix','fastbolt','schaefer','kingb2b','wasishop'];
+const ALL_SIDS = ['csavarda','irontrade','koelner','mekrs','fabory','reyher','hopefix','fastbolt','schaefer','kingb2b','wasishop','argip','inoxmare'];
 
 function getChip(sid){ return document.querySelector(`#sup-filter-bar [data-sid="${sid}"]`); }
 
@@ -1387,9 +1460,16 @@ function toggleSupChip(sid){
 
 function getSelectedSuppliers(){
   // Returns comma-separated selected IDs, or '' if none/all selected (= query all)
+  // Note: 'gepcoop' is NOT a scraped webshop, so it never goes to the backend filter.
   const active = ALL_SIDS.filter(s => getChip(s)?.classList.contains('chip-active'));
   if(active.length === 0 || active.length === ALL_SIDS.length) return '';
   return active.join(',');
+}
+
+// The Gép-Coop chip is an independent toggle (own stock from Supabase), not a webshop.
+function isGepcoopSelected(){
+  const chip = getChip('gepcoop');
+  return !chip || chip.classList.contains('chip-active');
 }
 
 document.getElementById('sup-filter-bar').addEventListener('click', e => {
@@ -1407,6 +1487,7 @@ async function startSearch(partNo, filterSids) {
   document.getElementById('pipeline-card').classList.remove('hidden');
   document.getElementById('runtime-line').classList.add('hidden');
   _searchStartTs = Date.now();
+  _currentPartNo = partNo || '';
   _currentFilterSids = filterSids || '';
   _skippedSuppliers = new Set();
   _suppliersNeedAdmin = new Set();
@@ -1555,7 +1636,72 @@ function handleResult(data) {
   renderResults(data);
 }
 
-function handleError(data) { showError(data.message || 'Váratlan hiba történt.'); }
+function handleError(data) {
+  showError(data.message || 'Váratlan hiba történt.');
+  // The Gép-Coop card still appears as guidance, even when no supplier matched.
+  if (_currentPartNo && isGepcoopSelected()) {
+    const grid = document.getElementById('results-grid');
+    grid.innerHTML = '';
+    renderGepcoopCard(_currentPartNo);
+    grid.classList.remove('hidden');
+  }
+}
+
+// ── Gép-Coop own-stock result card (always shown on query) ────────────
+async function renderGepcoopCard(partNo) {
+  const grid = document.getElementById('results-grid');
+  if (!grid) return;
+  const card = document.createElement('div');
+  card.className = 'sup-card gep-result-card';
+  const hdr = document.createElement('div'); hdr.className = 'sup-card-hdr';
+  const name = document.createElement('div'); name.className = 'sup-name'; name.textContent = 'GÉP-COOP';
+  const badge = document.createElement('div'); badge.className = 'sup-badge gep-badge'; badge.textContent = 'SAJÁT KÉSZLET';
+  hdr.appendChild(name); hdr.appendChild(badge);
+  const body = document.createElement('div'); body.className = 'sup-body';
+  body.innerHTML = '<div class="adm-hint">Betöltés…</div>';
+  card.appendChild(hdr); card.appendChild(body);
+  grid.insertBefore(card, grid.firstChild);
+  grid.classList.remove('hidden');
+
+  const addField = (label, val, unit) => {
+    const m = document.createElement('div'); m.className = 'sup-metric';
+    const l = document.createElement('div'); l.className = 'sup-metric-label'; l.textContent = label;
+    const v = document.createElement('div'); v.className = 'gep-val';
+    const has = (val != null && String(val).trim() !== '');
+    v.textContent = has ? (String(val) + (unit ? ' ' + unit : '')) : '—';
+    m.appendChild(l); m.appendChild(v); body.appendChild(m);
+  };
+
+  try {
+    const res = await fetch('/gepcoop/stock?internal_part_no=' + encodeURIComponent(partNo),
+      { headers: { 'Authorization': `Bearer ${authToken}` } });
+    const data = await res.json();
+    body.innerHTML = '';
+    if (data.table_missing) {
+      const e = document.createElement('div'); e.className = 'sup-err';
+      e.textContent = '⚠️ A Gép-Coop készlet tábla még nincs létrehozva.';
+      body.appendChild(e); return;
+    }
+    if (!data.found || !data.row) {
+      const d = document.createElement('div');
+      d.style.cssText = 'font-size:13px;color:var(--muted);line-height:1.6';
+      d.textContent = 'Nincs Gép-Coop készletadat ehhez a cikkszámhoz: ' + partNo;
+      body.appendChild(d); return;
+    }
+    const row = data.row;
+    addField('Cikkszám', row.part_no || partNo);
+    addField('Cikknév', row.name);
+    addField('Eladható', row.sellable, 'db');
+    addField('Telephelyi utolsó besz. ár', row.last_purchase_price, 'HUF');
+    addField('Telephelyi utolsó besz. dátum', row.last_purchase_date);
+    addField('Eladási ár', row.selling_price, 'HUF');
+  } catch (e) {
+    body.innerHTML = '';
+    const er = document.createElement('div'); er.className = 'sup-err';
+    er.textContent = '⚠️ A Gép-Coop készlet nem elérhető.';
+    body.appendChild(er);
+  }
+}
 
 function renderSupplierInfo(items) {
   const clean = (items || [])
@@ -1650,6 +1796,9 @@ function renderResults(data) {
   const grid = document.getElementById('results-grid');
   grid.innerHTML = '';
 
+  // Gép-Coop own-stock card (first), shown when the Gép-Coop filter chip is active.
+  if (isGepcoopSelected()) renderGepcoopCard(internal_part_no);
+
   const supIds = Object.keys(suppliers);
   // Winner first
   supIds.sort((a,b) => (a===winner?-1:1));
@@ -1695,6 +1844,7 @@ function renderResults(data) {
     } else {
       const cur = r.currency || 'HUF';
       let ppdb, priceUnit, rawStr, fxNote;
+      const isArgip = sid === 'argip';
 
       if (cur !== 'HUF' && r.price_per_db_huf != null) {
         // Show HUF-converted price as primary; original currency price as secondary
@@ -1713,6 +1863,26 @@ function renderResults(data) {
           : '';
       }
 
+      let argipPricingHtml = '';
+      if (isArgip) {
+        const baseLine = r.argip_base_price_eur != null
+          ? `<div class="sup-price-orig">Base price: ${fmtNum(r.argip_base_price_eur, 2)} EUR/db</div>`
+          : '';
+        const lvl1Line = r.argip_price_lvl_1_eur != null
+          ? `<div class="sup-price-orig">Price LVL 1: ${fmtNum(r.argip_price_lvl_1_eur, 2)} EUR/db${r.argip_moq_lvl_1_pcs != null ? ` (${fmtInt(r.argip_moq_lvl_1_pcs)} db-tól)` : ''}</div>`
+          : '';
+        const lvl2Line = r.argip_price_lvl_2_eur != null
+          ? `<div class="sup-price-orig">Price LVL 2: ${fmtNum(r.argip_price_lvl_2_eur, 2)} EUR/db${r.argip_moq_lvl_2_pcs != null ? ` (${fmtInt(r.argip_moq_lvl_2_pcs)} db-tól)` : ''}</div>`
+          : '';
+        argipPricingHtml = `
+          <div class="sup-metric" style="margin-top:10px">
+            <div class="sup-metric-label">Argip árszintek</div>
+            ${baseLine}
+            ${lvl1Line}
+            ${lvl2Line}
+          </div>`;
+      }
+
       bodyHtml = `
         <div class="sup-metric">
           <div class="sup-metric-label">Egységár</div>
@@ -1721,8 +1891,9 @@ function renderResults(data) {
             <span class="sup-price-unit">${priceUnit}/db</span>
           </div>
           ${fxNote ? `<div class="sup-price-orig" style="color:var(--muted)">${fxNote}</div>` : ''}
-          ${rawStr ? `<div class="sup-price-orig">${rawStr}</div>` : ''}
+          ${!isArgip && rawStr ? `<div class="sup-price-orig">${rawStr}</div>` : ''}
         </div>
+        ${argipPricingHtml}
         <div class="sup-metric">
           <div class="sup-metric-label">Készlet</div>
           ${renderStock(r.stock)}
@@ -1737,6 +1908,7 @@ function renderResults(data) {
     bodyHtml += renderSupplierInfo(r.info_items);
 
     const safePartNo = (r.supplier_part_no||'').replace(/'/g, "\\'");
+    const canOpenSupplier = sid !== 'argip';
     card.innerHTML = `
       <div class="sup-card-hdr">
         <div class="sup-name">${sid.toUpperCase()}</div>
@@ -1745,11 +1917,11 @@ function renderResults(data) {
         </div>
       </div>
       <div class="sup-body">${bodyHtml}</div>
-      <div class="sup-footer">
+      ${canOpenSupplier ? `<div class="sup-footer">
         <button class="btn-goto-supplier" data-product-url="${(r.product_url||'').replace(/"/g,'&quot;')}" onclick="openSupplierSite('${sid}','${safePartNo}',this)">
           🌐 Tovább a honlapra!
         </button>
-      </div>`;
+      </div>` : ''}`;
     grid.appendChild(card);
   }
 
@@ -1975,7 +2147,7 @@ document.getElementById('btn-admin').addEventListener('click', openAdminOverlay)
 const SUPPLIER_LABELS = {
   csavarda:'Csavarda', irontrade:'Irontrade', koelner:'Koelner', mekrs:'Mekrs',
   fabory:'Fabory', reyher:'Reyher', hopefix:'Hopefix', fastbolt:'Fastbolt',
-  schaefer:'Schaefer', kingb2b:'King', wasishop:'Wasi'
+  schaefer:'Schaefer', kingb2b:'King', wasishop:'Wasi', argip:'Argip', inoxmare:'Inoxmare'
 };
 let _loginHelperData = [];
 
@@ -2073,6 +2245,189 @@ function openAllWebshopLogins() {
 }
 document.getElementById('login-helper-open-all').addEventListener('click', openAllWebshopLogins);
 
+// ── Admin: Gép-Coop stock (upload + preview) ──────────────────────
+const ARGIP_COL_LABELS = {
+  argip_part_no: 'Argip part #',
+  customer_part_no: 'Customer part #',
+  description_en: 'Argip description EN',
+  customer_description: 'Customer description',
+  base_price_eur: 'Base price EUR',
+  price_lvl_1_eur: 'Price LVL 1 EUR',
+  moq_lvl_1_pcs: 'MOQ LVL 1 (pcs)',
+  price_lvl_2_eur: 'Price LVL 2 EUR',
+  moq_lvl_2_pcs: 'MOQ LVL 2 (pcs)',
+  stock_pcs: 'Stock (pcs)',
+  box_quantity_pcs: 'Box quantity (pcs)',
+  sku: 'SKU',
+};
+let _argipFile = null;
+
+async function admLoadArgipPriceList() {
+  const countEl = document.getElementById('argip-row-count');
+  const thead = document.getElementById('argip-thead');
+  const tbody = document.getElementById('argip-tbody');
+  if (!countEl) return;
+  countEl.textContent = '…'; thead.innerHTML = ''; tbody.innerHTML = '';
+  try {
+    const res = await fetch('/admin/argip-price', { headers: admHeaders() });
+    const data = await res.json();
+    const cols = data.columns || [];
+    if (data.table_missing) {
+      countEl.textContent = 'a tábla még nincs létrehozva';
+      const tr = document.createElement('tr'); const td = document.createElement('td');
+      td.colSpan = cols.length || 1;
+      td.textContent = 'Futtasd a deploy/supabase_argip_price_list.sql migrációt a Supabase-ben.';
+      tr.appendChild(td); tbody.appendChild(tr); return;
+    }
+    countEl.textContent = (data.count || 0) + ' sor';
+    const trh = document.createElement('tr');
+    cols.forEach(c => { const th = document.createElement('th'); th.textContent = ARGIP_COL_LABELS[c] || c; trh.appendChild(th); });
+    thead.appendChild(trh);
+    const rows = data.rows || [];
+    if (!rows.length) {
+      const tr = document.createElement('tr'); const td = document.createElement('td');
+      td.colSpan = cols.length || 1; td.textContent = 'Még nincs feltöltött Argip árlista.';
+      tr.appendChild(td); tbody.appendChild(tr); return;
+    }
+    rows.forEach(row => {
+      const tr = document.createElement('tr');
+      cols.forEach(c => { const td = document.createElement('td'); td.textContent = row[c] != null ? String(row[c]) : ''; tr.appendChild(td); });
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    countEl.textContent = 'hiba a betöltéskor';
+  }
+}
+
+(function wireArgipUpload() {
+  const drop = document.getElementById('argip-drop');
+  const fileInput = document.getElementById('argip-file');
+  const nameEl = document.getElementById('argip-file-name');
+  const btn = document.getElementById('argip-btn-upload');
+  const msg = document.getElementById('argip-upload-msg');
+  if (!drop) return;
+  function setFile(f) {
+    _argipFile = f || null;
+    nameEl.textContent = _argipFile ? _argipFile.name : 'Nincs kiválasztott fájl.';
+    btn.disabled = !_argipFile;
+    msg.textContent = ''; msg.style.color = '';
+  }
+  drop.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', e => setFile(e.target.files[0]));
+  ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('dragover'); }));
+  ['dragleave', 'dragend'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('dragover'); }));
+  drop.addEventListener('drop', e => {
+    e.preventDefault(); drop.classList.remove('dragover');
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) setFile(f);
+  });
+  btn.addEventListener('click', async () => {
+    if (!_argipFile) return;
+    btn.disabled = true; const orig = btn.textContent; btn.textContent = 'Feltöltés…';
+    msg.style.color = ''; msg.textContent = '';
+    try {
+      const form = new FormData(); form.append('file', _argipFile);
+      const res = await fetch('/admin/argip-price/upload', { method: 'POST', headers: admHeaders(), body: form });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Feltöltés sikertelen.');
+      msg.style.color = '#3a7a09'; msg.textContent = `✓ ${data.rows} sor betöltve.`;
+      setFile(null); fileInput.value = '';
+      admLoadArgipPriceList();
+    } catch (err) {
+      msg.style.color = 'var(--red)'; msg.textContent = err.message || 'Feltöltés sikertelen.';
+    } finally {
+      btn.disabled = !_argipFile; btn.textContent = orig;
+    }
+  });
+})();
+
+const GEP_COL_LABELS = {
+  part_no: 'Cikkszám', name: 'Cikknév', sellable: 'Eladható',
+  last_purchase_price: 'Telephelyi utolsó besz. ár',
+  last_purchase_date: 'Telephelyi utolsó besz. dátum',
+  selling_price: 'Eladási ár',
+};
+let _gepFile = null;
+
+async function admLoadGepcoopStock() {
+  const countEl = document.getElementById('gep-row-count');
+  const thead = document.getElementById('gep-thead');
+  const tbody = document.getElementById('gep-tbody');
+  if (!countEl) return;
+  countEl.textContent = '…'; thead.innerHTML = ''; tbody.innerHTML = '';
+  try {
+    const res = await fetch('/admin/gepcoop-stock', { headers: admHeaders() });
+    const data = await res.json();
+    const cols = data.columns || [];
+    if (data.table_missing) {
+      countEl.textContent = 'a tábla még nincs létrehozva';
+      const tr = document.createElement('tr'); const td = document.createElement('td');
+      td.colSpan = cols.length || 1;
+      td.textContent = 'Futtasd a deploy/supabase_gepcoop_stock.sql migrációt a Supabase-ben.';
+      tr.appendChild(td); tbody.appendChild(tr); return;
+    }
+    countEl.textContent = (data.count || 0) + ' sor';
+    const trh = document.createElement('tr');
+    cols.forEach(c => { const th = document.createElement('th'); th.textContent = GEP_COL_LABELS[c] || c; trh.appendChild(th); });
+    thead.appendChild(trh);
+    const rows = data.rows || [];
+    if (!rows.length) {
+      const tr = document.createElement('tr'); const td = document.createElement('td');
+      td.colSpan = cols.length || 1; td.textContent = 'Még nincs feltöltött készlet.';
+      tr.appendChild(td); tbody.appendChild(tr); return;
+    }
+    rows.forEach(row => {
+      const tr = document.createElement('tr');
+      cols.forEach(c => { const td = document.createElement('td'); td.textContent = row[c] != null ? String(row[c]) : ''; tr.appendChild(td); });
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    countEl.textContent = 'hiba a betöltéskor';
+  }
+}
+
+(function wireGepUpload() {
+  const drop = document.getElementById('gep-drop');
+  const fileInput = document.getElementById('gep-file');
+  const nameEl = document.getElementById('gep-file-name');
+  const btn = document.getElementById('gep-btn-upload');
+  const msg = document.getElementById('gep-upload-msg');
+  if (!drop) return;
+  function setFile(f) {
+    _gepFile = f || null;
+    nameEl.textContent = _gepFile ? _gepFile.name : 'Nincs kiválasztott fájl.';
+    btn.disabled = !_gepFile;
+    msg.textContent = ''; msg.style.color = '';
+  }
+  drop.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', e => setFile(e.target.files[0]));
+  ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('dragover'); }));
+  ['dragleave', 'dragend'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('dragover'); }));
+  drop.addEventListener('drop', e => {
+    e.preventDefault(); drop.classList.remove('dragover');
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) setFile(f);
+  });
+  btn.addEventListener('click', async () => {
+    if (!_gepFile) return;
+    btn.disabled = true; const orig = btn.textContent; btn.textContent = 'Feltöltés…';
+    msg.style.color = ''; msg.textContent = '';
+    try {
+      const form = new FormData(); form.append('file', _gepFile);
+      const res = await fetch('/admin/gepcoop-stock/upload', { method: 'POST', headers: admHeaders(), body: form });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Feltöltés sikertelen.');
+      msg.style.color = '#3a7a09'; msg.textContent = `✓ ${data.rows} sor betöltve.`;
+      setFile(null); fileInput.value = '';
+      admLoadGepcoopStock();
+    } catch (err) {
+      msg.style.color = 'var(--red)'; msg.textContent = err.message || 'Feltöltés sikertelen.';
+    } finally {
+      btn.disabled = !_gepFile; btn.textContent = orig;
+    }
+  });
+})();
+
 // ── Admin sidebar tab switching ───────────────────────────────────
 function admSwitchTab(tab) {
   _admPreferredTab = tab;
@@ -2090,6 +2445,12 @@ function admSwitchTab(tab) {
   }
   if (tab === 'suppliers') {
     admLoadHomepageInfo();
+  }
+  if (tab === 'argip') {
+    admLoadArgipPriceList();
+  }
+  if (tab === 'gepcoop') {
+    admLoadGepcoopStock();
   }
   if (admIsMobile()) admSetNavOpen(false);
 }
@@ -2395,6 +2756,51 @@ function admRenderTable(columns, rows) {
     '<tr>' + columns.map(c => `<td>${row[c] ?? ''}</td>`).join('') + '</tr>'
   ).join('');
 }
+
+// ── authenticated template download ─────────────────────────────
+document.getElementById('adm-btn-template').addEventListener('click', async () => {
+  const btn = document.getElementById('adm-btn-template');
+  const msgEl = document.getElementById('adm-template-msg');
+  const originalText = btn.textContent;
+
+  btn.disabled = true;
+  btn.textContent = 'Letöltés…';
+  msgEl.className = 'hidden';
+
+  try {
+    const res = await fetch('/admin/mapping-template', { headers: { 'Authorization': `Bearer ${authToken}` } });
+    if (!res.ok) {
+      let detail = res.status === 401
+        ? 'A bejelentkezés lejárt. Jelentkezzen be újra.'
+        : `A sablon letöltése sikertelen (HTTP ${res.status}).`;
+      try {
+        const data = await res.json();
+        detail = data.detail || detail;
+      } catch (_) {}
+      throw new Error(detail);
+    }
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'mapping_sablon.xlsx';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+
+    msgEl.className = 'adm-msg ok';
+    msgEl.textContent = '✓ A mapping sablon letöltése elindult.';
+  } catch (err) {
+    msgEl.className = 'adm-msg err';
+    msgEl.textContent = `⚠ ${err.message}`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+    msgEl.classList.remove('hidden');
+  }
+});
 
 // ── file picker ──────────────────────────────────────────────────
 document.getElementById('adm-file').addEventListener('change', e => {

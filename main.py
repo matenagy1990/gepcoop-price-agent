@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import os
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, File, HTTPException, Header, Request, UploadFile
@@ -281,6 +282,12 @@ SUPPLIER_META = {
     "schaefer":  {"url": "https://shop.schaefer-peters.com/b2b/en/",    "env": "SUPPLIER_I", "extra": []},
     "kingb2b":   {"url": "https://kingb2b.it/PORTAL/",                  "env": "SUPPLIER_J", "extra": []},
     "wasishop":  {"url": "https://www.wasishop.de",                      "env": "SUPPLIER_K", "extra": []},
+    "inoxmare":  {"url": "https://www.inoxmare.com/en",                  "env": "SUPPLIER_L", "extra": []},
+}
+
+QUERY_SUPPLIER_URLS = {
+    **{sid: meta["url"] for sid, meta in SUPPLIER_META.items()},
+    "argip": "",
 }
 
 def _load_supplier_creds_from_env() -> dict:
@@ -707,8 +714,8 @@ async def query_lookup(
 
     found_ids = {s["supplier_id"] for s in suppliers}
     unavailable = [
-        {"supplier_id": sid, "supplier_url": meta["url"]}
-        for sid, meta in SUPPLIER_META.items()
+        {"supplier_id": sid, "supplier_url": url}
+        for sid, url in QUERY_SUPPLIER_URLS.items()
         if sid not in found_ids
     ]
 
@@ -1133,6 +1140,7 @@ _SUPPLIER_SEARCH_URLS: dict[str, str] = {
     "hopefix":   "https://www.hopefix.cz/en",
     "schaefer":  "https://shop.schaefer-peters.com/b2b/en/search/?query={part_no}",
     "kingb2b":   "https://kingb2b.it/PORTAL/",
+    "inoxmare":  "https://www.inoxmare.com/en/quicksearch/index/resolve/?item={part_no}",
 }
 
 
@@ -1150,6 +1158,7 @@ _SUPPLIER_LOGIN_URLS: dict[str, str] = {
     "schaefer":  "https://shop.schaefer-peters.com/sp/en/login/",
     "kingb2b":   "https://kingb2b.it/PORTAL/",
     "wasishop":  "https://www.wasishop.de/login_form.php",
+    "inoxmare":  "https://www.inoxmare.com/en/customer/account/login/",
 }
 
 
@@ -1487,9 +1496,13 @@ def admin_get_mapping(
 
 
 _MAPPING_COL_ALIASES: dict[str, str] = {
+    "cikkszám":         "gepcoop_part_no",
+    "cikkszam":         "gepcoop_part_no",
     "gépcoop cikkszám": "gepcoop_part_no",
     "gepcoop cikkszám": "gepcoop_part_no",
+    "gepcoop cikkszam": "gepcoop_part_no",
     "cikknév":          "name",
+    "cikknev":          "name",
     "csavarda":         "csavarda_part_no",
     "iron trade":       "irontrade_part_no",
     "irontrade":        "irontrade_part_no",
@@ -1506,18 +1519,47 @@ _MAPPING_COL_ALIASES: dict[str, str] = {
     "kingb2b":          "kingb2b_part_no",
     "wasi":             "wasishop_part_no",
     "wasishop":         "wasishop_part_no",
+    "argip":            "argip_part_no",
+    "vipa":             "vipa_part_no",
+    "inoxmare":         "inoxmare_part_no",
 }
+
+_MAPPING_DB_COLS = [
+    "gepcoop_part_no", "name",
+    "irontrade_part_no", "csavarda_part_no", "koelner_part_no",
+    "mekrs_part_no", "fabory_part_no", "ferdinand_part_no",
+    "reyher_part_no", "hopefix_part_no", "fastbolt_part_no",
+    "schaefer_part_no", "kingb2b_part_no", "wasishop_part_no",
+    "argip_part_no", "vipa_part_no", "inoxmare_part_no",
+]
+
+_MAPPING_TEMPLATE_HEADERS = [
+    "Cikkszám", "Cikknév",
+    "Iron trade", "Csavarda", "Koelner", "Mekrs", "Fabory",
+    "Ferdinand", "Reyher", "Hopefix", "Fastbolt", "Schafer",
+    "King", "Wasi", "Argip", "Vipa", "Inoxmare",
+]
 
 _MAPPING_EMPTY = {"", "-", "–", "—", "N/A", "n/a"}
 
+def _is_missing_mapping_columns(exc: Exception) -> bool:
+    message = str(exc).lower()
+    new_columns = ("argip_part_no", "vipa_part_no", "inoxmare_part_no")
+    return any(column in message for column in new_columns) and (
+        "does not exist" in message
+        or "could not find" in message
+        or "schema cache" in message
+        or "column" in message
+    )
+
+def _normalize_mapping_header(col: str) -> str:
+    stripped = str(col or "").strip()
+    internal = _MAPPING_COL_ALIASES.get(stripped.lower(), stripped)
+    return internal
+
 def _normalize_mapping_columns(df) -> "pandas.DataFrame":
     """Rename human-readable / Hungarian column names to internal snake_case names."""
-    import pandas as pd
-    rename = {}
-    for col in df.columns:
-        low = col.strip().lower()
-        if low in _MAPPING_COL_ALIASES:
-            rename[col] = _MAPPING_COL_ALIASES[low]
+    rename = {col: _normalize_mapping_header(col) for col in df.columns}
     if rename:
         df = df.rename(columns=rename)
     return df
@@ -1557,13 +1599,20 @@ async def admin_upload_mapping(
         except UnicodeDecodeError:
             text = content.decode("latin-1")
         reader  = csv.DictReader(io.StringIO(text))
-        columns = list(reader.fieldnames or [])
+        source_columns = list(reader.fieldnames or [])
+        columns = [_normalize_mapping_header(col) for col in source_columns]
         if "gepcoop_part_no" not in columns:
             raise HTTPException(
                 status_code=400,
-                detail="A CSV-nek tartalmaznia kell a 'gepcoop_part_no' oszlopot.",
+                detail="A CSV-nek tartalmaznia kell a 'gepcoop_part_no' vagy 'Cikkszám' oszlopot.",
             )
-        rows = [dict(r) for r in reader]
+        rows = [
+            {
+                _normalize_mapping_header(col): value
+                for col, value in dict(raw_row).items()
+            }
+            for raw_row in reader
+        ]
 
     if not rows:
         raise HTTPException(status_code=400, detail="A fájl üres.")
@@ -1577,13 +1626,6 @@ async def admin_upload_mapping(
         sb = create_client(sb_url, sb_key)
         TABLE      = "article_mapping"
         BATCH_SIZE = 500
-        DB_COLS    = [
-            "gepcoop_part_no", "name",
-            "csavarda_part_no", "irontrade_part_no", "koelner_part_no",
-            "mekrs_part_no", "fabory_part_no", "ferdinand_part_no",
-            "reyher_part_no", "hopefix_part_no", "fastbolt_part_no",
-            "schaefer_part_no", "kingb2b_part_no", "wasishop_part_no",
-        ]
 
         def _build_sb_rows(raw_rows: list[dict]) -> list[dict]:
             result = []
@@ -1591,12 +1633,14 @@ async def admin_upload_mapping(
                 part_no = _clean_mapping_val(r.get("gepcoop_part_no", ""))
                 if not part_no:
                     continue
-                result.append({col: _clean_mapping_val(r.get(col, "")) for col in DB_COLS})
+                result.append({col: _clean_mapping_val(r.get(col, "")) for col in _MAPPING_DB_COLS})
             return result
 
         sb_rows = await asyncio.to_thread(_build_sb_rows, rows)
 
         def _do_upsert(sb_rows: list[dict]) -> int:
+            # Validate the expanded schema before deleting the current mapping.
+            sb.table(TABLE).select(",".join(_MAPPING_DB_COLS)).limit(1).execute()
             # Full replace: delete all then batch upsert
             sb.table(TABLE).delete().neq("gepcoop_part_no", "").execute()
             total = len(sb_rows)
@@ -1607,7 +1651,18 @@ async def admin_upload_mapping(
                 log.info(f"Supabase upsert batch {i+1}/{batches} ({len(batch)} rows)")
             return total
 
-        supabase_rows = await asyncio.to_thread(_do_upsert, sb_rows)
+        try:
+            supabase_rows = await asyncio.to_thread(_do_upsert, sb_rows)
+        except Exception as exc:
+            if _is_missing_mapping_columns(exc):
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "Az article_mapping tábla új webshoposzlopai hiányoznak. "
+                        "Futtasd a deploy/supabase_article_mapping_new_suppliers.sql migrációt."
+                    ),
+                )
+            raise
         log.info(f"Supabase mapping frissítve: {supabase_rows} sor")
     else:
         log.warning("SUPABASE_URL/KEY hiányzik — csak lokális CSV mentve")
@@ -1616,26 +1671,436 @@ async def admin_upload_mapping(
     return {"filename": fname, "columns": columns, "rows": rows, "supabase_rows": supabase_rows}
 
 
-@app.get("/admin/mapping-template")
-def admin_mapping_template(
+# ── Gép-Coop own stock (independent table: gepcoop_stock) ──────────────
+GEPCOOP_STOCK_TABLE = "gepcoop_stock"
+_GEPCOOP_STOCK_COLS = [
+    "part_no", "name", "sellable",
+    "last_purchase_price", "last_purchase_date", "selling_price",
+]
+
+
+def _norm_header(col: str) -> str:
+    """Lowercase, trim, drop dots and collapse spaces for header matching."""
+    return " ".join(str(col or "").strip().lower().replace(".", "").split())
+
+
+def _slug_header(col: str) -> str:
+    """Normalize arbitrary Excel headers to a loose slug for alias matching."""
+    text = str(col or "").strip().lower()
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
+_GEPCOOP_COL_ALIASES: dict[str, str] = {
+    "cikkszám": "part_no", "cikkszam": "part_no",
+    "gépcoop cikkszám": "part_no", "gepcoop cikkszam": "part_no",
+    "cikknév": "name", "cikknev": "name", "megnevezés": "name", "megnevezes": "name",
+    "eladható": "sellable", "eladhato": "sellable",
+    "eladható mennyiség": "sellable", "eladhato mennyiseg": "sellable",
+    "telephelyi utolsó besz ár": "last_purchase_price",
+    "telephelyi utolso besz ar": "last_purchase_price",
+    "utolsó beszerzési ár": "last_purchase_price", "utolso beszerzesi ar": "last_purchase_price",
+    "telephelyi utolsó besz dátum": "last_purchase_date",
+    "telephelyi utolso besz datum": "last_purchase_date",
+    "utolsó beszerzési dátum": "last_purchase_date", "utolso beszerzesi datum": "last_purchase_date",
+    "eladási ár": "selling_price", "eladasi ar": "selling_price",
+}
+
+
+def _is_missing_gepcoop_table(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return GEPCOOP_STOCK_TABLE in msg and (
+        "does not exist" in msg or "not exist" in msg
+        or "could not find the table" in msg or "schema cache" in msg
+        or "relation" in msg
+    )
+
+
+ARGIP_PRICE_TABLE = "argip_price_list"
+_ARGIP_PRICE_COLS = [
+    "ean_code",
+    "ean_code_line",
+    "list_name",
+    "argip_part_no",
+    "description_pl",
+    "description_en",
+    "customer_description",
+    "customer_part_no",
+    "hs_code",
+    "country_of_origin",
+    "discount_pct",
+    "base_price_eur",
+    "price_lvl_1_eur",
+    "moq_lvl_1_pcs",
+    "price_lvl_2_eur",
+    "moq_lvl_2_pcs",
+    "box_quantity_pcs",
+    "box_weight_kg",
+    "asortyment_id",
+    "asortyment_bazowy_id",
+    "stan_kart_spec_pcs",
+    "stock_pcs",
+    "dose",
+    "sku",
+]
+
+_ARGIP_COL_ALIASES: dict[str, str] = {
+    "argip ean code": "ean_code",
+    "ean code": "ean_code",
+    "ean": "ean_code",
+    "ean code line": "ean_code_line",
+    "list name": "list_name",
+    "argip part": "argip_part_no",
+    "argip part #": "argip_part_no",
+    "argip description pl": "description_pl",
+    "argip description en": "description_en",
+    "customer description": "customer_description",
+    "customer part": "customer_part_no",
+    "customer part #": "customer_part_no",
+    "hs code": "hs_code",
+    "country of origin": "country_of_origin",
+    "discount with b2b disc incl": "discount_pct",
+    "discount b2b disc incl": "discount_pct",
+    "base price eur": "base_price_eur",
+    "price lvl 1 eur": "price_lvl_1_eur",
+    "moq lvl1 pcs": "moq_lvl_1_pcs",
+    "moq lvl 1 pcs": "moq_lvl_1_pcs",
+    "price lvl 2 eur": "price_lvl_2_eur",
+    "moq lvl 2 pcs": "moq_lvl_2_pcs",
+    "box quantity pcs": "box_quantity_pcs",
+    "box weight kg": "box_weight_kg",
+    "asortymentid": "asortyment_id",
+    "asortymentbazowyid": "asortyment_bazowy_id",
+    "stan kart spec szt": "stan_kart_spec_pcs",
+    "stock pcs": "stock_pcs",
+    "dose": "dose",
+    "sku": "sku",
+}
+
+
+def _parse_decimal_or_none(value) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text in _MAPPING_EMPTY:
+        return None
+    text = text.replace(" ", "").replace(",", ".")
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _parse_int_or_none(value) -> int | None:
+    parsed = _parse_decimal_or_none(value)
+    if parsed is None:
+        return None
+    return int(parsed)
+
+
+def _clean_text_or_none(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return None if not text or text in _MAPPING_EMPTY else text
+
+
+def _normalize_argip_columns(df) -> "pandas.DataFrame":
+    rename = {}
+    for col in df.columns:
+        target = _ARGIP_COL_ALIASES.get(_slug_header(col))
+        if target:
+            rename[col] = target
+    if rename:
+        df = df.rename(columns=rename)
+    return df
+
+
+def _build_argip_rows(raw_rows: list[dict]) -> list[dict]:
+    rows: list[dict] = []
+    for raw in raw_rows:
+        row = {
+            "ean_code":             _clean_text_or_none(raw.get("ean_code")),
+            "ean_code_line":        _clean_text_or_none(raw.get("ean_code_line")),
+            "list_name":            _clean_text_or_none(raw.get("list_name")),
+            "argip_part_no":        _clean_text_or_none(raw.get("argip_part_no")),
+            "description_pl":       _clean_text_or_none(raw.get("description_pl")),
+            "description_en":       _clean_text_or_none(raw.get("description_en")),
+            "customer_description": _clean_text_or_none(raw.get("customer_description")),
+            "customer_part_no":     _clean_text_or_none(raw.get("customer_part_no")),
+            "hs_code":              _clean_text_or_none(raw.get("hs_code")),
+            "country_of_origin":    _clean_text_or_none(raw.get("country_of_origin")),
+            "discount_pct":         _parse_decimal_or_none(raw.get("discount_pct")),
+            "base_price_eur":       _parse_decimal_or_none(raw.get("base_price_eur")),
+            "price_lvl_1_eur":      _parse_decimal_or_none(raw.get("price_lvl_1_eur")),
+            "moq_lvl_1_pcs":        _parse_int_or_none(raw.get("moq_lvl_1_pcs")),
+            "price_lvl_2_eur":      _parse_decimal_or_none(raw.get("price_lvl_2_eur")),
+            "moq_lvl_2_pcs":        _parse_int_or_none(raw.get("moq_lvl_2_pcs")),
+            "box_quantity_pcs":     _parse_int_or_none(raw.get("box_quantity_pcs")),
+            "box_weight_kg":        _parse_decimal_or_none(raw.get("box_weight_kg")),
+            "asortyment_id":        _clean_text_or_none(raw.get("asortyment_id")),
+            "asortyment_bazowy_id": _clean_text_or_none(raw.get("asortyment_bazowy_id")),
+            "stan_kart_spec_pcs":   _clean_text_or_none(raw.get("stan_kart_spec_pcs")),
+            "stock_pcs":            _parse_int_or_none(raw.get("stock_pcs")),
+            "dose":                 _parse_decimal_or_none(raw.get("dose")),
+            "sku":                  _clean_text_or_none(raw.get("sku")),
+        }
+        if row["ean_code"]:   # EAN code is now the primary key
+            rows.append(row)
+    return rows
+
+
+def _is_missing_argip_table(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return ARGIP_PRICE_TABLE in msg and (
+        "does not exist" in msg
+        or "not exist" in msg
+        or "could not find the table" in msg
+        or "schema cache" in msg
+        or "relation" in msg
+    )
+
+
+@app.post("/admin/gepcoop-stock/upload")
+async def admin_upload_gepcoop_stock(
+    file: UploadFile = File(...),
     authorization: str | None = Header(default=None),
 ):
+    """Replace the whole Gép-Coop stock table from an uploaded Excel/CSV."""
     _get_admin(authorization)
-    """Return an Excel (.xlsx) template with all column headers and two example rows."""
+    content = await file.read()
+    fname = file.filename or ""
+    ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
+
+    if ext in ("xlsx", "xls"):
+        df = pd.read_excel(io.BytesIO(content), dtype=str).fillna("")
+        headers = [str(c) for c in df.columns]
+        raw_rows = df.to_dict(orient="records")
+    else:
+        try:
+            text = content.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = content.decode("latin-1")
+        reader = csv.DictReader(io.StringIO(text))
+        headers = list(reader.fieldnames or [])
+        raw_rows = [dict(r) for r in reader]
+
+    # Map source headers → internal columns (Hungarian aliases or snake_case).
+    colmap: dict[str, str] = {}
+    for h in headers:
+        target = _GEPCOOP_COL_ALIASES.get(_norm_header(h))
+        if not target and h in _GEPCOOP_STOCK_COLS:
+            target = h
+        if target:
+            colmap[h] = target
+
+    if "part_no" not in colmap.values():
+        raise HTTPException(
+            status_code=400,
+            detail="A fájlnak tartalmaznia kell a 'Cikkszám' oszlopot.",
+        )
+
+    def _clean(v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        return None if s in _MAPPING_EMPTY else s
+
+    built: list[dict] = []
+    for r in raw_rows:
+        row = {col: None for col in _GEPCOOP_STOCK_COLS}
+        for h, col in colmap.items():
+            row[col] = _clean(r.get(h, ""))
+        if row.get("part_no"):
+            built.append(row)
+
+    if not built:
+        raise HTTPException(status_code=400, detail="A fájl nem tartalmaz érvényes sort (hiányzó Cikkszám?).")
+
+    sb = _get_supabase_main()
+    if sb is None:
+        raise HTTPException(status_code=503, detail="Supabase nincs konfigurálva.")
+
+    BATCH = 500
+
+    def _replace(rows_in: list[dict]) -> int:
+        sb.table(GEPCOOP_STOCK_TABLE).delete().neq("part_no", "").execute()
+        total = len(rows_in)
+        for i in range((total + BATCH - 1) // BATCH):
+            batch = rows_in[i * BATCH:(i + 1) * BATCH]
+            sb.table(GEPCOOP_STOCK_TABLE).upsert(batch, on_conflict="part_no").execute()
+            log.info(f"Gépcoop stock upsert batch {i+1} ({len(batch)} sor)")
+        return total
+
+    try:
+        n = await asyncio.to_thread(_replace, built)
+    except Exception as exc:
+        if _is_missing_gepcoop_table(exc):
+            raise HTTPException(
+                status_code=503,
+                detail="A 'gepcoop_stock' tábla hiányzik. Futtasd a deploy/supabase_gepcoop_stock.sql migrációt a Supabase-ben.",
+            )
+        raise HTTPException(status_code=500, detail=f"Gép-Coop készlet feltöltése sikertelen: {exc}")
+
+    log.info(f"Gép-Coop készlet frissítve: {n} sor, fájl={fname}")
+    return {"filename": fname, "rows": n, "columns": _GEPCOOP_STOCK_COLS}
+
+
+@app.get("/admin/gepcoop-stock")
+def admin_get_gepcoop_stock(authorization: str | None = Header(default=None)):
+    """Preview the Gép-Coop stock table (row count + first rows) for the admin."""
+    _get_admin(authorization)
+    sb = _get_supabase_main()
+    base = {"columns": _GEPCOOP_STOCK_COLS, "rows": [], "count": 0}
+    if sb is None:
+        return base
+    try:
+        res = sb.table(GEPCOOP_STOCK_TABLE).select("*").order("part_no").limit(15).execute()
+        rows = res.data or []
+        cnt = sb.table(GEPCOOP_STOCK_TABLE).select("part_no", count="exact").limit(1).execute()
+        count = cnt.count if cnt.count is not None else len(rows)
+    except Exception as exc:
+        if _is_missing_gepcoop_table(exc):
+            return {**base, "table_missing": True}
+        log.warning(f"Gép-Coop készlet előnézet sikertelen: {exc}")
+        return base
+    return {"columns": _GEPCOOP_STOCK_COLS, "rows": rows, "count": count}
+
+
+@app.get("/gepcoop/stock")
+def get_gepcoop_stock(
+    internal_part_no: str,
+    authorization: str | None = Header(default=None),
+):
+    """Return the Gép-Coop stock row for a part (any logged-in user). Always 200."""
+    _get_username(authorization)
+    part = internal_part_no.strip()
+    sb = _get_supabase_main()
+    if sb is None or not part:
+        return {"found": False, "row": None, "part_no": part}
+    try:
+        res = sb.table(GEPCOOP_STOCK_TABLE).select("*").ilike("part_no", part).limit(1).execute()
+    except Exception as exc:
+        if _is_missing_gepcoop_table(exc):
+            return {"found": False, "row": None, "part_no": part, "table_missing": True}
+        log.warning(f"Gép-Coop készlet lekérdezés sikertelen: {exc}")
+        return {"found": False, "row": None, "part_no": part}
+    row = (res.data or [None])[0]
+    return {"found": bool(row), "row": row, "part_no": part}
+
+
+@app.post("/admin/argip-price/upload")
+async def admin_upload_argip_price(
+    file: UploadFile = File(...),
+    authorization: str | None = Header(default=None),
+):
+    """Replace the Argip price table from the uploaded Excel/CSV file."""
+    _get_admin(authorization)
+    content = await file.read()
+    fname = file.filename or ""
+    ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
+
+    if ext in ("xlsx", "xls"):
+        df = pd.read_excel(io.BytesIO(content), dtype=str).fillna("")
+        df.columns = [str(c).strip() for c in df.columns]
+        df = _normalize_argip_columns(df)
+        source_rows = df.to_dict(orient="records")
+    else:
+        try:
+            text = content.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = content.decode("latin-1")
+        reader = csv.DictReader(io.StringIO(text))
+        rows = []
+        for raw_row in reader:
+            row = {}
+            for col, value in dict(raw_row).items():
+                target = _ARGIP_COL_ALIASES.get(_slug_header(col))
+                row[target or col] = value
+            rows.append(row)
+        source_rows = rows
+
+    if not source_rows:
+        raise HTTPException(status_code=400, detail="A fájl üres.")
+
+    argip_rows = _build_argip_rows(source_rows)
+    if not argip_rows:
+        raise HTTPException(
+            status_code=400,
+            detail="A fájl nem tartalmaz érvényes 'Argip part #' oszlopot vagy kitöltött Argip cikkszámot.",
+        )
+
+    sb = _get_supabase_main()
+    if sb is None:
+        raise HTTPException(status_code=503, detail="Supabase nincs konfigurálva.")
+
+    BATCH = 500
+
+    def _replace(rows_in: list[dict]) -> int:
+        sb.table(ARGIP_PRICE_TABLE).select(",".join(_ARGIP_PRICE_COLS)).limit(1).execute()
+        sb.table(ARGIP_PRICE_TABLE).delete().neq("argip_part_no", "").execute()
+        total = len(rows_in)
+        for i in range((total + BATCH - 1) // BATCH):
+            batch = rows_in[i * BATCH:(i + 1) * BATCH]
+            sb.table(ARGIP_PRICE_TABLE).upsert(batch, on_conflict="ean_code").execute()
+            log.info(f"Argip árlista upsert batch {i+1} ({len(batch)} sor)")
+        return total
+
+    try:
+        count = _replace(argip_rows)
+    except Exception as exc:
+        if _is_missing_argip_table(exc):
+            raise HTTPException(
+                status_code=503,
+                detail="Az 'argip_price_list' tábla hiányzik. Futtasd a deploy/supabase_argip_price_list.sql migrációt a Supabase-ben.",
+            )
+        raise HTTPException(status_code=500, detail=f"Argip árlista feltöltése sikertelen: {exc}")
+
+    log.info(f"Argip árlista frissítve: {count} sor, fájl={fname}")
+    return {"filename": fname, "rows": count, "columns": _ARGIP_PRICE_COLS}
+
+
+@app.get("/admin/argip-price")
+def admin_get_argip_price(
+    authorization: str | None = Header(default=None),
+):
+    """Preview the uploaded Argip price list for the admin."""
+    _get_admin(authorization)
+    sb = _get_supabase_main()
+    base = {"columns": _ARGIP_PRICE_COLS, "rows": [], "count": 0}
+    if sb is None:
+        return base
+    try:
+        res = sb.table(ARGIP_PRICE_TABLE).select(",".join(_ARGIP_PRICE_COLS)).order("argip_part_no").limit(15).execute()
+        rows = res.data or []
+        cnt = sb.table(ARGIP_PRICE_TABLE).select("argip_part_no", count="exact").limit(1).execute()
+        count = cnt.count if cnt.count is not None else len(rows)
+    except Exception as exc:
+        if _is_missing_argip_table(exc):
+            return {**base, "table_missing": True}
+        log.warning(f"Argip árlista előnézet sikertelen: {exc}")
+        return base
+    return {"columns": _ARGIP_PRICE_COLS, "rows": rows, "count": count}
+
+
+@app.get("/admin/mapping-template")
+def admin_mapping_template(
+    token: str | None = None,
+    authorization: str | None = Header(default=None),
+):
+    """Return an Excel (.xlsx) template with all column headers and two example rows.
+    The template is not sensitive, so any valid user token is accepted."""
+    if token:
+        _get_username_from_token(token)
+    else:
+        _get_username(authorization)
     import pandas as pd
 
-    headers = [
-        "gepcoop_part_no", "name",
-        "csavarda_part_no", "irontrade_part_no", "koelner_part_no",
-        "mekrs_part_no", "fabory_part_no", "ferdinand_part_no",
-        "reyher_part_no", "hopefix_part_no", "fastbolt_part_no",
-        "schaefer_part_no", "kingb2b_part_no", "wasishop_part_no",
-    ]
     example_rows = [
-        ["GC001", "Hatlapfejű csavar DIN 933 M8x20 horg.", "934012000000801000", "", "61025", "08555.18.02.100.100", "", "", "000094001000050112", "", "", "", "", ""],
-        ["GC002", "Hatlapfejű csavar DIN 931 M10x50 horg.", "", "", "", "", "", "", "", "", "", "", "", ""],
+        ["GC001", "Hatlapfejű csavar DIN 933 M8x20 horg.", "", "934012000000801000", "61025", "08555.18.02.100.100", "", "", "000094001000050112", "", "", "", "", "", "", "", ""],
+        ["GC002", "Hatlapfejű csavar DIN 931 M10x50 horg.", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
     ]
-    df = pd.DataFrame(example_rows, columns=headers)
+    df = pd.DataFrame(example_rows, columns=_MAPPING_TEMPLATE_HEADERS)
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Mapping")

@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 This file is the working technical guide for agents modifying this repository.
-Last verified against the codebase: **2026-06-07**.
+Last verified against the codebase: **2026-06-12**.
 
 ## Project Purpose
 
@@ -16,7 +16,7 @@ A buyer enters an internal Gép-Coop part number. The application:
 6. Streams progress and results to the browser with Server-Sent Events.
 7. Ranks comparable prices and recommends the cheapest supplier.
 
-There are currently **11 implemented supplier integrations**.
+There are currently **13 implemented supplier integrations**.
 
 ## Architecture
 
@@ -119,6 +119,8 @@ Registration is split between `SUPPLIER_META` in `main.py` and
 | `schaefer` | shop.schaefer-peters.com | `SUPPLIER_I` | EUR | none |
 | `kingb2b` | kingb2b.it | `SUPPLIER_J` | EUR | none |
 | `wasishop` | wasishop.de | `SUPPLIER_K` | EUR | none |
+| `argip` | table-backed import | none | EUR | no browser login |
+| `inoxmare` | inoxmare.com | `SUPPLIER_L` | EUR | none |
 
 `ferdinand_part_no` is supported by mapping import/export, but Ferdinand is not
 in `_IMPLEMENTED_SUPPLIERS`, has no scraper, and is therefore not queried.
@@ -140,9 +142,9 @@ EUR_TO_HUF_RATE               Optional; defaults to 400.
 Each supplier uses:
 
 ```text
-SUPPLIER_<A..K>_URL
-SUPPLIER_<A..K>_USERNAME
-SUPPLIER_<A..K>_PASSWORD
+SUPPLIER_<A..L>_URL
+SUPPLIER_<A..L>_USERNAME
+SUPPLIER_<A..L>_PASSWORD
 ```
 
 Additional fields:
@@ -197,16 +199,23 @@ fastbolt_part_no
 schaefer_part_no
 kingb2b_part_no
 wasishop_part_no
+argip_part_no
+vipa_part_no
+inoxmare_part_no
 ```
 
 `lookup_mapping_all()` returns only non-empty mappings whose supplier is in
 `_IMPLEMENTED_SUPPLIERS`.
+The `inoxmare_part_no` column is queried by the implemented Inoxmare scraper.
+The `argip_part_no` column is queried through the separate `argip_price_list`
+table populated from the customer-uploaded Argip Excel.
+The `vipa_part_no` column is still stored for forward compatibility only.
 
 Admin mapping upload:
 
 - accepts CSV or XLSX;
 - recognises Hungarian aliases such as `Gépcoop cikkszám`, `Cikknév`,
-  `Iron trade`, `Schafer`, `King` and `Wasi`;
+  `Iron trade`, `Schafer`, `King`, `Wasi`, `Argip`, `Vipa` and `Inoxmare`;
 - performs a full replacement: deletes current rows, then upserts in batches of 500;
 - uses `gepcoop_part_no` as the conflict key.
 
@@ -256,6 +265,14 @@ Blank label/value pairs are ignored. The database trigger and backend both
 enforce the maximum of five active rows.
 
 Active rows are attached to lookup and query results as `info_items`. Result
+
+### `argip_price_list`
+
+Created by `deploy/supabase_argip_price_list.sql`.
+
+Stores the separately uploaded Argip Excel price list. `argip_part_no` is the
+lookup key used by the mapping table. The live comparison currently prefers
+`price_lvl_1_eur`, falling back to `base_price_eur`.
 cards show the first two rows and put additional rows in a collapsible section.
 No block is rendered when the list is empty.
 
