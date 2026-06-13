@@ -2015,7 +2015,7 @@ async function openSupplierSite(sid, supplierPartNo, btn) {
       // Suppliers without a product deep-link (e.g. kingb2b's SPA) open on the
       // home/portal page — copy the part number so the buyer can paste & search.
       if (data.is_product_link === false && supplierPartNo) {
-        try { await navigator.clipboard.writeText(supplierPartNo); } catch {}
+        try { await writeClipboardText(supplierPartNo); } catch {}
         btn.innerHTML = '📋 Cikkszám vágólapon — keress rá!';
         setTimeout(() => { btn.disabled = false; btn.innerHTML = origText; }, 4000);
         return;
@@ -2151,9 +2151,41 @@ const SUPPLIER_LABELS = {
 };
 let _loginHelperData = [];
 
+async function writeClipboardText(value) {
+  const text = String(value ?? '');
+  if (!text) return false;
+
+  if (window.isSecureContext && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {}
+  }
+
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.top = '-1000px';
+  ta.style.left = '-1000px';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  ta.setSelectionRange(0, ta.value.length);
+
+  let copied = false;
+  try {
+    copied = document.execCommand('copy');
+  } catch {}
+  ta.remove();
+  return copied;
+}
+
 async function copyToClip(btn, value, origLabel) {
   try {
-    await navigator.clipboard.writeText(value);
+    const copied = await writeClipboardText(value);
+    if (!copied) throw new Error('copy failed');
     btn.classList.add('copied');
     btn.textContent = '✓ Másolva';
     setTimeout(() => { btn.classList.remove('copied'); btn.textContent = origLabel; }, 1500);
