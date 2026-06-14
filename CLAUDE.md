@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 This file is the working technical guide for agents modifying this repository.
-Last verified against the codebase: **2026-06-12**.
+Last verified against the codebase: **2026-06-13**.
 
 ## Project Purpose
 
@@ -44,6 +44,8 @@ There are currently **13 implemented supplier integrations**.
         |-- article_mapping
         |-- app_users
         |-- query_runs
+        |-- argip_price_list
+        |-- gepcoop_stock
         |-- supplier_info_items
         `-- Storage: homepage information JSON
 ```
@@ -271,8 +273,16 @@ Active rows are attached to lookup and query results as `info_items`. Result
 Created by `deploy/supabase_argip_price_list.sql`.
 
 Stores the separately uploaded Argip Excel price list. `argip_part_no` is the
-lookup key used by the mapping table. The live comparison currently prefers
-`price_lvl_1_eur`, falling back to `base_price_eur`.
+lookup key used by the mapping table. The live comparison uses `base_price_eur`
+for ranking. `price_lvl_1_eur` and `price_lvl_2_eur` plus their MOQ fields are
+returned to the frontend as informational tiers only.
+
+### `gepcoop_stock`
+
+Created by `deploy/supabase_gepcoop_stock.sql`.
+
+Stores the separately uploaded own-stock table shown as the dedicated Gép-Coop
+result card. Uploads fully replace the table content.
 cards show the first two rows and put additional rows in a collapsible section.
 No block is rendered when the list is empty.
 
@@ -337,6 +347,10 @@ when the server is running on the buyer's own graphical machine.
 - `GET /admin/runs/chart?range=week|month|all`
 - `GET /admin/fx-settings`
 - `POST /admin/fx-settings`
+- `GET /admin/argip-price`
+- `POST /admin/argip-price/upload`
+- `GET /admin/gepcoop-stock`
+- `POST /admin/gepcoop-stock/upload`
 - `GET /admin/suppliers`
 - `POST /admin/supplier-info`
 - `POST /admin/update-supplier`
@@ -405,6 +419,18 @@ Standard successful raw response:
 
 `product_url` is optional and currently captured by some scrapers when the exact
 detail page is known. The frontend prefers it over a generated search URL.
+
+Argip returns additional informational fields:
+
+```json
+{
+  "argip_base_price_eur": 2.24,
+  "argip_price_lvl_1_eur": 2.13,
+  "argip_moq_lvl_1_pcs": 5000,
+  "argip_price_lvl_2_eur": 2.01,
+  "argip_moq_lvl_2_pcs": 25000
+}
+```
 
 `stock` may be:
 
@@ -483,12 +509,15 @@ The result-card button uses this order:
 3. For suppliers without a real part-specific URL, open the home/portal and copy
    the supplier part number to the clipboard.
 
-Hopefix and KingB2B currently use home/portal fallback URLs. Other registered
+Hopefix and KingB2B currently use home/portal fallback URLs. Argip deliberately
+has no webshop-open button because it is table-backed only. Other registered
 suppliers have search/deep-link templates.
 
 The Webshop login helper calls `GET /supplier/login-info`, opens supplier login
-pages in the buyer's browser and supports copying shared credentials. Browser
-password storage is expected to handle future autofill.
+pages in the buyer's browser and supports copying shared credentials. Clipboard
+copy first uses the secure-context Clipboard API and then falls back to a hidden
+textarea plus `document.execCommand('copy')`, so HTTP deployments on plain IP
+addresses still support click-to-copy in most browsers.
 
 ## Frontend Behaviour
 
@@ -516,6 +545,8 @@ Admin tabs:
   - supplier credentials
   - supplier ordering information
 - Part-number mapping
+- Argip price list
+- Gép-Coop stock
 - Run log
 - Exchange rate
 
@@ -550,14 +581,15 @@ Docker URL:
 http://localhost:8080/
 ```
 
-The Docker image is based on the Playwright Python `v1.58.0-noble` image.
+The Docker image is based on the Playwright Python `v1.60.0-noble` image.
 `docker-compose.yml` mounts both `assets/` and `.env`, allocates 256 MB shared
 memory and uses `restart: unless-stopped`.
 
 ## Deployment
 
 Hetzner deployment uses Docker Compose under `/opt/price_agent` and the
-`price-agent.service` systemd unit.
+`price-agent.service` systemd unit. A plain-IP deployment can additionally put
+Nginx in front of the container on port 80, proxying to `127.0.0.1:8080`.
 
 Useful server commands:
 
@@ -573,7 +605,7 @@ repository source is copied into the Docker image:
 
 ```bash
 cd /opt/price_agent
-git pull
+git pull origin main
 docker compose up -d --build
 ```
 
@@ -591,6 +623,9 @@ deploy/supabase_app_users.sql
 deploy/supabase_query_runs_username.sql
 deploy/supabase_query_runs_feedback.sql
 deploy/supabase_supplier_info_items.sql
+deploy/supabase_article_mapping_new_suppliers.sql
+deploy/supabase_argip_price_list.sql
+deploy/supabase_gepcoop_stock.sql
 ```
 
 The repository does not contain the original `article_mapping` or `query_runs`

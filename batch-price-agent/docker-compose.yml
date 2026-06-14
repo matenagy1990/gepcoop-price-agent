@@ -1,0 +1,14 @@
+version: "3.9"
+
+services:
+  batch-price-agent:
+    build: .
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    volumes:
+      # Share session files and GepcoopPriceAgent source with the container
+      - ../GepcoopPriceAgent:/app/GepcoopPriceAgent:ro
+      - ./assets/sessions:/app/batch-price-agent/assets/sessions
+    restart: unless-stopped

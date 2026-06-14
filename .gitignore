@@ -12,6 +12,11 @@ __pycache__/
 assets/.koelner_session.json
 assets/sessions/
 
+# Batch Price Agent — .env és cache kizárva, kód felkerül
+batch-price-agent/.env
+batch-price-agent/**/__pycache__/
+batch-price-agent/__pycache__/
+
 # macOS metadata
 .DS_Store
 **/.DS_Store

@@ -10,9 +10,9 @@ Budget: ~€4.51/month (Hetzner CX22).
 | Component | Details |
 |---|---|
 | Server | Hetzner CX22 — 2 vCPU, 4 GB RAM, 40 GB SSD |
-| OS | Ubuntu 22.04 |
+| OS | Ubuntu 24.04+ / current Hetzner Ubuntu image |
 | App | FastAPI + Playwright/Chromium, running in Docker |
-| URL | `http://<server-ip>:8080` |
+| URL | `http://<server-ip>:8080` or with Nginx `http://<server-ip>` |
 | Auto-restart | Yes — survives reboots and crashes |
 
 Everything runs in the existing Docker container (same image as local).
@@ -24,7 +24,7 @@ No code changes are needed.
 
 1. Register at **hetzner.com/cloud**
 2. Create a new **Project**, then click **+ Add Server**
-   - **Image:** Ubuntu 22.04
+  - **Image:** current Ubuntu image offered by Hetzner
    - **Type:** CX22 (€4.51/month)
    - **SSH keys:** paste your public key (`~/.ssh/id_rsa.pub` or `~/.ssh/id_ed25519.pub`).
      If you don't have one, generate it on your Mac:
@@ -83,6 +83,43 @@ http://65.21.10.42:8080
 
 Log in and test a part number lookup.
 
+If you want plain-IP access without `:8080`, install Nginx and proxy port 80 to
+the container:
+
+```bash
+apt install -y nginx
+```
+
+Create `/etc/nginx/sites-available/price-agent`:
+
+```nginx
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_cache off;
+    }
+}
+```
+
+Enable and reload:
+
+```bash
+ln -sf /etc/nginx/sites-available/price-agent /etc/nginx/sites-enabled/price-agent
+rm -f /etc/nginx/sites-enabled/default
+nginx -t
+systemctl reload nginx
+```
+
 ---
 
 ## Step 5 — (Optional) Restrict firewall
@@ -104,7 +141,7 @@ ufw enable
 | View live logs | `journalctl -u price-agent -f` |
 | Restart app | `systemctl restart price-agent` |
 | Update to latest code | `git -C /opt/price_agent pull && systemctl restart price-agent` |
-| Full rebuild | `cd /opt/price_agent && docker compose up -d --build && systemctl restart price-agent` |
+| Full rebuild | `cd /opt/price_agent && git pull origin main && docker compose build && docker compose up -d && systemctl restart price-agent` |
 
 ---
 
@@ -116,13 +153,14 @@ git -C /opt/price_agent pull
 systemctl restart price-agent
 ```
 
-Docker uses `restart: unless-stopped`, so after a `git pull` a simple service
-restart picks up the latest image/code.
-
-If you changed `requirements.txt` or the Dockerfile, rebuild first:
+Docker uses `restart: unless-stopped`. Because the repository source is copied
+into the image, code changes should also be followed by a rebuild/recreate on
+the server. If you changed `requirements.txt` or the Dockerfile, rebuild first:
 ```bash
 cd /opt/price_agent
+git pull origin main
 docker compose build
+docker compose up -d
 systemctl restart price-agent
 ```
 
@@ -153,7 +191,8 @@ systemctl restart price-agent
    ```
 4. Enable and reload:
    ```bash
-   ln -s /etc/nginx/sites-available/price-agent /etc/nginx/sites-enabled/
+   ln -s /etc/nginx/sites-available/price-agent /etc/nginx/sites-enabled/price-agent
+   rm -f /etc/nginx/sites-enabled/default
    nginx -t && systemctl reload nginx
    ```
 5. (Recommended) Add HTTPS with Let's Encrypt:
@@ -171,6 +210,7 @@ systemctl restart price-agent
 | `ssh: Connection refused` | Wait 60 s after server creation, then retry |
 | `active (running)` but browser shows nothing | Check `journalctl -u price-agent -f` for errors |
 | Docker image download stuck | Wait — Playwright image is ~1.5 GB on first pull |
+| `BrowserType.launch: Executable doesn't exist` | Pull latest code and rebuild the Docker image so Playwright package and base image versions match |
 | Login fails | Username: `gepcoop` Password: `Beszerzes2026!` |
 | App stopped after reboot | `systemctl start price-agent` (shouldn't happen — auto-start is enabled) |
 | Need to update `.env` on server | `nano /opt/price_agent/.env`, then `systemctl restart price-agent` |
