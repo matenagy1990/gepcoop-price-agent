@@ -43,7 +43,11 @@ VIPA_OTP_REQUIRED = (
 
 async def _is_logged_in(page) -> bool:
     try:
-        return await page.locator('a[href*="/en/customer/"]').count() > 0
+        if await page.locator('a[href*="/en/customer/"]').count() > 0:
+            return True
+        body = await page.locator("body").inner_text(timeout=3000)
+        body_l = body.lower()
+        return "hi," in body_l and "in cart" in body_l
     except Exception:
         return False
 

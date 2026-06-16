@@ -739,35 +739,56 @@ async def _run_vipa_otp_login() -> None:
                     _vipa_login_state["error"] = "Üres token érkezett."
                     return
 
+                token_form = page.locator('form[action*="/login"]').last
                 await _fill_first_input(page, [
-                    page.locator('form[action*="/login"]').last.locator('input[name*="token" i]'),
-                    page.locator('form[action*="/login"]').last.locator('input[id*="token" i]'),
-                    page.locator('form[action*="/login"]').last.locator('input[name*="otp" i]'),
-                    page.locator('form[action*="/login"]').last.locator('input[id*="otp" i]'),
-                    page.locator('form[action*="/login"]').last.locator('input[name*="code" i]'),
-                    page.locator('form[action*="/login"]').last.locator('input[id*="code" i]'),
-                    page.locator('form[action*="/login"]').last.locator('input[placeholder*="token" i]'),
-                    page.locator('form[action*="/login"]').last.locator('input[placeholder*="otp" i]'),
-                    page.locator('form[action*="/login"]').last.locator('input[placeholder*="code" i]'),
+                    token_form.locator('input[name="token" i]'),
+                    token_form.locator('input[name*="token" i]'),
+                    token_form.locator('input[id*="token" i]'),
+                    token_form.locator('input[name*="otp" i]'),
+                    token_form.locator('input[id*="otp" i]'),
+                    token_form.locator('input[name*="code" i]'),
+                    token_form.locator('input[id*="code" i]'),
+                    token_form.locator('input[placeholder*="token" i]'),
+                    token_form.locator('input[placeholder*="otp" i]'),
+                    token_form.locator('input[placeholder*="code" i]'),
                     page.get_by_role("textbox", name=re.compile(r"token|otp|code|kód", re.I)),
                 ], token, timeout=5000)
                 _vipa_set_stage("token-filled", page)
-                await _click_first_button(page, [
-                    page.locator('form[action*="/login"]').last.locator('input[type="submit"]'),
-                    page.locator('form[action*="/login"]').last.locator('button[type="submit"]'),
-                    page.get_by_role("button", name=re.compile(r"log\\s*in|login|sign\\s*in", re.I)).last,
-                ], timeout=5000)
+                try:
+                    await _click_first_button(page, [
+                        token_form.locator('input[type="submit"]'),
+                        token_form.locator('button[type="submit"]'),
+                    ], timeout=5000)
+                except Exception as exc:
+                    log.warning("Vipa token submit click failed, trying requestSubmit(): %s", exc)
+                    await token_form.evaluate("form => form.requestSubmit()")
                 _vipa_set_stage("token-submitted", page)
 
                 try:
-                    await page.wait_for_url("**/customer/**", timeout=15000)
+                    await page.wait_for_load_state("domcontentloaded", timeout=15000)
                 except _PwTimeout:
-                    await page.wait_for_timeout(2000)
-                    if not await _vipa_is_logged_in(page):
-                        _vipa_login_state["error"] = (
-                            "Vipa bejelentkezés sikertelen – érvénytelen vagy lejárt token?"
-                        )
-                        return
+                    log.info("Vipa token submit did not reach domcontentloaded in time; continuing with state check")
+                await page.wait_for_timeout(1500)
+
+                if not await _vipa_is_logged_in(page):
+                    _vipa_set_stage("checking-home-after-token", page)
+                    try:
+                        await page.goto(_VIPA_HOME, wait_until="domcontentloaded", timeout=20000)
+                    except _PwTimeout:
+                        log.warning("Vipa home check timed out after token submit")
+
+                if not await _vipa_is_logged_in(page):
+                    _vipa_set_stage("token-login-failed", page)
+                    body = ""
+                    try:
+                        body = (await page.locator("body").inner_text(timeout=3000))[:700]
+                    except Exception:
+                        pass
+                    log.warning("Vipa token login failed. url=%s body=%r", page.url, body)
+                    _vipa_login_state["error"] = (
+                        "Vipa bejelentkezés sikertelen – érvénytelen vagy lejárt token?"
+                    )
+                    return
 
                 await _save_session(context, _VIPA_SESSION)
                 _vipa_set_stage("session-saved", page)
@@ -1856,7 +1877,7 @@ async def vipa_complete_login(
 ):
     """
     Submit the OTP token received by email to complete the Vipa login.
-    Available to any authenticated user. Waits up to 30 s for the background
+    Available to any authenticated user. Waits up to 90 s for the background
     task to finish, then returns the result.
     """
     _get_username(authorization)
@@ -1873,7 +1894,7 @@ async def vipa_complete_login(
     _vipa_login_state["token_event"].set()
 
     try:
-        await asyncio.wait_for(_vipa_login_state["done_event"].wait(), timeout=30)
+        await asyncio.wait_for(_vipa_login_state["done_event"].wait(), timeout=90)
     except asyncio.TimeoutError:
         return {"ok": False, "message": "A bejelentkezési folyamat időtúllépés miatt nem fejeződött be."}
 
