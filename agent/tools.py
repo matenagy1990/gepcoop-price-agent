@@ -51,6 +51,7 @@ _SUPPLIER_URLS: dict[str, str] = {
     "wasishop":  os.environ.get("SUPPLIER_K_URL", "https://www.wasishop.de"),
     "argip":     "",
     "inoxmare":  os.environ.get("SUPPLIER_L_URL", "https://www.inoxmare.com/en"),
+    "vipa":      os.environ.get("SUPPLIER_VIPA_URL", "https://www.vipafasteners.com/en/"),
 }
 
 
@@ -247,7 +248,7 @@ def lookup_mapping(internal_part_no: str) -> dict:
 _IMPLEMENTED_SUPPLIERS = {
     "csavarda", "irontrade", "koelner", "mekrs",
     "fabory", "reyher", "hopefix", "fastbolt", "schaefer", "kingb2b", "wasishop",
-    "argip", "inoxmare",
+    "argip", "inoxmare", "vipa",
 }
 
 
@@ -286,6 +287,8 @@ async def fetch_supplier_price(supplier_id: str, supplier_part_no: str, on_progr
         from browser.supplier_argip import fetch_price
     elif supplier_id == "inoxmare":
         from browser.supplier_inoxmare import fetch_price
+    elif supplier_id == "vipa":
+        from browser.supplier_vipa import fetch_price
     else:
         raise ValueError(
             f"Supplier '{supplier_id}' does not have a browser script yet. "

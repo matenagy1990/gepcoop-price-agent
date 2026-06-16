@@ -283,6 +283,7 @@ SUPPLIER_META = {
     "kingb2b":   {"url": "https://kingb2b.it/PORTAL/",                  "env": "SUPPLIER_J", "extra": []},
     "wasishop":  {"url": "https://www.wasishop.de",                      "env": "SUPPLIER_K", "extra": []},
     "inoxmare":  {"url": "https://www.inoxmare.com/en",                  "env": "SUPPLIER_L", "extra": []},
+    "vipa":      {"url": "https://www.vipafasteners.com/en/",            "env": "SUPPLIER_VIPA", "extra": [], "otp": True},
 }
 
 QUERY_SUPPLIER_URLS = {
@@ -580,6 +581,142 @@ def _total_stock(stock) -> int:
 
 
 
+# ── Vipa OTP login state ──────────────────────────────────────────────
+# Keeps one active OTP login flow at a time (background asyncio Task).
+_vipa_login_state: dict = {
+    "active":      False,
+    "token_event": None,   # asyncio.Event — set when buyer submits the token
+    "done_event":  None,   # asyncio.Event — set when task finishes
+    "token":       None,   # the submitted OTP string
+    "error":       None,   # error message from the task, or None on success
+    "task":        None,   # the running asyncio.Task
+}
+
+
+async def _run_vipa_otp_login() -> None:
+    """Background task: holds a headless Playwright session open for Vipa OTP login."""
+    from playwright.async_api import async_playwright as _pw
+    from playwright.async_api import TimeoutError as _PwTimeout
+    from browser.session_utils import save_session as _save_session
+    from browser.supplier_vipa import SESSION_FILE as _VIPA_SESSION, LOGIN_URL as _VIPA_LOGIN, _is_logged_in as _vipa_is_logged_in
+
+    async def _fill_first_input(page, locators: list, value: str, timeout: int = 15000) -> None:
+        last_exc = None
+        for locator in locators:
+            try:
+                await locator.first.wait_for(timeout=timeout)
+                await locator.first.fill(value)
+                return
+            except Exception as exc:
+                last_exc = exc
+        raise last_exc or RuntimeError("Vipa input mező nem található.")
+
+    async def _click_first_button(page, locators: list, timeout: int = 15000) -> None:
+        last_exc = None
+        for locator in locators:
+            try:
+                await locator.first.wait_for(timeout=timeout)
+                await locator.first.click()
+                return
+            except Exception as exc:
+                last_exc = exc
+        raise last_exc or RuntimeError("Vipa bejelentkezés gomb nem található.")
+
+    try:
+        email = os.environ.get("SUPPLIER_VIPA_USERNAME", "")
+        if not email:
+            _vipa_login_state["error"] = "SUPPLIER_VIPA_USERNAME nincs beállítva a .env fájlban."
+            return
+
+        async with _pw() as pw:
+            browser = await pw.chromium.launch(headless=True)
+            context = await browser.new_context()
+            page = await context.new_page()
+            try:
+                await page.goto(_VIPA_LOGIN, wait_until="domcontentloaded", timeout=30000)
+                await _fill_first_input(page, [
+                    page.get_by_role("textbox", name=re.compile(r"e-?mail", re.I)),
+                    page.locator('input[type="email"]'),
+                    page.locator('input[name*="email" i]'),
+                    page.locator('input[id*="email" i]'),
+                ], email)
+                await _click_first_button(page, [
+                    page.get_by_role("button", name=re.compile(r"log\\s*in|login|sign\\s*in", re.I)),
+                    page.locator('button[type="submit"]'),
+                    page.locator('input[type="submit"]'),
+                ])
+
+                # Wait for Token input (OTP email sent at this point)
+                try:
+                    await _fill_first_input(page, [
+                        page.get_by_role("textbox", name=re.compile(r"token|otp|code|kód", re.I)),
+                        page.locator('input[name*="token" i]'),
+                        page.locator('input[id*="token" i]'),
+                        page.locator('input[name*="otp" i]'),
+                        page.locator('input[id*="otp" i]'),
+                    ], "", timeout=15000)
+                except _PwTimeout:
+                    _vipa_login_state["error"] = "Az OTP e-mail küldése sikertelen – Token mező nem jelent meg."
+                    return
+                except Exception:
+                    _vipa_login_state["error"] = "Az OTP e-mail küldése sikertelen – Token mező nem jelent meg."
+                    return
+
+                log.info("Vipa OTP email sent, waiting for token from admin (max 10 min)")
+
+                # Block here until admin submits the token
+                try:
+                    await asyncio.wait_for(
+                        _vipa_login_state["token_event"].wait(), timeout=600
+                    )
+                except asyncio.TimeoutError:
+                    _vipa_login_state["error"] = "OTP token nem érkezett be 10 percen belül."
+                    return
+
+                token = (_vipa_login_state["token"] or "").strip()
+                if not token:
+                    _vipa_login_state["error"] = "Üres token érkezett."
+                    return
+
+                await _fill_first_input(page, [
+                    page.get_by_role("textbox", name=re.compile(r"token|otp|code|kód", re.I)),
+                    page.locator('input[name*="token" i]'),
+                    page.locator('input[id*="token" i]'),
+                    page.locator('input[name*="otp" i]'),
+                    page.locator('input[id*="otp" i]'),
+                ], token, timeout=5000)
+                await _click_first_button(page, [
+                    page.get_by_role("button", name=re.compile(r"log\\s*in|login|sign\\s*in", re.I)).last,
+                    page.locator('button[type="submit"]').last,
+                    page.locator('input[type="submit"]').last,
+                ], timeout=5000)
+
+                try:
+                    await page.wait_for_url("**/customer/**", timeout=15000)
+                except _PwTimeout:
+                    await page.wait_for_timeout(2000)
+                    if not await _vipa_is_logged_in(page):
+                        _vipa_login_state["error"] = (
+                            "Vipa bejelentkezés sikertelen – érvénytelen vagy lejárt token?"
+                        )
+                        return
+
+                await _save_session(context, _VIPA_SESSION)
+                log.info("Vipa OTP login successful, session saved to %s", _VIPA_SESSION)
+                _vipa_login_state["error"] = None
+
+            finally:
+                await browser.close()
+
+    except Exception as exc:
+        log.exception("Vipa OTP login task failed: %s", exc)
+        _vipa_login_state["error"] = str(exc)
+    finally:
+        _vipa_login_state["active"] = False
+        if _vipa_login_state["done_event"]:
+            _vipa_login_state["done_event"].set()
+
+
 # ── Models ────────────────────────────────────────────────────────────
 class LoginRequest(BaseModel):
     username: str
@@ -632,6 +769,10 @@ class UpdateFxSettingsRequest(BaseModel):
 
 class HomepageInfoRequest(BaseModel):
     text: str = ""
+
+
+class VipaCompleteLoginRequest(BaseModel):
+    token: str
 
 
 # ── Routes ────────────────────────────────────────────────────────────
@@ -977,29 +1118,41 @@ async def query_stream(
                         log.error(f"[{run_id}][{sid}] fetch failed: {exc}")
                         err_msg = str(exc)
                         results[sid] = {"error": err_msg, "supplier_id": sid}
-                        # Any supplier login failure → prompt user to update password
-                        _login_fail_keywords = (
-                            "please check credentials",
-                            "check credentials",
-                            "authentication failed",
-                            "unauthorized",
-                            "invalid user",
-                            "invalid password",
-                            "wrong password",
-                            "hibás jelszó",
-                            "érvénytelen felhasználó",
-                        )
-                        _is_login_fail = any(kw in err_msg.lower() for kw in _login_fail_keywords)
-                        if _is_login_fail:
+                        # Vipa OTP required — auto-start the OTP email flow and
+                        # ask the buyer for the token on the main page.
+                        if sid == "vipa" and "aktív session nem áll rendelkezésre" in err_msg.lower():
+                            otp_info = _start_vipa_otp_flow()
                             await queue.put(("password_required", {
                                 "supplier": sid,
                                 "msg": err_msg,
+                                "otp": True,
+                                "otp_email": os.environ.get("SUPPLIER_VIPA_USERNAME", ""),
+                                "otp_message": otp_info.get("message", ""),
                             }))
                         else:
-                            await queue.put(("progress", {
-                                "step": "browser", "status": "error",
-                                "msg": err_msg, "supplier": sid,
-                            }))
+                            # Generic login failures → prompt user to update password
+                            _login_fail_keywords = (
+                                "please check credentials",
+                                "check credentials",
+                                "authentication failed",
+                                "unauthorized",
+                                "invalid user",
+                                "invalid password",
+                                "wrong password",
+                                "hibás jelszó",
+                                "érvénytelen felhasználó",
+                            )
+                            _is_login_fail = any(kw in err_msg.lower() for kw in _login_fail_keywords)
+                            if _is_login_fail:
+                                await queue.put(("password_required", {
+                                    "supplier": sid,
+                                    "msg": err_msg,
+                                }))
+                            else:
+                                await queue.put(("progress", {
+                                    "step": "browser", "status": "error",
+                                    "msg": err_msg, "supplier": sid,
+                                }))
 
             await asyncio.gather(*[fetch_one(s) for s in supplier_list])
 
@@ -1153,6 +1306,7 @@ _SUPPLIER_SEARCH_URLS: dict[str, str] = {
     "schaefer":  "https://shop.schaefer-peters.com/b2b/en/search/?query={part_no}",
     "kingb2b":   "https://kingb2b.it/PORTAL/",
     "inoxmare":  "https://www.inoxmare.com/en/quicksearch/index/resolve/?item={part_no}",
+    "vipa":      "https://www.vipafasteners.com/en/search/?q={part_no}",
 }
 
 
@@ -1171,6 +1325,7 @@ _SUPPLIER_LOGIN_URLS: dict[str, str] = {
     "kingb2b":   "https://kingb2b.it/PORTAL/",
     "wasishop":  "https://www.wasishop.de/login_form.php",
     "inoxmare":  "https://www.inoxmare.com/en/customer/account/login/",
+    "vipa":      "https://www.vipafasteners.com/en/login/",
 }
 
 
@@ -1461,6 +1616,82 @@ async def reyher_open(req: Request, authorization: str | None = Header(default=N
 async def _reyher_open_headed(supplier_part_no: str) -> None:
     """Open a headed Chromium window logged in to Reyher, searching for supplier_part_no."""
     await _supplier_open_headed("reyher", supplier_part_no)
+
+
+def _start_vipa_otp_flow() -> dict:
+    """
+    Kick off the headless OTP login flow if one is not already running.
+    Navigates to the Vipa login page, enters the configured email and clicks
+    'Log in' — this triggers the OTP email. The background task then waits for
+    the token via POST /vipa/complete-login.
+
+    Returns a dict with ok/message describing the result. Safe to call when a
+    flow is already active (it will report that one is in progress).
+    """
+    email = os.environ.get("SUPPLIER_VIPA_USERNAME", "—")
+    if _vipa_login_state["active"]:
+        return {
+            "ok": True,
+            "already_running": True,
+            "message": f"OTP folyamat már fut. Adja meg a(z) {email} címre érkezett tokent.",
+        }
+
+    _vipa_login_state["active"]      = True
+    _vipa_login_state["token"]       = None
+    _vipa_login_state["error"]       = None
+    _vipa_login_state["token_event"] = asyncio.Event()
+    _vipa_login_state["done_event"]  = asyncio.Event()
+    _vipa_login_state["task"]        = asyncio.create_task(_run_vipa_otp_login())
+
+    return {
+        "ok": True,
+        "already_running": False,
+        "message": f"OTP e-mail elküldve a(z) {email} címre. Ellenőrizze a postaládát, majd írja be a tokent.",
+    }
+
+
+@app.post("/vipa/initiate-login")
+async def vipa_initiate_login(authorization: str | None = Header(default=None)):
+    """
+    Start a headless OTP login flow for Vipa. Available to any authenticated
+    user so a buyer can request the token straight from the main page.
+    """
+    _get_username(authorization)
+    return _start_vipa_otp_flow()
+
+
+@app.post("/vipa/complete-login")
+async def vipa_complete_login(
+    req: VipaCompleteLoginRequest,
+    authorization: str | None = Header(default=None),
+):
+    """
+    Submit the OTP token received by email to complete the Vipa login.
+    Available to any authenticated user. Waits up to 30 s for the background
+    task to finish, then returns the result.
+    """
+    _get_username(authorization)
+    if not _vipa_login_state["active"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Nincs aktív Vipa OTP folyamat. Először kattintson az 'OTP kérése' gombra.",
+        )
+    token = (req.token or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="A token nem lehet üres.")
+
+    _vipa_login_state["token"] = token
+    _vipa_login_state["token_event"].set()
+
+    try:
+        await asyncio.wait_for(_vipa_login_state["done_event"].wait(), timeout=30)
+    except asyncio.TimeoutError:
+        return {"ok": False, "message": "A bejelentkezési folyamat időtúllépés miatt nem fejeződött be."}
+
+    if _vipa_login_state["error"]:
+        raise HTTPException(status_code=400, detail=_vipa_login_state["error"])
+
+    return {"ok": True, "message": "Vipa bejelentkezés sikeres! A session el lett mentve."}
 
 
 @app.get("/health")
@@ -2339,6 +2570,7 @@ def admin_get_suppliers(
             "id":       sid,
             "url":      creds.get("url", ""),
             "username": creds.get("username", ""),
+            "otp":      meta.get("otp", False),
             "info_items": info_by_supplier.get(sid, []),
             "extra":    [
                 {"key": ex["key"], "label": ex["label"], "value": creds.get(ex["key"], "")}

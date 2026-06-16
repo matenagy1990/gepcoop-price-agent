@@ -161,7 +161,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
 
             product_url = page.url
             log.info(
-                "Inoxmare parsed — part=%s, price=%s EUR/db, stock=%s, url=%s",
+                "Inoxmare parsed — part=%s, price=%s EUR/100db, stock=%s, url=%s",
                 part_no,
                 price_raw,
                 stock,
@@ -171,7 +171,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 "supplier_part_no": part_no,
                 "product_name": description,
                 "price_raw": price_raw,
-                "price_unit_qty": 1,
+                "price_unit_qty": 100,
                 "currency": "EUR",
                 "unit": "db",
                 "stock": stock,

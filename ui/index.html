@@ -731,6 +731,7 @@
           <button class="sup-chip" data-sid="wasishop">Wasishop</button>
           <button class="sup-chip" data-sid="argip">Argip</button>
           <button class="sup-chip" data-sid="inoxmare">Inoxmare</button>
+          <button class="sup-chip" data-sid="vipa">Vipa</button>
         </div>
       </div>
     </div>
@@ -1553,7 +1554,7 @@ function showConfirmCard(data) {
 }
 
 /* ══ SUPPLIER CHIP LOGIC ══════════════════════════════════════ */
-const ALL_SIDS = ['csavarda','irontrade','koelner','mekrs','fabory','reyher','hopefix','fastbolt','schaefer','kingb2b','wasishop','argip','inoxmare'];
+const ALL_SIDS = ['csavarda','irontrade','koelner','mekrs','fabory','reyher','hopefix','fastbolt','schaefer','kingb2b','wasishop','argip','inoxmare','vipa'];
 
 function getChip(sid){ return document.querySelector(`#sup-filter-bar [data-sid="${sid}"]`); }
 
@@ -1610,6 +1611,8 @@ async function startSearch(partNo, filterSids) {
   _currentFilterSids = filterSids || '';
   _skippedSuppliers = new Set();
   _suppliersNeedAdmin = new Set();
+  _suppliersNeedOtp   = new Set();
+  _suppliersOtpEmail  = {};
   setQueryBusy(true);
 
   try {
@@ -1666,10 +1669,18 @@ function parseSSE(raw) {
 
 /* ══ SUPPLIER PASSWORD ACTION ════════════════════════════════ */
 let _suppliersNeedAdmin = new Set();
+let _suppliersNeedOtp   = new Set();
+let _suppliersOtpEmail  = {};
 
 function handlePasswordRequired(data) {
   const sid = data.supplier;
-  if (sid) _suppliersNeedAdmin.add(sid);
+  if (sid) {
+    _suppliersNeedAdmin.add(sid);
+    if (data.otp) {
+      _suppliersNeedOtp.add(sid);
+      _suppliersOtpEmail[sid] = data.otp_email || '';
+    }
+  }
   // Mark the active pipeline step as error
   if (sid) {
     const steps = supPipeState[sid] || [];
@@ -1692,6 +1703,59 @@ function openSupplierAdmin(sid) {
 
 function closePwModal() {
   document.getElementById('pw-modal').classList.add('hidden');
+}
+
+/* ══ VIPA OTP — main-page (buyer) flow ═══════════════════════════════ */
+async function vipaFrontLogin(sid) {
+  const tokenEl = document.getElementById(`vipa-front-token-${sid}`);
+  const token   = (tokenEl?.value || '').trim();
+  const msgEl   = document.getElementById(`vipa-front-msg-${sid}`);
+  if (!token) {
+    msgEl.className = 'adm-msg err';
+    msgEl.textContent = '⚠ Adja meg a tokent.';
+    msgEl.classList.remove('hidden');
+    return;
+  }
+  msgEl.className = 'adm-msg';
+  msgEl.textContent = 'Bejelentkezés folyamatban…';
+  msgEl.classList.remove('hidden');
+  try {
+    const res = await fetch('/vipa/complete-login', {
+      method: 'POST',
+      headers: { 'Content-Type':'application/json', 'Authorization': `Bearer ${authToken}` },
+      body: JSON.stringify({ token }),
+    });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.detail || d.message || 'Hiba történt');
+    msgEl.className = 'adm-msg ok';
+    msgEl.innerHTML = '✓ Sikeres bejelentkezés! Kérjük indítsa újra a lekérdezést.';
+    if (tokenEl) tokenEl.value = '';
+  } catch(err) {
+    msgEl.className = 'adm-msg err';
+    msgEl.textContent = `⚠ ${err.message}`;
+  }
+  msgEl.classList.remove('hidden');
+}
+
+async function vipaFrontResend(sid) {
+  const msgEl = document.getElementById(`vipa-front-msg-${sid}`);
+  msgEl.className = 'adm-msg';
+  msgEl.textContent = 'Új token kérése folyamatban…';
+  msgEl.classList.remove('hidden');
+  try {
+    const res = await fetch('/vipa/initiate-login', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${authToken}` },
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || 'Hiba történt');
+    msgEl.className = 'adm-msg ok';
+    msgEl.textContent = d.message || 'Új token elküldve.';
+  } catch(err) {
+    msgEl.className = 'adm-msg err';
+    msgEl.textContent = `⚠ ${err.message}`;
+  }
+  msgEl.classList.remove('hidden');
 }
 
 function handleProgress(ev) {
@@ -1941,13 +2005,34 @@ function renderResults(data) {
     } else if (hasError) {
       bodyHtml = `<div class="sup-err">⚠️ ${r.error}</div>`;
       if (needsAdmin) {
-        bodyHtml += `
-          <div style="margin-top:12px;font-size:13px;color:var(--muted);line-height:1.55">
-            A webshop jelszava valószínűleg megváltozott. A frissítéshez nyissa meg az Admin panel Webshop belépés menüjét.
-          </div>
-          ${isAdminUser ? `<div style="margin-top:12px">
-            <button class="btn-upload" onclick="openSupplierAdmin('${sid}')">⚙ Admin megnyitása</button>
-          </div>` : ''}`;
+        const isOtp = _suppliersNeedOtp.has(sid);
+        if (isOtp) {
+          const email = _suppliersOtpEmail[sid] || '';
+          bodyHtml += `
+            <div class="vipa-otp-box" style="margin-top:14px;padding:14px;border:1px solid var(--border);border-radius:10px;background:rgba(43,108,176,.05)">
+              <div style="font-size:13px;color:var(--fg);line-height:1.55;margin-bottom:10px">
+                A Vipa bejelentkezés egyszer használatos tokent (OTP) igényel.
+                Elküldtünk egy tokent a(z) <strong>${escHtml(email)}</strong> címre.
+                Kérjük adja meg a kapott tokent a bejelentkezéshez.
+              </div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+                <input type="text" id="vipa-front-token-${sid}" placeholder="Token az e-mailből"
+                       style="flex:1;min-width:150px;height:38px;padding:0 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--fg);font-size:14px">
+                <button class="btn-upload" onclick="vipaFrontLogin('${sid}')">Bejelentkezés</button>
+                <button class="btn-ghost" onclick="vipaFrontResend('${sid}')"
+                        style="background:none;border:1px solid var(--border);color:var(--muted);padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px">Új token kérése</button>
+              </div>
+              <div id="vipa-front-msg-${sid}" class="hidden" style="margin-top:10px;font-size:13px"></div>
+            </div>`;
+        } else {
+          bodyHtml += `
+            <div style="margin-top:12px;font-size:13px;color:var(--muted);line-height:1.55">
+              A webshop jelszava valószínűleg megváltozott. A frissítéshez nyissa meg az Admin panel Webshop belépés menüjét.
+            </div>
+            ${isAdminUser ? `<div style="margin-top:12px">
+              <button class="btn-upload" onclick="openSupplierAdmin('${sid}')">⚙ Admin megnyitása</button>
+            </div>` : ''}`;
+        }
       }
     } else if (isManual) {
       bodyHtml = `
@@ -2266,7 +2351,8 @@ document.getElementById('btn-admin').addEventListener('click', openAdminOverlay)
 const SUPPLIER_LABELS = {
   csavarda:'Csavarda', irontrade:'Irontrade', koelner:'Koelner', mekrs:'Mekrs',
   fabory:'Fabory', reyher:'Reyher', hopefix:'Hopefix', fastbolt:'Fastbolt',
-  schaefer:'Schaefer', kingb2b:'King', wasishop:'Wasi', argip:'Argip', inoxmare:'Inoxmare'
+  schaefer:'Schaefer', kingb2b:'King', wasishop:'Wasi', argip:'Argip', inoxmare:'Inoxmare',
+  vipa:'Vipa'
 };
 let _loginHelperData = [];
 
@@ -3195,10 +3281,25 @@ function admRenderSuppliers(suppliers) {
                  autocomplete="off" readonly onfocus="this.removeAttribute('readonly')">
         </div>`).join('')}
         <div class="field">
-          <label>Felhasználónév</label>
+          <label>${s.otp ? 'Bejelentkezési e-mail' : 'Felhasználónév'}</label>
           <input type="text" id="sup-user-${s.id}" value="${escAttr(s.username)}"
                  autocomplete="off" readonly onfocus="this.removeAttribute('readonly')">
         </div>
+        ${s.otp ? `
+        <div style="display:flex;align-items:flex-end;padding-bottom:1px">
+          <button class="btn-upload" id="sup-btn-${s.id}"
+                  onclick="admSaveSupplier('${s.id}')">E-mail mentése</button>
+        </div>
+        <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+          <div class="adm-info-title" style="margin-bottom:10px">OTP Bejelentkezés</div>
+          <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+            <button class="btn-upload" onclick="vipaInitiateLogin('${s.id}')">1. OTP kérése</button>
+            <input type="text" id="vipa-token-${s.id}" class="adm-input"
+                   placeholder="Token (e-mailből)" style="flex:1;min-width:160px;height:36px;padding:0 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--fg)">
+            <button class="btn-upload" onclick="vipaCompleteLogin('${s.id}')">2. Bejelentkezés</button>
+          </div>
+          <div id="vipa-otp-msg-${s.id}" class="hidden" style="margin-top:8px"></div>
+        </div>` : `
         <div class="field">
           <label>Jelszó</label>
           <div class="pw-wrap">
@@ -3214,7 +3315,7 @@ function admRenderSuppliers(suppliers) {
         <div style="display:flex;align-items:flex-end;padding-bottom:1px">
           <button class="btn-upload" id="sup-btn-${s.id}"
                   onclick="admSaveSupplier('${s.id}')">Mentés</button>
-        </div>
+        </div>`}
       </div>
       <div class="adm-info-block">
         <div class="adm-info-head">
@@ -3241,7 +3342,8 @@ function admToggleSupPw(sid) {
 
 async function admSaveSupplier(sid) {
   const username = document.getElementById(`sup-user-${sid}`).value.trim();
-  const password = document.getElementById(`sup-pass-${sid}`).value;
+  const passEl   = document.getElementById(`sup-pass-${sid}`);
+  const password = passEl ? passEl.value : '';
   const msgEl    = document.getElementById(`sup-msg-${sid}`);
   const btn      = document.getElementById(`sup-btn-${sid}`);
 
@@ -3586,6 +3688,60 @@ async function admSaveUserAdmin(username, rowId, btn) {
     btn.disabled = false;
     btn.textContent = orig;
   }
+}
+
+/* ══ VIPA OTP LOGIN ══════════════════════════════════════════════════ */
+
+async function vipaInitiateLogin(sid) {
+  const msgEl = document.getElementById(`vipa-otp-msg-${sid}`);
+  msgEl.className = 'adm-msg';
+  msgEl.textContent = 'OTP kérés folyamatban…';
+  msgEl.classList.remove('hidden');
+  try {
+    const res = await fetch('/vipa/initiate-login', {
+      method: 'POST',
+      headers: admHeaders(),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || 'Hiba történt');
+    msgEl.className = 'adm-msg ok';
+    msgEl.textContent = d.message;
+  } catch(err) {
+    msgEl.className = 'adm-msg err';
+    msgEl.textContent = `⚠ ${err.message}`;
+  }
+  msgEl.classList.remove('hidden');
+}
+
+async function vipaCompleteLogin(sid) {
+  const tokenEl = document.getElementById(`vipa-token-${sid}`);
+  const token   = tokenEl.value.trim();
+  const msgEl   = document.getElementById(`vipa-otp-msg-${sid}`);
+  if (!token) {
+    msgEl.className = 'adm-msg err';
+    msgEl.textContent = '⚠ Adja meg a tokent.';
+    msgEl.classList.remove('hidden');
+    return;
+  }
+  msgEl.className = 'adm-msg';
+  msgEl.textContent = 'Bejelentkezés folyamatban…';
+  msgEl.classList.remove('hidden');
+  try {
+    const res = await fetch('/vipa/complete-login', {
+      method: 'POST',
+      headers: admHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ token }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || 'Hiba történt');
+    msgEl.className = 'adm-msg ok';
+    msgEl.textContent = d.message;
+    tokenEl.value = '';
+  } catch(err) {
+    msgEl.className = 'adm-msg err';
+    msgEl.textContent = `⚠ ${err.message}`;
+  }
+  msgEl.classList.remove('hidden');
 }
 </script>
 </body>
