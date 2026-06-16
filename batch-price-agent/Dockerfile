@@ -1,23 +1,17 @@
-FROM python:3.12-slim
+FROM mcr.microsoft.com/playwright/python:v1.60.0-noble
 
 WORKDIR /app
 
-# System deps for Playwright
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    wget curl gnupg libnss3 libatk1.0-0 libatk-bridge2.0-0 \
-    libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
-    libxfixes3 libxrandr2 libgbm1 libasound2 \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-RUN playwright install chromium --with-deps
 
-# Mount the existing GepcoopPriceAgent at /app/GepcoopPriceAgent
-# so we can import agent.tools and browser.*
+# GepcoopPriceAgent forrás /app/GepcoopPriceAgent-ként lesz mountolva
+# a docker-compose.yml volumes szekciójában
 
 COPY . /app/batch-price-agent
 
 WORKDIR /app/batch-price-agent
+
+EXPOSE 8001
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
