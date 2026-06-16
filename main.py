@@ -591,7 +591,23 @@ _vipa_login_state: dict = {
     "token":       None,   # the submitted OTP string
     "error":       None,   # error message from the task, or None on success
     "task":        None,   # the running asyncio.Task
+    "stage":       None,   # short diagnostic stage for logs/timeouts
+    "last_url":    None,
 }
+
+
+def _vipa_set_stage(stage: str, page=None) -> None:
+    _vipa_login_state["stage"] = stage
+    if page is not None:
+        try:
+            _vipa_login_state["last_url"] = page.url
+        except Exception:
+            pass
+    log.info(
+        "Vipa OTP stage: %s%s",
+        stage,
+        f" url={_vipa_login_state.get('last_url')}" if _vipa_login_state.get("last_url") else "",
+    )
 
 
 async def _run_vipa_otp_login() -> None:
@@ -603,66 +619,108 @@ async def _run_vipa_otp_login() -> None:
 
     async def _fill_first_input(page, locators: list, value: str, timeout: int = 15000) -> None:
         last_exc = None
-        for locator in locators:
-            try:
-                await locator.first.wait_for(timeout=timeout)
-                await locator.first.fill(value)
-                return
-            except Exception as exc:
-                last_exc = exc
+        deadline = asyncio.get_running_loop().time() + (timeout / 1000)
+        while asyncio.get_running_loop().time() < deadline:
+            for locator in locators:
+                try:
+                    if await locator.first.count() == 0:
+                        continue
+                    if not await locator.first.is_visible(timeout=500):
+                        continue
+                    await locator.first.fill(value, timeout=1500)
+                    return
+                except Exception as exc:
+                    last_exc = exc
+            await asyncio.sleep(0.25)
         raise last_exc or RuntimeError("Vipa input mező nem található.")
 
     async def _click_first_button(page, locators: list, timeout: int = 15000) -> None:
         last_exc = None
-        for locator in locators:
-            try:
-                await locator.first.wait_for(timeout=timeout)
-                await locator.first.click()
-                return
-            except Exception as exc:
-                last_exc = exc
+        deadline = asyncio.get_running_loop().time() + (timeout / 1000)
+        while asyncio.get_running_loop().time() < deadline:
+            for locator in locators:
+                try:
+                    if await locator.first.count() == 0:
+                        continue
+                    if not await locator.first.is_visible(timeout=500):
+                        continue
+                    await locator.first.click(timeout=1500)
+                    return
+                except Exception as exc:
+                    last_exc = exc
+            await asyncio.sleep(0.25)
         raise last_exc or RuntimeError("Vipa bejelentkezés gomb nem található.")
 
     try:
+        _vipa_set_stage("starting")
         email = os.environ.get("SUPPLIER_VIPA_USERNAME", "")
         if not email:
             _vipa_login_state["error"] = "SUPPLIER_VIPA_USERNAME nincs beállítva a .env fájlban."
             return
 
         async with _pw() as pw:
+            _vipa_set_stage("launching-browser")
             browser = await pw.chromium.launch(headless=True)
+            _vipa_set_stage("creating-context")
             context = await browser.new_context()
             page = await context.new_page()
+            page.on("requestfailed", lambda req: log.warning("Vipa OTP request failed: %s %s", req.url, req.failure))
             try:
+                _vipa_set_stage("opening-login-page", page)
                 await page.goto(_VIPA_LOGIN, wait_until="domcontentloaded", timeout=30000)
+                _vipa_set_stage("login-page-loaded", page)
+                login_form = page.locator('form[action*="/login"]').last
+                await login_form.wait_for(state="visible", timeout=15000)
                 await _fill_first_input(page, [
-                    page.get_by_role("textbox", name=re.compile(r"e-?mail", re.I)),
-                    page.locator('input[type="email"]'),
-                    page.locator('input[name*="email" i]'),
-                    page.locator('input[id*="email" i]'),
+                    login_form.locator('input[type="email"]'),
+                    login_form.locator('input[name*="email" i]'),
+                    login_form.locator('input[placeholder*="email" i]'),
                 ], email)
+                _vipa_set_stage("email-filled", page)
                 await _click_first_button(page, [
-                    page.get_by_role("button", name=re.compile(r"log\\s*in|login|sign\\s*in", re.I)),
-                    page.locator('button[type="submit"]'),
-                    page.locator('input[type="submit"]'),
+                    login_form.locator('input[type="submit"]'),
+                    login_form.locator('button[type="submit"]'),
+                    login_form.get_by_role("button", name=re.compile(r"log\\s*in|login|sign\\s*in", re.I)),
                 ])
+                _vipa_set_stage("login-clicked-waiting-token", page)
 
                 # Wait for Token input (OTP email sent at this point)
                 try:
                     await _fill_first_input(page, [
+                        page.locator('form[action*="/login"]').last.locator('input[name*="token" i]'),
+                        page.locator('form[action*="/login"]').last.locator('input[id*="token" i]'),
+                        page.locator('form[action*="/login"]').last.locator('input[name*="otp" i]'),
+                        page.locator('form[action*="/login"]').last.locator('input[id*="otp" i]'),
+                        page.locator('form[action*="/login"]').last.locator('input[name*="code" i]'),
+                        page.locator('form[action*="/login"]').last.locator('input[id*="code" i]'),
+                        page.locator('form[action*="/login"]').last.locator('input[placeholder*="token" i]'),
+                        page.locator('form[action*="/login"]').last.locator('input[placeholder*="otp" i]'),
+                        page.locator('form[action*="/login"]').last.locator('input[placeholder*="code" i]'),
                         page.get_by_role("textbox", name=re.compile(r"token|otp|code|kód", re.I)),
-                        page.locator('input[name*="token" i]'),
-                        page.locator('input[id*="token" i]'),
-                        page.locator('input[name*="otp" i]'),
-                        page.locator('input[id*="otp" i]'),
-                    ], "", timeout=15000)
+                    ], "", timeout=45000)
                 except _PwTimeout:
-                    _vipa_login_state["error"] = "Az OTP e-mail küldése sikertelen – Token mező nem jelent meg."
+                    _vipa_set_stage("token-field-timeout", page)
+                    body = ""
+                    try:
+                        body = (await page.locator("body").inner_text(timeout=3000))[:700]
+                    except Exception:
+                        pass
+                    log.warning("Vipa OTP token field timeout. body=%r", body)
+                    _vipa_login_state["error"] = (
+                        "Az OTP e-mail küldése sikertelen – Token mező nem jelent meg. "
+                        f"Állapot: {_vipa_login_state.get('stage')}, URL: {_vipa_login_state.get('last_url') or 'ismeretlen'}"
+                    )
                     return
-                except Exception:
-                    _vipa_login_state["error"] = "Az OTP e-mail küldése sikertelen – Token mező nem jelent meg."
+                except Exception as exc:
+                    _vipa_set_stage("token-field-error", page)
+                    log.exception("Vipa OTP token field detection failed: %s", exc)
+                    _vipa_login_state["error"] = (
+                        "Az OTP e-mail küldése sikertelen – Token mező nem jelent meg. "
+                        f"Állapot: {_vipa_login_state.get('stage')}, hiba: {exc}"
+                    )
                     return
 
+                _vipa_set_stage("token-field-ready", page)
                 if _vipa_login_state.get("ready_event"):
                     _vipa_login_state["ready_event"].set()
                 log.info("Vipa OTP email sent, waiting for token from admin (max 10 min)")
@@ -682,17 +740,24 @@ async def _run_vipa_otp_login() -> None:
                     return
 
                 await _fill_first_input(page, [
+                    page.locator('form[action*="/login"]').last.locator('input[name*="token" i]'),
+                    page.locator('form[action*="/login"]').last.locator('input[id*="token" i]'),
+                    page.locator('form[action*="/login"]').last.locator('input[name*="otp" i]'),
+                    page.locator('form[action*="/login"]').last.locator('input[id*="otp" i]'),
+                    page.locator('form[action*="/login"]').last.locator('input[name*="code" i]'),
+                    page.locator('form[action*="/login"]').last.locator('input[id*="code" i]'),
+                    page.locator('form[action*="/login"]').last.locator('input[placeholder*="token" i]'),
+                    page.locator('form[action*="/login"]').last.locator('input[placeholder*="otp" i]'),
+                    page.locator('form[action*="/login"]').last.locator('input[placeholder*="code" i]'),
                     page.get_by_role("textbox", name=re.compile(r"token|otp|code|kód", re.I)),
-                    page.locator('input[name*="token" i]'),
-                    page.locator('input[id*="token" i]'),
-                    page.locator('input[name*="otp" i]'),
-                    page.locator('input[id*="otp" i]'),
                 ], token, timeout=5000)
+                _vipa_set_stage("token-filled", page)
                 await _click_first_button(page, [
+                    page.locator('form[action*="/login"]').last.locator('input[type="submit"]'),
+                    page.locator('form[action*="/login"]').last.locator('button[type="submit"]'),
                     page.get_by_role("button", name=re.compile(r"log\\s*in|login|sign\\s*in", re.I)).last,
-                    page.locator('button[type="submit"]').last,
-                    page.locator('input[type="submit"]').last,
                 ], timeout=5000)
+                _vipa_set_stage("token-submitted", page)
 
                 try:
                     await page.wait_for_url("**/customer/**", timeout=15000)
@@ -705,6 +770,7 @@ async def _run_vipa_otp_login() -> None:
                         return
 
                 await _save_session(context, _VIPA_SESSION)
+                _vipa_set_stage("session-saved", page)
                 log.info("Vipa OTP login successful, session saved to %s", _VIPA_SESSION)
                 _vipa_login_state["error"] = None
 
@@ -784,11 +850,15 @@ async def _ensure_vipa_session_before_scraping(queue: asyncio.Queue) -> None:
         raise RuntimeError("Vipa OTP folyamat nem indult el.")
 
     try:
-        await asyncio.wait_for(ready_event.wait(), timeout=30)
+        await asyncio.wait_for(ready_event.wait(), timeout=90)
     except asyncio.TimeoutError as exc:
         if _vipa_login_state.get("error"):
             raise RuntimeError(str(_vipa_login_state["error"])) from exc
-        raise RuntimeError("Vipa OTP token generálás nem indult el időben.") from exc
+        stage = _vipa_login_state.get("stage") or "ismeretlen"
+        last_url = _vipa_login_state.get("last_url") or "ismeretlen"
+        raise RuntimeError(
+            f"Vipa OTP token generálás nem indult el időben. Állapot: {stage}, URL: {last_url}"
+        ) from exc
 
     if _vipa_login_state.get("error"):
         raise RuntimeError(str(_vipa_login_state["error"]))
@@ -1755,6 +1825,8 @@ def _start_vipa_otp_flow() -> dict:
     _vipa_login_state["active"]      = True
     _vipa_login_state["token"]       = None
     _vipa_login_state["error"]       = None
+    _vipa_login_state["stage"]       = "queued"
+    _vipa_login_state["last_url"]    = None
     _vipa_login_state["token_event"] = asyncio.Event()
     _vipa_login_state["ready_event"] = asyncio.Event()
     _vipa_login_state["done_event"]  = asyncio.Event()
