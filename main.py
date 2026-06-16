@@ -334,8 +334,10 @@ def _lookup_part_name(part_no: str) -> str:
         pass
     return ""
 
-UI_FILE   = Path(__file__).parent / "ui" / "index.html"
-LOGO_FILE = Path(__file__).parent / "assets" / "logo.png"
+UI_FILE        = Path(__file__).parent / "ui" / "index.html"
+LOGO_FILE      = Path(__file__).parent / "assets" / "logo.png"
+TILE_SINGLE    = Path(__file__).parent / "assets" / "images" / "tile-single.jpg"
+TILE_BATCH     = Path(__file__).parent / "assets" / "images" / "tile-batch.jpg"
 # Admin-editable homepage info block (shown to every logged-in buyer).
 INFO_FILE = Path(__file__).parent / "assets" / "homepage_info.json"   # local mirror
 INFO_STORAGE_BUCKET = os.environ.get("SUPABASE_INFO_BUCKET", "internal-docs").strip() or "internal-docs"
@@ -641,6 +643,16 @@ def serve_ui():
 @app.get("/logo.png")
 def serve_logo():
     return FileResponse(LOGO_FILE, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/tile-single.jpg")
+def serve_tile_single():
+    return FileResponse(TILE_SINGLE, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/tile-batch.jpg")
+def serve_tile_batch():
+    return FileResponse(TILE_BATCH, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/homepage-info")

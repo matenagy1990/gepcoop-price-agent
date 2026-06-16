@@ -432,7 +432,7 @@
   .btn-delete-map:disabled{opacity:.4;cursor:not-allowed}
 
   /* ── SUPPLIER PASSWORD MODAL ── */
-  #pw-modal{position:fixed;inset:0;background:rgba(22,27,99,.55);backdrop-filter:blur(3px);z-index:600;display:flex;align-items:center;justify-content:center;padding:24px}
+  #pw-modal,#batch-pw-modal{position:fixed;inset:0;background:rgba(22,27,99,.55);backdrop-filter:blur(3px);z-index:600;display:flex;align-items:center;justify-content:center;padding:24px}
   .pw-card{background:var(--white);border-radius:var(--r);box-shadow:0 8px 48px rgba(22,27,99,.22);width:100%;max-width:440px;overflow:hidden;border-top:4px solid #d97706}
   .pw-hdr{background:linear-gradient(135deg,#92400e 0%,#b45309 100%);padding:16px 24px;color:#fff;font-family:'Oswald',sans-serif;font-size:14px;font-weight:700;letter-spacing:1.8px;text-transform:uppercase;display:flex;align-items:center;justify-content:space-between}
   .pw-close-btn{background:rgba(255,255,255,.15);border:none;color:#fff;width:28px;height:28px;border-radius:6px;font-size:18px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .15s;flex-shrink:0}
@@ -582,6 +582,25 @@
     .adm-user-head,
     .adm-user-actions{flex-direction:column;align-items:stretch}
   }
+
+  /* ── App Selector ── */
+  #app-select-page{min-height:100vh;display:flex;flex-direction:column;background:linear-gradient(135deg,#0d1437 0%,#121b4e 42%,#173f66 100%)}
+  .app-select-hdr{display:flex;justify-content:space-between;align-items:center;padding:16px 32px;border-bottom:1px solid rgba(255,255,255,.1)}
+  .app-select-hdr-brand{display:flex;align-items:center;gap:12px;color:#fff;font-size:16px;font-weight:600;opacity:.9}
+  .app-select-hdr-right{display:flex;align-items:center;gap:14px;color:rgba(255,255,255,.65);font-size:13px}
+  .app-select-logout{background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.22);color:#fff;padding:5px 14px;border-radius:20px;cursor:pointer;font-size:12px;transition:background .2s}
+  .app-select-logout:hover{background:rgba(255,255,255,.2)}
+  .app-select-body{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 24px}
+  .app-select-heading{color:rgba(255,255,255,.85);font-size:18px;font-weight:500;margin-bottom:36px;letter-spacing:.3px}
+  .app-tiles{display:flex;gap:28px;flex-wrap:wrap;justify-content:center}
+  .app-tile{width:675px;height:450px;border-radius:16px;overflow:hidden;cursor:pointer;position:relative;box-shadow:0 8px 32px rgba(0,0,0,.45);transition:transform .22s,box-shadow .22s,border-color .22s;border:2px solid rgba(255,255,255,.1)}
+  .app-tile:hover{transform:translateY(-7px) scale(1.01);box-shadow:0 18px 52px rgba(0,0,0,.55);border-color:rgba(255,255,255,.35)}
+  .app-tile-img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .3s}
+  .app-tile:hover .app-tile-img{transform:scale(1.05)}
+  .app-tile-overlay{position:absolute;inset:0;background:linear-gradient(to top,rgba(0,0,0,.82) 0%,rgba(0,0,0,.28) 55%,rgba(0,0,0,.08) 100%);display:flex;flex-direction:column;justify-content:flex-end;padding:22px 24px}
+  .app-tile-name{font-size:19px;font-weight:700;color:#fff;margin-bottom:5px;letter-spacing:.2px}
+  .app-tile-desc{font-size:12px;color:rgba(255,255,255,.72);line-height:1.55}
+  @media(max-width:780px){.app-tiles{flex-direction:column;align-items:center}.app-tile{width:min(675px,100%);height:394px}}
 </style>
 </head>
 <body>
@@ -621,6 +640,39 @@
   </div>
 </div>
 
+<!-- APP SELECTOR -->
+<div id="app-select-page" class="hidden">
+  <div class="app-select-hdr">
+    <div class="app-select-hdr-brand">
+      <img src="/logo.png" alt="Gép-Coop" style="height:30px;width:auto;filter:brightness(0) invert(1)">
+      <span>Gép-Coop Eszközök</span>
+    </div>
+    <div class="app-select-hdr-right">
+      <span id="select-username-display"></span>
+      <button class="app-select-logout" onclick="doLogout()">Kilépés</button>
+    </div>
+  </div>
+  <div class="app-select-body">
+    <div class="app-select-heading">Válassz alkalmazást</div>
+    <div class="app-tiles">
+      <div class="app-tile" onclick="enterPriceAgent()">
+        <img class="app-tile-img" src="/tile-single.jpg" alt="Beszerzési árlekérdező">
+        <div class="app-tile-overlay">
+          <div class="app-tile-name">Beszerzési árlekérdező</div>
+          <div class="app-tile-desc">Egyedi cikkszám keresés webshopokban, valós idejű ár és készlet adatok</div>
+        </div>
+      </div>
+      <div class="app-tile" onclick="showBatchPwModal()">
+        <img class="app-tile-img" src="/tile-batch.jpg" alt="Tömeges árlekérdezés">
+        <div class="app-tile-overlay">
+          <div class="app-tile-name">Tömeges árlekérdezés</div>
+          <div class="app-tile-desc">Akár 50 cikkszám egyszerre, összehasonlító mátrix és Excel export</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- APP -->
 <div id="app-page" class="hidden">
   <header class="app-hdr">
@@ -633,6 +685,7 @@
       <div class="user-chip" id="user-display"></div>
       <button class="btn-admin hidden" id="btn-webshop-login">🔑 Webshop belépés</button>
       <button class="btn-admin" id="btn-admin">⚙ Admin</button>
+      <button class="btn-logout" onclick="showAppSelect()" style="border-color:rgba(22,27,99,.2);color:var(--navy2)" onmouseover="this.style.borderColor='var(--blue)';this.style.color='var(--blue)'" onmouseout="this.style.borderColor='rgba(22,27,99,.2)';this.style.color='var(--navy2)'">⊞ Alkalmazások</button>
       <button class="btn-logout" id="btn-logout">Kijelentkezés</button>
     </div>
   </header>
@@ -758,6 +811,24 @@
         <button class="pw-btn" id="pw-save-btn">Admin megnyitása</button>
       </div>
       <div class="pw-msg" id="pw-msg"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ BATCH AGENT PASSWORD MODAL ═══════════════════════════════ -->
+<div id="batch-pw-modal" class="hidden" onclick="if(event.target===this)closeBatchPwModal()">
+  <div class="pw-card" style="border-top-color:#2F5496">
+    <div class="pw-hdr" style="background:linear-gradient(135deg,#161B63 0%,#1F4977 100%)">
+      <span>🔒 Hozzáférés szükséges</span>
+      <button class="pw-close-btn" onclick="closeBatchPwModal()" title="Bezárás">&times;</button>
+    </div>
+    <div class="pw-body">
+      <div class="pw-desc">A Tömeges árlekérdező eléréséhez add meg a hozzáférési kódot.</div>
+      <div class="pw-row">
+        <input class="pw-input" type="password" id="batch-pw-input" placeholder="Hozzáférési kód" autocomplete="off" onkeydown="if(event.key==='Enter')checkBatchPassword()">
+        <button class="pw-btn" onclick="checkBatchPassword()">Belépés</button>
+      </div>
+      <div class="pw-msg" id="batch-pw-msg"></div>
     </div>
   </div>
 </div>
@@ -1145,7 +1216,10 @@ if (window.visualViewport) {
 syncResponsiveLayout();
 
 /* ══ BOOT ═══════════════════════════════════════════════════════ */
-if (authToken) bootstrapSession();
+if (authToken) {
+  document.getElementById('login-page').classList.add('hidden');
+  bootstrapSession();
+}
 
 /* ══ LOGIN ══════════════════════════════════════════════════════ */
 document.getElementById('login-pass').addEventListener('keydown', e => { if (e.key==='Enter') doLogin(); });
@@ -1204,7 +1278,7 @@ async function doLogin() {
     sessionStorage.setItem('gc_user', username);
     sessionStorage.setItem('gc_is_admin', isAdminUser ? '1' : '0');
     sessionStorage.setItem('gc_is_primary_admin', isPrimaryAdminUser ? '1' : '0');
-    showApp();
+    showAppSelect();
   } catch(err) { showLoginErr(err.message); }
   finally { btn.disabled=false; txt.textContent='Bejelentkezés'; }
 }
@@ -1283,14 +1357,58 @@ async function bootstrapSession() {
     sessionStorage.setItem('gc_user', username);
     sessionStorage.setItem('gc_is_admin', isAdminUser ? '1' : '0');
     sessionStorage.setItem('gc_is_primary_admin', isPrimaryAdminUser ? '1' : '0');
-    showApp();
+    const goSelect = new URLSearchParams(window.location.search).get('select') === '1';
+    if (goSelect) { window.history.replaceState({}, '', window.location.pathname); showAppSelect(); }
+    else showApp();
   } catch (_) {
     doLogout(false);
   }
 }
 
+function showAppSelect(){
+  document.getElementById('login-page').classList.add('hidden');
+  document.getElementById('app-page').classList.add('hidden');
+  document.getElementById('app-select-page').classList.remove('hidden');
+  document.getElementById('select-username-display').textContent = username || '';
+}
+
+function enterPriceAgent(){
+  document.getElementById('app-select-page').classList.add('hidden');
+  showApp();
+}
+
+function openBatchAgent(){
+  window.location.href = `${window.location.protocol}//${window.location.hostname}:8001`;
+}
+
+function showBatchPwModal(){
+  document.getElementById('batch-pw-input').value = '';
+  document.getElementById('batch-pw-msg').textContent = '';
+  document.getElementById('batch-pw-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('batch-pw-input').focus(), 80);
+}
+
+function closeBatchPwModal(){
+  document.getElementById('batch-pw-modal').classList.add('hidden');
+}
+
+function checkBatchPassword(){
+  const val = document.getElementById('batch-pw-input').value;
+  const msg = document.getElementById('batch-pw-msg');
+  if(val === 'admin007'){
+    closeBatchPwModal();
+    openBatchAgent();
+  } else {
+    msg.style.color = 'var(--red)';
+    msg.textContent = 'Helytelen kód. Próbáld újra.';
+    document.getElementById('batch-pw-input').value = '';
+    document.getElementById('batch-pw-input').focus();
+  }
+}
+
 function showApp(){
   document.getElementById('login-page').classList.add('hidden');
+  document.getElementById('app-select-page').classList.add('hidden');
   document.getElementById('app-page').classList.remove('hidden');
   document.getElementById('user-display').textContent = username || 'User';
   document.getElementById('btn-admin').classList.toggle('hidden', !isAdminUser);
@@ -1314,6 +1432,7 @@ function doLogout(clearLoginFields = true) {
   document.getElementById('btn-webshop-login').classList.add('hidden');
   document.getElementById('info-card').classList.add('hidden');
   document.getElementById('app-page').classList.add('hidden');
+  document.getElementById('app-select-page').classList.add('hidden');
   document.getElementById('login-page').classList.remove('hidden');
   document.getElementById('adm-logged-as').textContent = '';
   if (clearLoginFields) {

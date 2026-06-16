@@ -195,7 +195,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
                 raise RuntimeError(MSG_NOT_FOUND)
 
             suggestion = page.locator("#ui-id-1 li").filter(has_text=supplier_part_no).first
-            await suggestion.click(timeout=5000)
+            await suggestion.click(timeout=12000)
             try:
                 await page.wait_for_load_state("networkidle", timeout=20000)
             except PlaywrightTimeout:

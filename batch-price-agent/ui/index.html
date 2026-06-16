@@ -1,0 +1,1173 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Batch Price Agent – Gép-Coop</title>
+<style>
+:root {
+  --blue:    #2F5496;
+  --blue-lt: #4472C4;
+  --green:   #375623;
+  --green-bg:#C6EFCE;
+  --yellow:  #9C6500;
+  --yellow-bg:#FFEB9C;
+  --red:     #9C0006;
+  --red-bg:  #FFC7CE;
+  --gray:    #595959;
+  --bg:      #F5F7FA;
+  --white:   #ffffff;
+  --border:  #D0D7E3;
+  --radius:  8px;
+  --shadow:  0 2px 8px rgba(0,0,0,.10);
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: #1a1a2e; font-size: 14px; }
+
+/* ── Nav ── */
+nav {
+  background: var(--blue);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 24px;
+  height: 52px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  box-shadow: 0 2px 6px rgba(0,0,0,.25);
+}
+nav .logo { font-size: 17px; font-weight: 700; letter-spacing: .3px; margin-right: auto; }
+nav button {
+  background: transparent;
+  border: 1.5px solid rgba(255,255,255,.4);
+  color: #fff;
+  padding: 6px 14px;
+  border-radius: 20px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all .2s;
+}
+nav button:hover, nav button.active {
+  background: rgba(255,255,255,.15);
+  border-color: #fff;
+}
+
+/* ── Layout ── */
+main { max-width: 1400px; margin: 0 auto; padding: 28px 24px; }
+.screen { display: none; }
+.screen.active { display: block; }
+
+/* ── Card ── */
+.card {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 24px;
+  margin-bottom: 20px;
+}
+.card-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--blue);
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── Form ── */
+label { display: block; font-weight: 600; margin-bottom: 5px; color: var(--gray); font-size: 13px; }
+input[type=text], textarea {
+  width: 100%;
+  border: 1.5px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  transition: border .2s;
+  background: var(--white);
+}
+input[type=text]:focus, textarea:focus { outline: none; border-color: var(--blue-lt); }
+textarea { resize: vertical; min-height: 200px; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.6; }
+
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+@media (max-width: 700px) { .form-grid { grid-template-columns: 1fr; } }
+
+/* ── Supplier selector ── */
+.supplier-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px;
+  margin-top: 6px;
+}
+.supplier-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1.5px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all .2s;
+  user-select: none;
+  font-size: 13px;
+}
+.supplier-chip:hover { border-color: var(--blue-lt); background: #f0f4ff; }
+.supplier-chip.selected { border-color: var(--blue); background: #EBF0FB; color: var(--blue); font-weight: 600; }
+.supplier-chip input { accent-color: var(--blue); }
+
+/* ── Buttons ── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 20px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  transition: all .2s;
+}
+.btn-primary { background: var(--blue); color: #fff; }
+.btn-primary:hover { background: var(--blue-lt); }
+.btn-success { background: #217346; color: #fff; }
+.btn-success:hover { background: #1a5c38; }
+.btn-ghost { background: transparent; border: 1.5px solid var(--border); color: var(--gray); }
+.btn-ghost:hover { border-color: var(--blue); color: var(--blue); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 16px; }
+
+/* ── Tags ── */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.tag-green  { background: var(--green-bg);  color: var(--green); }
+.tag-yellow { background: var(--yellow-bg); color: var(--yellow); }
+.tag-red    { background: var(--red-bg);    color: var(--red); }
+.tag-gray   { background: #e8e8e8;          color: #555; }
+.tag-blue   { background: #dce7f5;          color: var(--blue); }
+
+/* ── Tables ── */
+.table-wrap { overflow-x: auto; border-radius: var(--radius); border: 1px solid var(--border); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th {
+  background: var(--blue);
+  color: #fff;
+  padding: 10px 12px;
+  text-align: left;
+  font-weight: 600;
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+}
+td { padding: 9px 12px; border-bottom: 1px solid #eef0f5; vertical-align: middle; }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: #f7f9ff; }
+.sticky-col { position: sticky; left: 0; background: var(--white); z-index: 1; border-right: 1px solid var(--border); }
+th.sticky-col { background: var(--blue); z-index: 2; }
+
+/* ── Progress bars ── */
+.progress-bar-outer { background: #e8edf5; border-radius: 20px; height: 8px; width: 100%; min-width: 80px; }
+.progress-bar-inner { background: var(--blue-lt); height: 8px; border-radius: 20px; transition: width .3s; }
+.progress-bar-inner.done { background: #217346; }
+.progress-bar-inner.error { background: #c0392b; }
+
+/* ── Matrix cell ── */
+.cell-error  { background: var(--red-bg);    }
+.cell-nomap  { background: #f5f5f5; color: #999; font-style: italic; }
+.price-cell { white-space: nowrap; font-size: 13px; font-weight: 600; padding: 8px 10px; vertical-align: middle; }
+.stock-cell { white-space: nowrap; font-size: 12px; color: var(--gray); padding: 8px 10px; vertical-align: middle; border-left: 1px dashed #dde3f0; }
+.rank-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 800;
+  vertical-align: middle;
+  margin-right: 3px;
+}
+.rank-1 { background: #217346; color: #fff; }
+.rank-2 { background: #9C6500; color: #fff; }
+.rank-3 { background: #2F5496; color: #fff; }
+
+/* ── Stat grid ── */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.stat-box {
+  text-align: center;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #f8faff;
+}
+.stat-num { font-size: 28px; font-weight: 800; color: var(--blue); line-height: 1; }
+.stat-label { font-size: 12px; color: var(--gray); margin-top: 4px; }
+
+/* ── Alert ── */
+.alert { padding: 12px 16px; border-radius: 6px; font-size: 13px; margin-bottom: 14px; }
+.alert-warn { background: #fff3cd; border: 1px solid #ffc107; color: #664d03; }
+.alert-info { background: #cff4fc; border: 1px solid #0dcaf0; color: #055160; }
+.alert-success { background: var(--green-bg); border: 1px solid #aedfa6; color: var(--green); }
+.alert-error { background: var(--red-bg); border: 1px solid #f5c2c7; color: var(--red); }
+
+/* ── Spinner ── */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner { display: inline-block; width: 16px; height: 16px; border: 2.5px solid #c0cfe8; border-top-color: var(--blue); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: middle; }
+
+/* ── Toast ── */
+#toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  background: #1a1a2e;
+  color: #fff;
+  padding: 12px 20px;
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  opacity: 0;
+  transition: opacity .3s;
+  z-index: 999;
+  pointer-events: none;
+  max-width: 320px;
+}
+#toast.show { opacity: 1; }
+
+/* ── Misc ── */
+.section-title { font-size: 14px; font-weight: 700; color: var(--blue); margin: 20px 0 10px; }
+.text-muted { color: var(--gray); font-size: 12px; }
+.mt8 { margin-top: 8px; }
+.mt16 { margin-top: 16px; }
+.flex-between { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
+</style>
+</head>
+<body>
+
+<nav>
+  <span class="logo">⚙️ Batch Price Agent</span>
+  <button onclick="showScreen('new-run')" id="nav-new-run">+ Új lekérdezés</button>
+  <button onclick="showScreen('past-runs')" id="nav-past-runs">Korábbi futások</button>
+  <button onclick="window.location.href=window.location.protocol+'//'+window.location.hostname+':8080?select=1'" style="margin-left:auto;opacity:.85">⊞ Alkalmazások</button>
+</nav>
+
+<main>
+
+<!-- ════════════════════════════════════════════
+     SCREEN 1: Új batch projekt
+════════════════════════════════════════════ -->
+<div id="screen-new-run" class="screen active">
+  <div class="card">
+    <div class="card-title">🚀 Új batch árlekérdezés</div>
+
+    <div class="form-grid">
+      <div>
+        <label for="project-name">Projekt neve</label>
+        <input type="text" id="project-name" placeholder='pl. „Q3 kötőelem ellenőrzés"' maxlength="120"/>
+        <div class="text-muted mt8">Ha üresen hagyod, automatikusan generáljuk.</div>
+      </div>
+      <div>
+        <label>Gép-Coop cikkszámok <span class="text-muted">(max. 50, soronként egy)</span></label>
+        <div class="text-muted mt8" id="part-count-info">0 / 50 cikkszám</div>
+      </div>
+    </div>
+
+    <div class="section-title">Webshopok kiválasztása</div>
+    <div style="margin-bottom:6px">
+      <button class="btn btn-ghost" style="padding:4px 12px;font-size:12px" onclick="selectAllSuppliers()">Összes</button>
+      <button class="btn btn-ghost" style="padding:4px 12px;font-size:12px;margin-left:6px" onclick="clearSuppliers()">Törlés</button>
+    </div>
+    <div class="supplier-grid" id="supplier-grid">
+      <!-- JS tölti fel -->
+    </div>
+
+    <div class="form-grid mt16">
+      <div>
+        <label for="part-numbers">Cikkszámok beillesztése</label>
+        <textarea id="part-numbers" placeholder="GC001&#10;GC002&#10;GC003&#10;..."></textarea>
+      </div>
+      <div>
+        <div class="section-title" style="margin-top:0">Segítség</div>
+        <ul style="font-size:13px;color:var(--gray);line-height:2;padding-left:18px">
+          <li>Illeszd be az Excelből a cikkszámokat</li>
+          <li>Soronként egy cikkszám</li>
+          <li>Az üres sorokat és duplikátumokat automatikusan kiszűrjük</li>
+          <li>Maximum 50 cikkszám / futás</li>
+          <li>Az előellenőrzés megmutatja, mely webshopokban kereshető az adott cikk</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="startPreview()">
+        🔍 Mapping előellenőrzés
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════
+     SCREEN 2: Mapping preview
+════════════════════════════════════════════ -->
+<div id="screen-preview" class="screen">
+  <div class="flex-between" style="margin-bottom:16px">
+    <div style="font-size:18px;font-weight:700;color:var(--blue)" id="preview-title">Mapping előellenőrzés</div>
+    <button class="btn btn-ghost" onclick="showScreen('new-run')">← Vissza</button>
+  </div>
+
+  <div class="card">
+    <div class="stat-grid" id="preview-stats"></div>
+  </div>
+
+  <div id="preview-duplicates-alert"></div>
+  <div id="preview-missing-alert"></div>
+
+  <div class="card">
+    <div class="card-title">📋 Mapping táblázat</div>
+    <div class="table-wrap" id="preview-table-wrap"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">📊 Futási terv</div>
+    <div id="preview-plan"></div>
+    <div class="btn-row mt16">
+      <button class="btn btn-primary" id="start-run-btn" onclick="startBatchRun()">
+        ▶ Futás indítása
+      </button>
+      <button class="btn btn-ghost" onclick="showScreen('new-run')">Módosítás</button>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════
+     SCREEN 3: Progress
+════════════════════════════════════════════ -->
+<div id="screen-progress" class="screen">
+  <div class="flex-between" style="margin-bottom:16px">
+    <div>
+      <div style="font-size:18px;font-weight:700;color:var(--blue)">Batch futás folyamatban…</div>
+      <div class="text-muted" id="progress-run-id"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Összesített haladás</div>
+    <div id="progress-summary" style="font-size:15px;margin-bottom:12px">Inicializálás…</div>
+    <div class="progress-bar-outer" style="height:12px">
+      <div class="progress-bar-inner" id="global-progress-bar" style="width:0%"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Webshopok állapota</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Webshop</th>
+          <th>Állapot</th>
+          <th>Haladás</th>
+          <th>Siker</th>
+          <th>Hiba</th>
+        </tr></thead>
+        <tbody id="supplier-progress-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Legfrissebb esemény</div>
+    <div id="latest-event" class="text-muted" style="font-family:monospace;font-size:12px">Várakozás…</div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════
+     SCREEN 4: Eredmények
+════════════════════════════════════════════ -->
+<div id="screen-results" class="screen">
+  <div class="flex-between" style="margin-bottom:16px">
+    <div>
+      <div style="font-size:18px;font-weight:700;color:var(--blue)" id="results-title">Eredmények</div>
+      <div class="text-muted" id="results-subtitle"></div>
+    </div>
+    <div class="btn-row" style="margin-top:0">
+      <button class="btn btn-success" id="export-btn" onclick="downloadExcel()">
+        📥 Excel export
+      </button>
+      <button class="btn btn-ghost" onclick="showScreen('past-runs')">📋 Korábbi futások</button>
+    </div>
+  </div>
+
+  <div id="results-alerts"></div>
+
+  <div class="card">
+    <div class="stat-grid" id="results-stats"></div>
+  </div>
+
+  <!-- Szűrők -->
+  <div class="card" style="padding:14px 24px">
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <span style="font-weight:600;color:var(--gray)">Szűrő:</span>
+      <button class="btn btn-ghost" style="padding:4px 12px;font-size:12px" onclick="filterResults('all')" id="filter-all">Összes</button>
+      <button class="btn btn-ghost" style="padding:4px 12px;font-size:12px" onclick="filterResults('found')" id="filter-found">Találattal</button>
+      <button class="btn btn-ghost" style="padding:4px 12px;font-size:12px" onclick="filterResults('missing')" id="filter-missing">Hiányzó mapping</button>
+      <button class="btn btn-ghost" style="padding:4px 12px;font-size:12px" onclick="filterResults('error')" id="filter-error">Hibás</button>
+      <input type="text" id="results-search" placeholder="Keresés cikkszámra…" style="max-width:200px;padding:5px 10px" oninput="filterResults('search')"/>
+    </div>
+  </div>
+
+  <!-- Cikkszám–webshop mapping -->
+  <div class="card">
+    <div class="card-title">🗂 Cikkszám – webshop mapping</div>
+    <div class="table-wrap" id="mapping-wrap"></div>
+  </div>
+
+  <!-- Részletes összehasonlító mátrix -->
+  <div class="card">
+    <div class="card-title">📊 Részletes összehasonlító mátrix</div>
+    <div class="table-wrap" id="matrix-wrap"></div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════
+     SCREEN 5: Korábbi futások
+════════════════════════════════════════════ -->
+<div id="screen-past-runs" class="screen">
+  <div class="flex-between" style="margin-bottom:16px">
+    <div style="font-size:18px;font-weight:700;color:var(--blue)">Korábbi futások</div>
+    <button class="btn btn-primary" onclick="showScreen('new-run')">+ Új lekérdezés</button>
+  </div>
+
+  <div class="card">
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Projekt neve</th>
+          <th>Dátum</th>
+          <th>Cikkszámok</th>
+          <th>Webshopok</th>
+          <th>Státusz</th>
+          <th>Siker</th>
+          <th>Hiba</th>
+          <th>Műveletek</th>
+        </tr></thead>
+        <tbody id="past-runs-tbody">
+          <tr><td colspan="8" style="text-align:center;padding:30px;color:var(--gray)">
+            <span class="spinner"></span> Betöltés…
+          </td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+</main>
+
+<div id="toast"></div>
+
+<script>
+// ══════════════════════════════════════════════════════
+// State
+// ══════════════════════════════════════════════════════
+let state = {
+  suppliers: [],           // [{id, name, url}]
+  selectedSuppliers: [],
+  previewData: null,
+  currentRunId: null,
+  currentMatrix: null,
+  currentRunMeta: null,
+  activeFilter: 'all',
+};
+
+// ══════════════════════════════════════════════════════
+// Navigation
+// ══════════════════════════════════════════════════════
+function showScreen(name) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById('screen-' + name).classList.add('active');
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  const navBtn = document.getElementById('nav-' + name);
+  if (navBtn) navBtn.classList.add('active');
+
+  if (name === 'past-runs') loadPastRuns();
+}
+
+// ══════════════════════════════════════════════════════
+// Toast
+// ══════════════════════════════════════════════════════
+let _toastTimer;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
+}
+
+// ══════════════════════════════════════════════════════
+// Format helpers
+// ══════════════════════════════════════════════════════
+function fmtPrice(val) {
+  if (val == null) return '—';
+  return new Intl.NumberFormat('hu-HU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val) + ' Ft/db';
+}
+
+function fmtPriceNum(val) {
+  if (val == null) return '—';
+  return new Intl.NumberFormat('hu-HU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val);
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  try {
+    return new Date(iso).toLocaleString('hu-HU', { dateStyle: 'short', timeStyle: 'short' });
+  } catch { return iso; }
+}
+
+function statusTag(status) {
+  const map = {
+    completed: ['tag-green', '✓ kész'],
+    running:   ['tag-blue', '⏳ fut'],
+    partial:   ['tag-yellow', '⚠ részleges'],
+    failed:    ['tag-red', '✗ sikertelen'],
+  };
+  const [cls, label] = map[status] || ['tag-gray', status];
+  return `<span class="tag ${cls}">${label}</span>`;
+}
+
+// ══════════════════════════════════════════════════════
+// Suppliers
+// ══════════════════════════════════════════════════════
+async function loadSuppliers() {
+  try {
+    const res = await fetch('/suppliers');
+    state.suppliers = await res.json();
+    renderSupplierGrid();
+  } catch (e) {
+    document.getElementById('supplier-grid').innerHTML =
+      '<div class="alert alert-error">Webshop lista nem töltődött be.</div>';
+  }
+}
+
+function renderSupplierGrid() {
+  const grid = document.getElementById('supplier-grid');
+  grid.innerHTML = state.suppliers.map(s => `
+    <label class="supplier-chip" id="chip-${s.id}" onclick="toggleSupplier('${s.id}')">
+      <input type="checkbox" id="sup-${s.id}" value="${s.id}" style="pointer-events:none"/>
+      ${s.name}
+    </label>
+  `).join('');
+}
+
+function toggleSupplier(id) {
+  const cb = document.getElementById('sup-' + id);
+  const chip = document.getElementById('chip-' + id);
+  cb.checked = !cb.checked;
+  chip.classList.toggle('selected', cb.checked);
+  state.selectedSuppliers = state.suppliers
+    .filter(s => document.getElementById('sup-' + s.id)?.checked)
+    .map(s => s.id);
+}
+
+function selectAllSuppliers() {
+  state.suppliers.forEach(s => {
+    document.getElementById('sup-' + s.id).checked = true;
+    document.getElementById('chip-' + s.id).classList.add('selected');
+  });
+  state.selectedSuppliers = state.suppliers.map(s => s.id);
+}
+
+function clearSuppliers() {
+  state.suppliers.forEach(s => {
+    document.getElementById('sup-' + s.id).checked = false;
+    document.getElementById('chip-' + s.id).classList.remove('selected');
+  });
+  state.selectedSuppliers = [];
+}
+
+// ══════════════════════════════════════════════════════
+// Part number counter
+// ══════════════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('part-numbers').addEventListener('input', () => {
+    const lines = getPartNumbers();
+    const el = document.getElementById('part-count-info');
+    el.textContent = `${lines.length} / 50 cikkszám`;
+    el.style.color = lines.length > 50 ? 'var(--red)' : 'var(--gray)';
+  });
+  loadSuppliers();
+});
+
+function getPartNumbers() {
+  return document.getElementById('part-numbers').value
+    .split('\n')
+    .map(l => l.trim())
+    .filter(l => l.length > 0);
+}
+
+function getProjectName() {
+  const v = document.getElementById('project-name').value.trim();
+  if (v) return v;
+  const now = new Date();
+  return `Batch futás ${now.toLocaleString('hu-HU', {dateStyle:'short', timeStyle:'short'})}`;
+}
+
+// ══════════════════════════════════════════════════════
+// SCREEN 2: Preview
+// ══════════════════════════════════════════════════════
+async function startPreview() {
+  const parts = getPartNumbers();
+  const suppliers = state.selectedSuppliers;
+
+  if (!suppliers.length) { toast('Válassz legalább egy webshopot!'); return; }
+  if (!parts.length) { toast('Adj meg legalább egy cikkszámot!'); return; }
+  if (parts.length > 50) { toast('Maximum 50 cikkszám adható meg!'); return; }
+
+  const projectName = getProjectName();
+
+  showScreen('preview');
+  document.getElementById('preview-title').textContent = `Mapping előellenőrzés – ${projectName}`;
+  document.getElementById('preview-table-wrap').innerHTML =
+    '<div style="padding:30px;text-align:center"><span class="spinner"></span> Mapping lekérdezés…</div>';
+  document.getElementById('preview-stats').innerHTML = '';
+  document.getElementById('preview-plan').innerHTML = '';
+
+  try {
+    const res = await fetch('/batch/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project_name: projectName,
+        selected_suppliers: suppliers,
+        gepcoop_part_numbers: parts,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || 'Hiba a mapping lekérdezés során');
+    }
+    const data = await res.json();
+    state.previewData = data;
+    renderPreview(data);
+  } catch (e) {
+    document.getElementById('preview-table-wrap').innerHTML =
+      `<div class="alert alert-error" style="margin:16px">${e.message}</div>`;
+  }
+}
+
+function renderPreview(data) {
+  // Stats
+  document.getElementById('preview-stats').innerHTML = `
+    <div class="stat-box"><div class="stat-num">${data.total_items}</div><div class="stat-label">Cikkszám</div></div>
+    <div class="stat-box"><div class="stat-num">${data.selected_suppliers.length}</div><div class="stat-label">Webshop</div></div>
+    <div class="stat-box"><div class="stat-num">${data.searchable_count}</div><div class="stat-label">Kereshető</div></div>
+    <div class="stat-box"><div class="stat-num">${data.missing_mapping_count}</div><div class="stat-label">Hiányzó mapping</div></div>
+    <div class="stat-box"><div class="stat-num">${data.total_possible_searches}</div><div class="stat-label">Max. keresés</div></div>
+  `;
+
+  // Duplikáció
+  const dupAlert = document.getElementById('preview-duplicates-alert');
+  if (data.duplicates && data.duplicates.length > 0) {
+    dupAlert.innerHTML = `<div class="alert alert-warn">⚠ ${data.duplicates.length} duplikált cikkszámot eltávolítottunk: ${data.duplicates.join(', ')}</div>`;
+  } else {
+    dupAlert.innerHTML = '';
+  }
+
+  // Hiányzó alert
+  const misAlert = document.getElementById('preview-missing-alert');
+  const noMapping = data.items.filter(i => i.status !== 'searchable');
+  if (noMapping.length > 0) {
+    misAlert.innerHTML = `<div class="alert alert-warn">ℹ ${noMapping.length} cikkszámhoz legalább egy webshopban hiányzik a mapping — ezeknél ott nem indul scraper.</div>`;
+  } else {
+    misAlert.innerHTML = '';
+  }
+
+  // Táblázat
+  const sups = data.selected_suppliers;
+  const supNames = data.supplier_names;
+
+  let thead = '<thead><tr><th class="sticky-col">Gép-Coop cikkszám</th><th class="sticky-col" style="left:140px">Terméknév</th>';
+  sups.forEach(sid => {
+    thead += `<th>${supNames[sid] || sid}</th>`;
+  });
+  thead += '</tr></thead>';
+
+  let tbody = '<tbody>';
+  data.items.forEach(item => {
+    tbody += `<tr>
+      <td class="sticky-col" style="font-weight:600">${item.gepcoop_part_no}</td>
+      <td class="sticky-col" style="left:140px;max-width:180px">${item.product_name || '<span class="text-muted">—</span>'}</td>`;
+    sups.forEach(sid => {
+      const s = item.suppliers[sid] || {};
+      if (s.status === 'mapped') {
+        tbody += `<td><span class="tag tag-green">✓ ${s.supplier_part_no}</span></td>`;
+      } else if (s.status === 'not_in_db') {
+        tbody += `<td><span class="tag tag-red">✗ nem ismert</span></td>`;
+      } else {
+        tbody += `<td><span class="tag tag-gray">— nincs mapping</span></td>`;
+      }
+    });
+    tbody += '</tr>';
+  });
+  tbody += '</tbody>';
+
+  document.getElementById('preview-table-wrap').innerHTML = `<table>${thead}${tbody}</table>`;
+
+  // Futási terv
+  const searchable = data.items.filter(i =>
+    Object.values(i.suppliers).some(s => s.status === 'mapped')
+  ).length;
+  document.getElementById('preview-plan').innerHTML = `
+    <table style="width:auto;font-size:13px">
+      <tbody>
+        <tr><td style="padding:6px 16px 6px 0;color:var(--gray)">Projekt neve</td><td style="font-weight:600">${data.project_name}</td></tr>
+        <tr><td style="padding:6px 16px 6px 0;color:var(--gray)">Cikkszámok száma</td><td><strong>${data.total_items}</strong></td></tr>
+        <tr><td style="padding:6px 16px 6px 0;color:var(--gray)">Kiválasztott webshopok</td><td><strong>${data.selected_suppliers.length}</strong></td></tr>
+        <tr><td style="padding:6px 16px 6px 0;color:var(--gray)">Összes lehetséges keresés</td><td><strong>${data.total_possible_searches}</strong></td></tr>
+        <tr><td style="padding:6px 16px 6px 0;color:var(--gray)">Kereshető (mapping alapján)</td><td><strong style="color:var(--green)">${data.searchable_count}</strong></td></tr>
+        <tr><td style="padding:6px 16px 6px 0;color:var(--gray)">Kihagyott (hiányzó mapping)</td><td><strong style="color:var(--yellow)">${data.missing_mapping_count}</strong></td></tr>
+      </tbody>
+    </table>
+  `;
+
+  if (data.searchable_count === 0) {
+    document.getElementById('start-run-btn').disabled = true;
+    document.getElementById('start-run-btn').textContent = 'Nincs kereshető elem';
+  } else {
+    document.getElementById('start-run-btn').disabled = false;
+    document.getElementById('start-run-btn').innerHTML = `▶ Futás indítása (${data.searchable_count} keresés)`;
+  }
+}
+
+// ══════════════════════════════════════════════════════
+// SCREEN 3: Progress
+// ══════════════════════════════════════════════════════
+let _supplierProgress = {};   // sid → {total, done, ok, errors, status}
+
+async function startBatchRun() {
+  const data = state.previewData;
+  if (!data) return;
+
+  showScreen('progress');
+  document.getElementById('progress-run-id').textContent = 'Indítás…';
+  document.getElementById('progress-summary').textContent = 'Kapcsolódás…';
+  document.getElementById('supplier-progress-tbody').innerHTML = '';
+  document.getElementById('global-progress-bar').style.width = '0%';
+  document.getElementById('latest-event').textContent = 'Várakozás…';
+
+  _supplierProgress = {};
+
+  // Supplier sorok inicializálása
+  const tbody = document.getElementById('supplier-progress-tbody');
+  data.selected_suppliers.forEach(sid => {
+    _supplierProgress[sid] = { total: 0, done: 0, ok: 0, errors: 0, status: 'várakozik' };
+    tbody.insertAdjacentHTML('beforeend', `
+      <tr id="sprow-${sid}">
+        <td><strong>${data.supplier_names[sid] || sid}</strong></td>
+        <td id="spstatus-${sid}"><span class="tag tag-gray">várakozik</span></td>
+        <td id="spprog-${sid}" style="min-width:160px">
+          <div class="progress-bar-outer"><div class="progress-bar-inner" id="spbar-${sid}" style="width:0%"></div></div>
+          <div class="text-muted" id="sptext-${sid}">0 / 0</div>
+        </td>
+        <td id="spok-${sid}">0</td>
+        <td id="sperr-${sid}">0</td>
+      </tr>
+    `);
+  });
+
+  try {
+    const res = await fetch('/batch/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project_name: data.project_name,
+        selected_suppliers: data.selected_suppliers,
+        gepcoop_part_numbers: data.items.map(i => i.gepcoop_part_no),
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || 'Futás indítási hiba');
+    }
+    const { batch_run_id } = await res.json();
+    state.currentRunId = batch_run_id;
+    document.getElementById('progress-run-id').textContent = `Futás azonosító: ${batch_run_id}`;
+
+    // SSE stream
+    const es = new EventSource(`/batch/run/${batch_run_id}/progress`);
+    let totalSearches = data.searchable_count || 1;
+    let globalDone = 0;
+
+    es.onmessage = (e) => {
+      const evt = JSON.parse(e.data);
+      handleProgressEvent(evt, totalSearches, () => globalDone++);
+
+      if (evt.event === 'batch_started') {
+        totalSearches = evt.total_searches || totalSearches;
+      }
+      if (evt.event === 'done' || evt.event === 'error') {
+        es.close();
+        if (evt.event === 'done') {
+          toast('✓ Batch futás kész! Eredmények betöltése…');
+          setTimeout(() => loadRunResults(batch_run_id), 1000);
+        } else {
+          document.getElementById('progress-summary').innerHTML =
+            `<span style="color:var(--red)">✗ Hiba: ${evt.message}</span>`;
+        }
+      }
+    };
+    es.onerror = () => {
+      es.close();
+      document.getElementById('progress-summary').textContent = 'Kapcsolat megszakadt.';
+    };
+
+  } catch (e) {
+    document.getElementById('progress-summary').innerHTML =
+      `<div class="alert alert-error">${e.message}</div>`;
+  }
+}
+
+function handleProgressEvent(evt, totalSearches, onDone) {
+  const sid = evt.supplier_id;
+  const el = (id) => document.getElementById(id);
+
+  el('latest-event').textContent = JSON.stringify(evt);
+
+  if (evt.event === 'batch_started') {
+    el('progress-summary').textContent = `${evt.supplier_count} webshop, ${evt.total_searches} keresés indul…`;
+  }
+
+  if (evt.event === 'supplier_started' && sid) {
+    _supplierProgress[sid] = _supplierProgress[sid] || {};
+    _supplierProgress[sid].total = evt.total;
+    _supplierProgress[sid].status = 'fut';
+    _updateSupplierRow(sid);
+  }
+
+  if ((evt.event === 'item_completed' || evt.event === 'item_failed') && sid) {
+    const sp = _supplierProgress[sid] = _supplierProgress[sid] || {};
+    sp.done = (sp.done || 0) + 1;
+    if (evt.event === 'item_completed') sp.ok = (sp.ok || 0) + 1;
+    else sp.errors = (sp.errors || 0) + 1;
+    _updateSupplierRow(sid);
+    onDone();
+    _updateGlobal(totalSearches);
+  }
+
+  if (evt.event === 'supplier_completed' && sid) {
+    const sp = _supplierProgress[sid] = _supplierProgress[sid] || {};
+    sp.status = 'kész';
+    sp.ok = evt.ok;
+    sp.errors = evt.errors;
+    _updateSupplierRow(sid);
+  }
+
+  if (evt.event === 'batch_completed') {
+    el('progress-summary').innerHTML =
+      `<strong style="color:#217346">✓ Kész!</strong> ${evt.ok} sikeres, ${evt.errors} hibás lekérdezés.`;
+    el('global-progress-bar').style.width = '100%';
+    el('global-progress-bar').classList.add('done');
+  }
+}
+
+function _updateSupplierRow(sid) {
+  const sp = _supplierProgress[sid] || {};
+  const total = sp.total || 0;
+  const done = sp.done || 0;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  const statusMap = {
+    'várakozik': '<span class="tag tag-gray">várakozik</span>',
+    'fut': '<span class="tag tag-blue">⏳ fut</span>',
+    'kész': '<span class="tag tag-green">✓ kész</span>',
+    'hiba': '<span class="tag tag-red">✗ hiba</span>',
+  };
+  const el = (id) => document.getElementById(id);
+  if (el(`spstatus-${sid}`)) el(`spstatus-${sid}`).innerHTML = statusMap[sp.status] || sp.status;
+  if (el(`spbar-${sid}`)) {
+    el(`spbar-${sid}`).style.width = pct + '%';
+    if (sp.status === 'kész') el(`spbar-${sid}`).classList.add('done');
+  }
+  if (el(`sptext-${sid}`)) el(`sptext-${sid}`).textContent = `${done} / ${total}`;
+  if (el(`spok-${sid}`)) el(`spok-${sid}`).textContent = sp.ok || 0;
+  if (el(`sperr-${sid}`)) el(`sperr-${sid}`).textContent = sp.errors || 0;
+}
+
+function _updateGlobal(total) {
+  const totalDone = Object.values(_supplierProgress).reduce((s, p) => s + (p.done || 0), 0);
+  const pct = total > 0 ? Math.round((totalDone / total) * 100) : 0;
+  const el = document.getElementById('global-progress-bar');
+  el.style.width = pct + '%';
+  document.getElementById('progress-summary').textContent =
+    `${totalDone} / ${total} lekérdezés kész (${pct}%)`;
+}
+
+// ══════════════════════════════════════════════════════
+// SCREEN 4: Results
+// ══════════════════════════════════════════════════════
+async function loadRunResults(runId) {
+  showScreen('results');
+  document.getElementById('results-title').textContent = 'Eredmények betöltése…';
+  document.getElementById('mapping-wrap').innerHTML =
+    '<div style="text-align:center;padding:30px"><span class="spinner"></span></div>';
+  document.getElementById('matrix-wrap').innerHTML = '';
+
+  try {
+    const res = await fetch(`/batch/run/${runId}`);
+    if (!res.ok) throw new Error('Eredmény lekérési hiba');
+    const data = await res.json();
+    state.currentRunId = runId;
+    state.currentMatrix = data.matrix;
+    state.currentRunMeta = data.run;
+    renderResults(data.run, data.matrix);
+  } catch (e) {
+    document.getElementById('results-title').textContent = 'Hiba';
+    document.getElementById('results-alerts').innerHTML =
+      `<div class="alert alert-error">${e.message}</div>`;
+  }
+}
+
+function renderResults(run, matrix) {
+  document.getElementById('results-title').textContent = run.project_name || 'Eredmények';
+  document.getElementById('results-subtitle').textContent =
+    `${fmtDate(run.created_at)} · ${run.unique_part_count} cikkszám · ${(run.selected_suppliers || []).length} webshop`;
+
+  // Stats
+  const sups = matrix.selected_suppliers || [];
+  const totalItems = matrix.items.length;
+  let totalSearches = 0, okSearches = 0, failSearches = 0;
+  const activeSups = new Set();
+  matrix.items.forEach(item => {
+    sups.forEach(sid => {
+      const cell = (item.suppliers || {})[sid] || {};
+      if (cell.mapping_status === 'mapped') {
+        totalSearches++;
+        activeSups.add(sid);
+        if (cell.scrape_status === 'ok') okSearches++;
+        else if (!['skipped', 'pending', ''].includes(cell.scrape_status)) failSearches++;
+      }
+    });
+  });
+
+  document.getElementById('results-stats').innerHTML = `
+    <div class="stat-box"><div class="stat-num">${totalItems}</div><div class="stat-label">Cikkszám</div></div>
+    <div class="stat-box"><div class="stat-num">${activeSups.size}</div><div class="stat-label">Aktív webshop</div></div>
+    <div class="stat-box"><div class="stat-num">${totalSearches}</div><div class="stat-label">Keresések indultak</div></div>
+    <div class="stat-box"><div class="stat-num" style="color:#217346">${okSearches}</div><div class="stat-label">Sikeres</div></div>
+    <div class="stat-box"><div class="stat-num" style="color:var(--red)">${failSearches}</div><div class="stat-label">Sikertelen</div></div>
+  `;
+
+  renderMappingTable(matrix);
+  renderMatrixTable(matrix);
+}
+
+let _allItems = [];
+
+function renderMappingTable(matrix) {
+  _allItems = matrix.items;
+  const sups = matrix.selected_suppliers;
+  const supNames = matrix.supplier_names;
+
+  let html = '<table><thead><tr>';
+  html += '<th class="sticky-col">Gép-Coop cikkszám</th>';
+  html += '<th class="sticky-col" style="left:140px">Terméknév</th>';
+  sups.forEach(sid => html += `<th>${supNames[sid] || sid}</th>`);
+  html += '</tr></thead><tbody id="mapping-tbody"></tbody></table>';
+  document.getElementById('mapping-wrap').innerHTML = html;
+
+  _renderFilteredMapping(_allItems, sups, supNames);
+}
+
+function _renderFilteredMapping(items, sups, supNames) {
+  const tbody = document.getElementById('mapping-tbody');
+  if (!tbody) return;
+  if (!items.length) {
+    tbody.innerHTML = `<tr><td colspan="${2 + sups.length}" style="text-align:center;padding:20px;color:var(--gray)">Nincs találat</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = items.map(item => {
+    let cells = `<td class="sticky-col" style="font-weight:600;font-family:monospace">${item.gepcoop_part_no}</td>`;
+    cells += `<td class="sticky-col" style="left:140px;max-width:180px">${item.product_name || '<span class="text-muted">—</span>'}</td>`;
+    sups.forEach(sid => {
+      const s = item.suppliers[sid] || {};
+      if (s.mapping_status === 'mapped' && s.supplier_part_no) {
+        cells += `<td><span class="tag tag-blue" style="font-family:monospace;font-size:11px">${s.supplier_part_no}</span></td>`;
+      } else {
+        cells += `<td><span class="text-muted">—</span></td>`;
+      }
+    });
+    return `<tr>${cells}</tr>`;
+  }).join('');
+}
+
+function filterResults(type) {
+  state.activeFilter = type;
+  document.querySelectorAll('[id^="filter-"]').forEach(b => b.classList.remove('btn-primary'));
+  const target = document.getElementById('filter-' + type);
+  if (target) target.classList.add('btn-primary');
+
+  let items = _allItems;
+  if (type === 'found') items = _allItems.filter(i => i.result_count > 0);
+  if (type === 'missing') items = _allItems.filter(i =>
+    Object.values(i.suppliers || {}).some(s => s.mapping_status !== 'mapped'));
+  if (type === 'error') items = _allItems.filter(i => i.error_count > 0);
+  if (type === 'search') {
+    const q = document.getElementById('results-search').value.trim().toLowerCase();
+    items = _allItems.filter(i => i.gepcoop_part_no.toLowerCase().includes(q) ||
+      (i.product_name || '').toLowerCase().includes(q));
+  }
+
+  const sups = state.currentMatrix?.selected_suppliers || [];
+  const supNames = state.currentMatrix?.supplier_names || {};
+  _renderFilteredMapping(items, sups, supNames);
+  _renderFilteredMatrix(items, sups);
+}
+
+function renderMatrixTable(matrix) {
+  const sups = matrix.selected_suppliers;
+  const supNames = matrix.supplier_names;
+
+  let html = '<table><thead>';
+  html += '<tr>';
+  html += '<th class="sticky-col" rowspan="2" style="vertical-align:middle">Gép-Coop cikkszám</th>';
+  html += '<th class="sticky-col" style="left:140px;vertical-align:middle" rowspan="2">Terméknév</th>';
+  sups.forEach(sid => {
+    html += `<th colspan="3" style="text-align:center;border-left:2px solid rgba(255,255,255,0.25)">${supNames[sid] || sid}</th>`;
+  });
+  html += '</tr><tr>';
+  sups.forEach(() => {
+    html += '<th style="font-weight:500;font-size:11px;border-left:2px solid rgba(255,255,255,0.25)">Egységár (Ft/db)</th>';
+    html += '<th style="font-weight:500;font-size:11px">Készlet (db.)</th>';
+    html += '<th style="font-weight:500;font-size:11px">Link</th>';
+  });
+  html += '</tr></thead><tbody id="matrix-tbody"></tbody></table>';
+  document.getElementById('matrix-wrap').innerHTML = html;
+
+  _renderFilteredMatrix(matrix.items, sups);
+}
+
+function _computeRanks(item, sups) {
+  const priced = sups
+    .filter(sid => {
+      const c = item.suppliers[sid];
+      return c && c.scrape_status === 'ok' && c.normalized_price_huf != null;
+    })
+    .map(sid => ({ sid, price: item.suppliers[sid].normalized_price_huf }))
+    .sort((a, b) => a.price - b.price);
+  const ranks = {};
+  priced.forEach((entry, i) => { if (i < 3) ranks[entry.sid] = i + 1; });
+  return ranks;
+}
+
+function _renderFilteredMatrix(items, sups) {
+  const tbody = document.getElementById('matrix-tbody');
+  if (!tbody) return;
+  if (!items.length) {
+    tbody.innerHTML = `<tr><td colspan="${2 + sups.length * 3}" style="text-align:center;padding:20px;color:var(--gray)">Nincs találat</td></tr>`;
+    return;
+  }
+  const supUrls = state.currentMatrix?.supplier_urls || {};
+  tbody.innerHTML = items.map(item => {
+    const ranks = _computeRanks(item, sups);
+    let cells = `<td class="sticky-col" style="font-weight:600;font-family:monospace">${item.gepcoop_part_no}</td>`;
+    cells += `<td class="sticky-col" style="left:140px;max-width:160px;font-size:12px">${item.product_name || '—'}</td>`;
+    sups.forEach(sid => { cells += _renderMatrixCells(item.suppliers[sid] || {}, ranks[sid]); });
+    return `<tr>${cells}</tr>`;
+  }).join('');
+}
+
+function _renderMatrixCells(cell, rank) {
+  if (!cell || cell.mapping_status !== 'mapped') {
+    return '<td colspan="3" class="cell-nomap" style="text-align:center;border-left:2px solid #dde3f0">— nincs mapping</td>';
+  }
+  const status = cell.scrape_status;
+  if (status === 'skipped') {
+    return '<td colspan="3" class="cell-nomap" style="text-align:center;border-left:2px solid #dde3f0">—</td>';
+  }
+  if (status !== 'ok') {
+    const errMsg = {
+      not_found: '∅ nem található',
+      not_priced: '⚠ nincs ár',
+      timeout: '⏱ időtúllépés',
+      login_failed: '🔒 belépési hiba',
+      error: '✗ hiba',
+    }[status] || ('✗ ' + (status || 'hiba'));
+    return `<td colspan="3" class="cell-error" style="text-align:center;font-size:12px;border-left:2px solid #dde3f0">
+      <span style="color:var(--red)">${errMsg}</span>
+    </td>`;
+  }
+
+  const price = cell.normalized_price_huf;
+  const stock = cell.stock_quantity;
+  const rankBadge = rank ? `<span class="rank-badge rank-${rank}">${rank}</span>` : '';
+  const stockStr = (stock !== null && stock !== undefined) ? stock.toLocaleString('hu-HU') : '—';
+  const linkUrl = cell.product_url || '';
+  const linkHtml = linkUrl
+    ? `<a href="${linkUrl.replace(/"/g, '&quot;')}" target="_blank" rel="noopener" style="color:var(--blue);font-size:12px;text-decoration:none;white-space:nowrap">🔗 Megnyitás</a>`
+    : '<span class="text-muted">—</span>';
+
+  return `<td class="price-cell" style="border-left:2px solid #dde3f0">${rankBadge}${price ? fmtPriceNum(price) : '—'}</td>` +
+         `<td class="stock-cell">${stockStr}</td>` +
+         `<td style="padding:8px 10px;text-align:center;vertical-align:middle;white-space:nowrap">${linkHtml}</td>`;
+}
+
+// ══════════════════════════════════════════════════════
+// Excel export
+// ══════════════════════════════════════════════════════
+function downloadExcel() {
+  if (!state.currentRunId) { toast('Nincs aktív futás'); return; }
+  window.location.href = `/batch/run/${state.currentRunId}/export.xlsx`;
+}
+
+// ══════════════════════════════════════════════════════
+// SCREEN 5: Past runs
+// ══════════════════════════════════════════════════════
+async function loadPastRuns() {
+  const tbody = document.getElementById('past-runs-tbody');
+  tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px"><span class="spinner"></span></td></tr>';
+
+  try {
+    const res = await fetch('/batch/runs');
+    const runs = await res.json();
+
+    if (!runs.length) {
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--gray)">Még nincs korábbi futás.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = runs.map(run => `
+      <tr>
+        <td style="font-weight:600;max-width:240px">${run.project_name}</td>
+        <td>${fmtDate(run.created_at)}</td>
+        <td style="text-align:center">${run.unique_part_count || 0}</td>
+        <td style="text-align:center">${(run.selected_suppliers || []).length}</td>
+        <td>${statusTag(run.status)}</td>
+        <td style="text-align:center;color:#217346"><strong>${run.success_count || 0}</strong></td>
+        <td style="text-align:center;color:var(--red)">${run.error_count || 0}</td>
+        <td>
+          <button class="btn btn-ghost" style="padding:4px 10px;font-size:12px"
+            onclick="loadRunResults('${run.id}')">Megnyitás</button>
+          <a href="/batch/run/${run.id}/export.xlsx" class="btn btn-ghost"
+            style="padding:4px 10px;font-size:12px;text-decoration:none;margin-left:4px">📥 Excel</a>
+        </td>
+      </tr>
+    `).join('');
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8"><div class="alert alert-error">${e.message}</div></td></tr>`;
+  }
+}
+</script>
+</body>
+</html>
