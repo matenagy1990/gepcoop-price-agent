@@ -586,6 +586,7 @@ def _total_stock(stock) -> int:
 _vipa_login_state: dict = {
     "active":      False,
     "token_event": None,   # asyncio.Event — set when buyer submits the token
+    "ready_event": None,   # asyncio.Event — set when the OTP token field is visible
     "done_event":  None,   # asyncio.Event — set when task finishes
     "token":       None,   # the submitted OTP string
     "error":       None,   # error message from the task, or None on success
@@ -662,6 +663,8 @@ async def _run_vipa_otp_login() -> None:
                     _vipa_login_state["error"] = "Az OTP e-mail küldése sikertelen – Token mező nem jelent meg."
                     return
 
+                if _vipa_login_state.get("ready_event"):
+                    _vipa_login_state["ready_event"].set()
                 log.info("Vipa OTP email sent, waiting for token from admin (max 10 min)")
 
                 # Block here until admin submits the token
@@ -776,6 +779,20 @@ async def _ensure_vipa_session_before_scraping(queue: asyncio.Queue) -> None:
         return
 
     otp_info = _start_vipa_otp_flow()
+    ready_event = _vipa_login_state.get("ready_event")
+    if ready_event is None:
+        raise RuntimeError("Vipa OTP folyamat nem indult el.")
+
+    try:
+        await asyncio.wait_for(ready_event.wait(), timeout=30)
+    except asyncio.TimeoutError as exc:
+        if _vipa_login_state.get("error"):
+            raise RuntimeError(str(_vipa_login_state["error"])) from exc
+        raise RuntimeError("Vipa OTP token generálás nem indult el időben.") from exc
+
+    if _vipa_login_state.get("error"):
+        raise RuntimeError(str(_vipa_login_state["error"]))
+
     await queue.put(("password_required", {
         "supplier": "vipa",
         "msg": "Vipa: aktív session nem áll rendelkezésre – OTP bejelentkezés szükséges.",
@@ -1739,6 +1756,7 @@ def _start_vipa_otp_flow() -> dict:
     _vipa_login_state["token"]       = None
     _vipa_login_state["error"]       = None
     _vipa_login_state["token_event"] = asyncio.Event()
+    _vipa_login_state["ready_event"] = asyncio.Event()
     _vipa_login_state["done_event"]  = asyncio.Event()
     _vipa_login_state["task"]        = asyncio.create_task(_run_vipa_otp_login())
 

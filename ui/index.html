@@ -778,6 +778,17 @@
       <div class="pipe-suppliers" id="pipe-suppliers"></div>
 
       <div class="progress-msg" id="progress-msg">Indítás…</div>
+      <div id="vipa-otp-panel" class="hidden" style="margin-top:14px;padding:14px;border:1px solid var(--border);border-radius:10px;background:rgba(43,108,176,.05)">
+        <div style="font-size:13px;color:var(--fg);line-height:1.55;margin-bottom:10px" id="vipa-otp-panel-text"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <input type="text" id="vipa-front-token-vipa" placeholder="Token az e-mailből"
+                 style="flex:1;min-width:150px;height:38px;padding:0 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--fg);font-size:14px">
+          <button class="btn-upload" onclick="vipaFrontLogin('vipa')">Bejelentkezés</button>
+          <button class="btn-ghost" onclick="vipaFrontResend('vipa')"
+                  style="background:none;border:1px solid var(--border);color:var(--muted);padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px">Új token kérése</button>
+        </div>
+        <div id="vipa-front-msg-vipa" class="hidden" style="margin-top:10px;font-size:13px"></div>
+      </div>
       <div id="runtime-line" class="hidden" style="margin-top:10px;padding:8px 14px;background:rgba(22,27,99,.05);border-radius:8px;font-size:13px;font-weight:600;color:var(--navy2);display:flex;align-items:center;gap:8px">
         <span style="font-size:16px">&#9201;</span>
         <span id="runtime-text"></span>
@@ -1613,6 +1624,7 @@ async function startSearch(partNo, filterSids) {
   _suppliersNeedAdmin = new Set();
   _suppliersNeedOtp   = new Set();
   _suppliersOtpEmail  = {};
+  hideVipaOtpPanel();
   setQueryBusy(true);
 
   try {
@@ -1679,6 +1691,7 @@ function handlePasswordRequired(data) {
     if (data.otp) {
       _suppliersNeedOtp.add(sid);
       _suppliersOtpEmail[sid] = data.otp_email || '';
+      if (sid === 'vipa') showVipaOtpPanel(data);
     }
   }
   // Mark the active pipeline step as error
@@ -1688,6 +1701,38 @@ function handlePasswordRequired(data) {
       if (steps[i] === 'active') { setSupStep(sid, i, 'error'); break; }
     }
   }
+}
+
+function showVipaOtpPanel(data) {
+  const panel = document.getElementById('vipa-otp-panel');
+  const textEl = document.getElementById('vipa-otp-panel-text');
+  const msgEl = document.getElementById('vipa-front-msg-vipa');
+  const email = data.otp_email || '';
+  const message = data.otp_message || 'OTP e-mail elküldve.';
+  if (!panel || !textEl) return;
+  textEl.innerHTML = `
+    A Vipa bejelentkezés egyszer használatos tokent igényel.
+    Elküldtünk egy tokent a(z) <strong>${escHtml(email)}</strong> címre.
+    Másolja be ide a kapott tokent. A lekérdezés ezután automatikusan folytatódik.
+    <div style="margin-top:6px;color:var(--muted)">${escHtml(message)}</div>
+  `;
+  if (msgEl) {
+    msgEl.className = 'hidden';
+    msgEl.textContent = '';
+  }
+  panel.classList.remove('hidden');
+}
+
+function hideVipaOtpPanel() {
+  const panel = document.getElementById('vipa-otp-panel');
+  const tokenEl = document.getElementById('vipa-front-token-vipa');
+  const msgEl = document.getElementById('vipa-front-msg-vipa');
+  if (tokenEl) tokenEl.value = '';
+  if (msgEl) {
+    msgEl.className = 'hidden';
+    msgEl.textContent = '';
+  }
+  panel?.classList.add('hidden');
 }
 
 function openSupplierAdmin(sid) {
@@ -1804,6 +1849,7 @@ function handleProgress(ev) {
 }
 
 function handleResult(data) {
+  hideVipaOtpPanel();
   // Mark all done
   setMapStep('done');
   for (const sid of Object.keys(data.suppliers||{})) allSupDone(sid);
