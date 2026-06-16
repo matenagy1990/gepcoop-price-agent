@@ -54,6 +54,17 @@ cp "${APP_DIR}/deploy/price-agent.service" /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}"
 
+echo "==> Configuring Nginx…"
+if command -v nginx &>/dev/null; then
+  cp "${APP_DIR}/deploy/nginx-price-agent.conf" /etc/nginx/sites-available/price-agent
+  ln -sf /etc/nginx/sites-available/price-agent /etc/nginx/sites-enabled/price-agent
+  rm -f /etc/nginx/sites-enabled/default
+  nginx -t && systemctl reload nginx
+  echo "   Nginx configured (port 80 → 8080, max upload 50M)"
+else
+  echo "   Nginx not installed — skipping (app available on :8080 directly)"
+fi
+
 echo "==> Starting the app for the first time (Docker image download ~1.5 GB)…"
 systemctl start "${SERVICE_NAME}"
 
@@ -63,7 +74,8 @@ systemctl status "${SERVICE_NAME}" --no-pager
 
 SERVER_IP=$(curl -s ifconfig.me || echo "<server-ip>")
 echo ""
-echo "App is accessible at: http://${SERVER_IP}:8080"
+echo "App is accessible at: http://${SERVER_IP}"
+echo "Batch agent at:       http://${SERVER_IP}:8001"
 echo ""
 echo "Useful commands:"
 echo "  systemctl status ${SERVICE_NAME}     # check if running"
