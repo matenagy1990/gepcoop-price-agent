@@ -2479,7 +2479,7 @@ async function admLoadArgipPriceList() {
     try {
       const form = new FormData(); form.append('file', _argipFile);
       const res = await fetch('/admin/argip-price/upload', { method: 'POST', headers: admHeaders(), body: form });
-      const data = await res.json();
+      const data = await safeJson(res);
       if (!res.ok) throw new Error(data.detail || 'Feltöltés sikertelen.');
       msg.style.color = '#3a7a09'; msg.textContent = `✓ ${data.rows} sor betöltve.`;
       setFile(null); fileInput.value = '';
@@ -2566,7 +2566,7 @@ async function admLoadGepcoopStock() {
     try {
       const form = new FormData(); form.append('file', _gepFile);
       const res = await fetch('/admin/gepcoop-stock/upload', { method: 'POST', headers: admHeaders(), body: form });
-      const data = await res.json();
+      const data = await safeJson(res);
       if (!res.ok) throw new Error(data.detail || 'Feltöltés sikertelen.');
       msg.style.color = '#3a7a09'; msg.textContent = `✓ ${data.rows} sor betöltve.`;
       setFile(null); fileInput.value = '';
@@ -2979,7 +2979,7 @@ document.getElementById('adm-btn-upload').addEventListener('click', async () => 
       headers: admHeaders(),
       body: form,
     });
-    const d = await res.json();
+    const d = await safeJson(res);
     if (!res.ok) throw new Error(d.detail || 'Feltöltés sikertelen.');
 
     msgEl.className = 'adm-msg ok';
@@ -3317,6 +3317,15 @@ function admHeaders(extra = {}) {
     ...extra,
     ...(adminToken ? { 'Authorization': `Bearer ${adminToken}` } : {}),
   };
+}
+
+async function safeJson(res) {
+  const ct = res.headers.get('content-type') || '';
+  if (ct.includes('application/json')) return res.json();
+  const text = await res.text();
+  if (res.status === 413) throw new Error('A fájl túl nagy a szerver számára (max 50 MB).');
+  if (!res.ok) throw new Error(`Szerver hiba (${res.status})${text ? ': ' + text.substring(0, 120) : ''}`);
+  throw new Error('Váratlan válasz a szervertől.');
 }
 
 function admUserMsgHtml(id) {
