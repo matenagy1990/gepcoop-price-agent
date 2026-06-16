@@ -10,3 +10,21 @@ services:
       - ./.env:/app/.env
     shm_size: "256m"
     restart: unless-stopped
+
+  batch-price-agent:
+    build: ./batch-price-agent
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    environment:
+      PRICE_AGENT_PATH: /app/GepcoopPriceAgent
+      EUR_TO_HUF_RATE: "400"
+      BATCH_MAX_ITEMS: "50"
+      BATCH_SUPPLIER_LIMIT: "4"
+      SCRAPER_TIMEOUT_SECONDS: "60"
+      SCRAPER_RETRY_COUNT: "2"
+    volumes:
+      - .:/app/GepcoopPriceAgent:ro
+    shm_size: "256m"
+    restart: unless-stopped
