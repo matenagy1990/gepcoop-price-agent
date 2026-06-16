@@ -717,6 +717,102 @@ async def _run_vipa_otp_login() -> None:
             _vipa_login_state["done_event"].set()
 
 
+async def _vipa_session_is_live() -> bool:
+    """Return True only when the saved Vipa session is fresh and accepted by the site."""
+    from playwright.async_api import async_playwright as _pw
+    from browser.session_utils import invalidate_session, load_session, session_is_fresh
+    from browser.supplier_vipa import (
+        HOME_URL as _VIPA_HOME,
+        SESSION_FILE as _VIPA_SESSION,
+        SESSION_MAX_AGE_HOURS as _VIPA_SESSION_MAX_AGE_HOURS,
+        _is_logged_in as _vipa_is_logged_in,
+    )
+
+    session = load_session(_VIPA_SESSION)
+    if not session or not session_is_fresh(session, _VIPA_SESSION_MAX_AGE_HOURS):
+        if session:
+            invalidate_session(_VIPA_SESSION)
+        return False
+
+    try:
+        async with _pw() as pw:
+            browser = await pw.chromium.launch(headless=True)
+            try:
+                context = await browser.new_context(storage_state=session["state"])
+                page = await context.new_page()
+                await page.goto(_VIPA_HOME, wait_until="domcontentloaded", timeout=30000)
+                is_live = await _vipa_is_logged_in(page)
+                if not is_live:
+                    invalidate_session(_VIPA_SESSION)
+                return is_live
+            finally:
+                await browser.close()
+    except Exception as exc:
+        log.warning("Vipa session live check failed: %s", exc)
+        return False
+
+
+async def _ensure_vipa_session_before_scraping(queue: asyncio.Queue) -> None:
+    """
+    Block the query pipeline until Vipa has a live session.
+
+    This runs before any supplier scraper starts, so when Vipa is part of the
+    query we either continue with a verified session or fail before launching
+    the other parallel browser jobs.
+    """
+    await queue.put(("progress", {
+        "step": "browser",
+        "status": "running",
+        "supplier": "vipa",
+        "msg": "Vipa session ellenőrzése…",
+    }))
+    if await _vipa_session_is_live():
+        await queue.put(("progress", {
+            "step": "browser",
+            "status": "done",
+            "supplier": "vipa",
+            "msg": "Vipa session aktív, indulhat a lekérdezés.",
+        }))
+        return
+
+    otp_info = _start_vipa_otp_flow()
+    await queue.put(("password_required", {
+        "supplier": "vipa",
+        "msg": "Vipa: aktív session nem áll rendelkezésre – OTP bejelentkezés szükséges.",
+        "otp": True,
+        "otp_email": os.environ.get("SUPPLIER_VIPA_USERNAME", ""),
+        "otp_message": otp_info.get("message", ""),
+    }))
+    await queue.put(("progress", {
+        "step": "browser",
+        "status": "running",
+        "supplier": "vipa",
+        "msg": "Vipa OTP tokenre várunk. A többi webshop lekérdezése ezután indul.",
+    }))
+
+    done_event = _vipa_login_state.get("done_event")
+    if done_event is None:
+        raise RuntimeError("Vipa OTP folyamat nem indult el.")
+
+    try:
+        await asyncio.wait_for(done_event.wait(), timeout=660)
+    except asyncio.TimeoutError as exc:
+        raise RuntimeError("Vipa OTP token nem érkezett be időben, a lekérdezés nem indult el.") from exc
+
+    if _vipa_login_state.get("error"):
+        raise RuntimeError(str(_vipa_login_state["error"]))
+
+    if not await _vipa_session_is_live():
+        raise RuntimeError("Vipa bejelentkezés után sem érhető el aktív session.")
+
+    await queue.put(("progress", {
+        "step": "browser",
+        "status": "done",
+        "supplier": "vipa",
+        "msg": "Vipa bejelentkezés kész, indulnak a webshop lekérdezések.",
+    }))
+
+
 # ── Models ────────────────────────────────────────────────────────────
 class LoginRequest(BaseModel):
     username: str
@@ -1096,6 +1192,9 @@ async def query_stream(
                 "step": "mapping", "status": "done",
                 "msg": f"Found {len(supplier_list)} supplier(s): {supplier_labels}",
             }))
+
+            if any(s["supplier_id"] == "vipa" for s in supplier_list):
+                await _ensure_vipa_session_before_scraping(queue)
 
             # ── Step 2: parallel fetch for all suppliers ─────────────
             results: dict = {}

@@ -1728,7 +1728,7 @@ async function vipaFrontLogin(sid) {
     const d = await res.json();
     if (!res.ok || d.ok === false) throw new Error(d.detail || d.message || 'Hiba történt');
     msgEl.className = 'adm-msg ok';
-    msgEl.innerHTML = '✓ Sikeres bejelentkezés! Kérjük indítsa újra a lekérdezést.';
+    msgEl.innerHTML = '✓ Sikeres bejelentkezés! A lekérdezés automatikusan folytatódik.';
     if (tokenEl) tokenEl.value = '';
   } catch(err) {
     msgEl.className = 'adm-msg err';
