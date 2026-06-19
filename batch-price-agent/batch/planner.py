@@ -11,16 +11,40 @@ log = logging.getLogger(__name__)
 _IMPLEMENTED = set(SUPPLIERS.keys())
 
 
-def _lookup_row(gepcoop_part_no: str) -> dict | None:
+def _lookup_rows(part_numbers: list[str]) -> dict[str, dict]:
+    """Egyetlen kötegelt lekérdezéssel betölti az összes cikkszámhoz tartozó
+    article_mapping sort.
+
+    A korábbi megoldás cikkszámonként külön ``.ilike`` query-t futtatott (N+1),
+    ami 100 cikknél ~7 mp volt. Ez egyetlen ``.in_()`` lekérdezésre cseréli
+    (~0,1–0,3 mp): az ``.in_()`` egyenlőség-szűrő, ezért használja a
+    gepcoop_part_no indexet (az ``ilike`` nem tudná → szekvenciális pásztázás
+    lenne, ~5 mp).
+
+    A kis-/nagybetű-függetlenség megőrzéséhez minden cikkszámot három alakban
+    keresünk: eredeti, csupa nagy, csupa kicsi. Ez a tábla minden „csak nagy"
+    vagy „csak kicsi" betűs értékére pontosan megegyezik a régi ``ilike``
+    eredménnyel; a néhány vegyes betűs (intra-mixed) cikknél a pontos beírás
+    továbbra is talál. A párosítás Python-oldalon a NAGYBETŰS alak alapján
+    történik.
+
+    A visszaadott dict kulcsa a cikkszám NAGYBETŰS alakja → a hozzá tartozó sor.
+    Nincs találat esetén a kulcs egyszerűen hiányzik a dict-ből.
+    """
+    cleaned = [pn.strip() for pn in part_numbers if pn and pn.strip()]
+    if not cleaned:
+        return {}
     sb = get_supabase()
-    res = (
+    variants = list({v for pn in cleaned for v in (pn, pn.upper(), pn.lower())})
+    rows = (
         sb.table("article_mapping")
         .select("*")
-        .ilike("gepcoop_part_no", gepcoop_part_no.strip())
-        .limit(1)
+        .in_("gepcoop_part_no", variants)
         .execute()
+        .data
+        or []
     )
-    return res.data[0] if res.data else None
+    return {(r.get("gepcoop_part_no") or "").upper(): r for r in rows}
 
 
 def _row_to_supplier_map(row: dict, selected_suppliers: list[str]) -> dict[str, dict]:
@@ -65,12 +89,15 @@ def build_preview(
     valid_suppliers = [s for s in selected_suppliers if s in _IMPLEMENTED]
     part_numbers, duplicates = clean_part_numbers(gepcoop_part_numbers)
 
+    # Egyetlen kötegelt lekérdezés az összes cikkszámra (N+1 helyett 1 query).
+    rows_by_part = _lookup_rows(part_numbers)
+
     items = []
     searchable_count = 0
     missing_mapping_count = 0
 
     for pn in part_numbers:
-        row = _lookup_row(pn)
+        row = rows_by_part.get(pn.strip().upper())
         if row is None:
             product_name = None
             supplier_map = {sid: {"status": "not_in_db", "supplier_part_no": None} for sid in valid_suppliers}

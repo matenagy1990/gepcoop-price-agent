@@ -15,6 +15,7 @@ SUPPLIERS: dict[str, dict] = {
     "wasishop":  {"name": "Wasishop",        "url": os.environ.get("SUPPLIER_K_URL", "https://www.wasishop.de")},
     "argip":     {"name": "Argip",           "url": ""},
     "inoxmare":  {"name": "Inoxmare",        "url": os.environ.get("SUPPLIER_L_URL", "https://www.inoxmare.com/en")},
+    "vipa":      {"name": "Vipa",            "url": os.environ.get("SUPPLIER_VIPA_URL", "https://www.vipafasteners.com/en/")},
 }
 
 
@@ -35,6 +36,7 @@ _SEARCH_URL_TEMPLATES: dict[str, str | None] = {
     "kingb2b":   None,   # SPA, nincs termék deep-link
     "inoxmare":  "https://www.inoxmare.com/en/quicksearch/index/resolve/?item={part_no}",
     "argip":     None,
+    "vipa":      "https://www.vipafasteners.com/en/search/?q={part_no}",
 }
 
 

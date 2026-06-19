@@ -64,6 +64,10 @@ class RunRequest(BaseModel):
     gepcoop_part_numbers: list[str]
 
 
+class VipaCompleteLoginRequest(BaseModel):
+    token: str
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
@@ -192,6 +196,59 @@ async def serve_ui():
 @app.get("/suppliers")
 async def get_suppliers():
     return list_suppliers()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Vipa OTP belépés — ugyanaz a bevált flow, mint a fő price agentben.
+# A session a megosztott assets/sessions/vipa_session.json fájlba kerül, így a
+# scraper (browser/supplier_vipa.py) automatikusan újrahasználja ~20 órán át.
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.get("/vipa/status")
+async def vipa_status():
+    """Van-e használható (mentett és friss) Vipa session?
+
+    Szándékosan a könnyű, nem-destruktív ellenőrzést használja: nem indít
+    böngészőt és nem törli a sessiont. Így a popup csak akkor jön fel, ha
+    tényleg nincs friss session — egy flaky élő-teszt nem törölheti ki a jó
+    sessiont és nem kérhet feleslegesen újra belépést.
+    """
+    from browser.vipa_otp import vipa_session_available
+    return {"live": vipa_session_available()}
+
+
+@app.post("/vipa/initiate-login")
+async def vipa_initiate_login():
+    """Headless OTP folyamat indítása: e-mail beírása + 'Log in', ami elküldi a tokent."""
+    from browser.vipa_otp import start_vipa_otp_flow
+    return start_vipa_otp_flow()
+
+
+@app.post("/vipa/complete-login")
+async def vipa_complete_login(req: VipaCompleteLoginRequest):
+    """Az e-mailben kapott OTP token beküldése, a Vipa bejelentkezés véglegesítése."""
+    from browser.vipa_otp import vipa_login_state
+    if not vipa_login_state["active"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Nincs aktív Vipa OTP folyamat. Először kattintson az 'OTP kérése' gombra.",
+        )
+    token = (req.token or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="A token nem lehet üres.")
+
+    vipa_login_state["token"] = token
+    vipa_login_state["token_event"].set()
+
+    try:
+        await asyncio.wait_for(vipa_login_state["done_event"].wait(), timeout=90)
+    except asyncio.TimeoutError:
+        return {"ok": False, "message": "A bejelentkezési folyamat időtúllépés miatt nem fejeződött be."}
+
+    if vipa_login_state["error"]:
+        raise HTTPException(status_code=400, detail=vipa_login_state["error"])
+
+    return {"ok": True, "message": "Vipa bejelentkezés sikeres! A session el lett mentve."}
 
 
 @app.post("/batch/preview")

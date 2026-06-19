@@ -58,6 +58,7 @@ nav button:hover, nav button.active {
 main { max-width: 1400px; margin: 0 auto; padding: 28px 24px; }
 .screen { display: none; }
 .screen.active { display: block; }
+.hidden { display: none !important; }
 
 /* ── Card ── */
 .card {
@@ -478,6 +479,33 @@ hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
 
 <div id="toast"></div>
 
+<!-- ════════════════════════════════════════════
+     Vipa OTP belépő popup — csak akkor jelenik meg, ha a Vipa ki van
+     választva ÉS nincs élő session. A token e-mailben érkezik.
+════════════════════════════════════════════ -->
+<div id="vipa-modal-backdrop" class="hidden"
+     style="position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px">
+  <div style="background:#fff;border-radius:14px;max-width:440px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3);overflow:hidden">
+    <div style="padding:18px 22px;background:var(--blue);color:#fff;font-weight:700;font-size:16px;display:flex;align-items:center;gap:8px">
+      🔑 Vipa bejelentkezés
+    </div>
+    <div style="padding:22px">
+      <div id="vipa-modal-text" style="font-size:13px;color:var(--gray);line-height:1.6;margin-bottom:14px">
+        OTP e-mail küldése folyamatban…
+      </div>
+      <input type="text" id="vipa-modal-token" placeholder="Token az e-mailből"
+             style="width:100%;margin:0 0 12px"
+             onkeydown="if(event.key==='Enter')vipaModalSubmit()"/>
+      <div id="vipa-modal-msg" class="alert hidden" style="margin:0 0 12px"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
+        <button class="btn btn-ghost" id="vipa-modal-resend" onclick="vipaModalResend()">OTP újraküldése</button>
+        <button class="btn btn-ghost" onclick="vipaModalCancel()">Mégse</button>
+        <button class="btn btn-primary" id="vipa-modal-submit" onclick="vipaModalSubmit()">Bejelentkezés</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 // ══════════════════════════════════════════════════════
 // State
@@ -596,6 +624,114 @@ function clearSuppliers() {
     document.getElementById('chip-' + s.id).classList.remove('selected');
   });
   state.selectedSuppliers = [];
+}
+
+// ══════════════════════════════════════════════════════
+// Vipa OTP belépés — popup, csak ha nincs élő session
+// ══════════════════════════════════════════════════════
+
+// Resolver a megnyitott modalhoz: a Bejelentkezés/Mégse gomb állítja be.
+let _vipaModalResolve = null;
+
+function vipaModalMsg(kind, text) {
+  const el = document.getElementById('vipa-modal-msg');
+  if (!text) { el.classList.add('hidden'); return; }
+  el.className = `alert alert-${kind}`;
+  el.textContent = text;
+  el.classList.remove('hidden');
+}
+
+/**
+ * Garantálja, hogy a Vipának legyen élő sessionje, MIELŐTT bármelyik scraper
+ * elindulna. Visszatérés:
+ *   true  → van élő session (vagy a belépés sikeres) → indulhat a batch
+ *   false → a beszerző megszakította → ne induljon semmilyen scraper
+ * Csak akkor hívandó, ha a 'vipa' a kiválasztott shopok között van.
+ */
+async function ensureVipaSession() {
+  let live = false;
+  try {
+    const r = await fetch('/vipa/status');
+    live = (await r.json()).live;
+  } catch (e) { live = false; }
+  if (live) return true;          // van használható session → nincs popup
+  return await vipaModalLogin();  // nincs → popup a tokennek
+}
+
+function vipaModalLogin() {
+  return new Promise(async (resolve) => {
+    _vipaModalResolve = resolve;
+    document.getElementById('vipa-modal-token').value = '';
+    document.getElementById('vipa-modal-backdrop').classList.remove('hidden');
+    vipaModalMsg('', '');
+    document.getElementById('vipa-modal-submit').disabled = false;
+    document.getElementById('vipa-modal-text').textContent = 'OTP e-mail küldése folyamatban…';
+    // Automatikus OTP kérés (e-mail kiküldése), hogy a beszerzőnek már csak a tokent kelljen beírnia
+    try {
+      const res = await fetch('/vipa/initiate-login', { method: 'POST' });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.detail || 'Hiba történt');
+      document.getElementById('vipa-modal-text').textContent = d.message;
+      document.getElementById('vipa-modal-token').focus();
+    } catch (err) {
+      document.getElementById('vipa-modal-text').textContent =
+        'A Vipa belépéshez OTP token szükséges (e-mailben). Ha nem érkezett meg, kattints az „OTP újraküldése" gombra.';
+      vipaModalMsg('error', `⚠ ${err.message}`);
+    }
+  });
+}
+
+async function vipaModalResend() {
+  const btn = document.getElementById('vipa-modal-resend');
+  btn.disabled = true;
+  vipaModalMsg('info', 'Új OTP kérése…');
+  try {
+    const res = await fetch('/vipa/initiate-login', { method: 'POST' });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || 'Hiba történt');
+    vipaModalMsg('info', d.message);
+  } catch (err) {
+    vipaModalMsg('error', `⚠ ${err.message}`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function vipaModalSubmit() {
+  const tokenEl = document.getElementById('vipa-modal-token');
+  const token = tokenEl.value.trim();
+  if (!token) { vipaModalMsg('error', '⚠ Add meg a tokent.'); return; }
+  const btn = document.getElementById('vipa-modal-submit');
+  btn.disabled = true;
+  vipaModalMsg('info', 'Bejelentkezés folyamatban…');
+  try {
+    const res = await fetch('/vipa/complete-login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || 'Hiba történt');
+    if (d.ok === false) { vipaModalMsg('error', `⚠ ${d.message}`); btn.disabled = false; return; }
+    // siker → modal bezárása, batch indulhat
+    _vipaCloseModal(true);
+  } catch (err) {
+    vipaModalMsg('error', `⚠ ${err.message}`);
+    btn.disabled = false;
+  }
+}
+
+function vipaModalCancel() {
+  _vipaCloseModal(false);
+}
+
+function _vipaCloseModal(result) {
+  document.getElementById('vipa-modal-backdrop').classList.add('hidden');
+  document.getElementById('vipa-modal-token').value = '';
+  vipaModalMsg('', '');
+  const resolve = _vipaModalResolve;
+  _vipaModalResolve = null;
+  if (resolve) resolve(result);
 }
 
 // ══════════════════════════════════════════════════════
@@ -761,6 +897,39 @@ async function startBatchRun() {
   const data = state.previewData;
   if (!data) return;
 
+  // Csak azokkal a webshopokkal foglalkozunk, amelyekben a mapping után
+  // legalább EGY kereshető cikkszám van. Ha egy kiválasztott webshopban egy
+  // cikknek sincs mappingje, azt a webshopot egyáltalán nem vonjuk be
+  // (se progress, se /batch/run, se Vipa esetén OTP-kérés).
+  const runSuppliers = data.selected_suppliers.filter(sid =>
+    data.items.some(it => it.suppliers[sid] && it.suppliers[sid].status === 'mapped')
+  );
+
+  if (runSuppliers.length === 0) {
+    toast('Egyik kiválasztott webshopban sincs mapping utáni kereshető cikkszám.');
+    return;
+  }
+
+  // Vipa gating: CSAK akkor, ha a Vipában van ténylegesen kereshető cikkszám.
+  // Amíg nincs élő session, EGYETLEN scraper sem indul (a /batch/run hívás is vár).
+  if (runSuppliers.includes('vipa')) {
+    const startBtn = document.getElementById('start-run-btn');
+    const startBtnHtml = startBtn.innerHTML;
+    startBtn.disabled = true;
+    startBtn.innerHTML = '<span class="spinner"></span> Vipa session ellenőrzése…';
+    let ok;
+    try {
+      ok = await ensureVipaSession();
+    } finally {
+      startBtn.disabled = false;
+      startBtn.innerHTML = startBtnHtml;
+    }
+    if (!ok) {
+      toast('Vipa bejelentkezés megszakítva – a futás nem indult el.');
+      return;   // ne induljon semmilyen scraper
+    }
+  }
+
   showScreen('progress');
   document.getElementById('progress-run-id').textContent = 'Indítás…';
   document.getElementById('progress-summary').textContent = 'Kapcsolódás…';
@@ -770,9 +939,9 @@ async function startBatchRun() {
 
   _supplierProgress = {};
 
-  // Supplier sorok inicializálása
+  // Supplier sorok inicializálása — csak a ténylegesen kereshető webshopok
   const tbody = document.getElementById('supplier-progress-tbody');
-  data.selected_suppliers.forEach(sid => {
+  runSuppliers.forEach(sid => {
     _supplierProgress[sid] = { total: 0, done: 0, ok: 0, errors: 0, status: 'várakozik' };
     tbody.insertAdjacentHTML('beforeend', `
       <tr id="sprow-${sid}">
@@ -794,7 +963,7 @@ async function startBatchRun() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         project_name: data.project_name,
-        selected_suppliers: data.selected_suppliers,
+        selected_suppliers: runSuppliers,
         gepcoop_part_numbers: data.items.map(i => i.gepcoop_part_no),
       }),
     });

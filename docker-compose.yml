@@ -25,6 +25,11 @@ services:
       SCRAPER_TIMEOUT_SECONDS: "60"
       SCRAPER_RETRY_COUNT: "2"
     volumes:
+      # A price agent kódja csak olvasható — a batch nem módosíthatja.
       - .:/app/GepcoopPriceAgent:ro
+      # A Vipa (és többi) session könyvtár viszont közös és írható, hogy a batch
+      # UI-ból indított OTP belépés is el tudja menteni a sessiont. Ugyanazt a
+      # host-mappát (./assets/sessions) használja, amit a price agent ír.
+      - ./assets/sessions:/app/GepcoopPriceAgent/assets/sessions
     shm_size: "256m"
     restart: unless-stopped
