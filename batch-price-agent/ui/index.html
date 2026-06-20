@@ -4,53 +4,71 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Batch Price Agent – Gép-Coop</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Oswald:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root {
-  --blue:    #2F5496;
-  --blue-lt: #4472C4;
+  /* Márkaszínek — a price agenttel egyező */
+  --blue:    #009fe6;
+  --blue-lt: #33b1ec;
+  --blue-dk: #0082c8;
+  --navy:    #161B63;
+  --navy2:   #1F4977;
+  /* Funkcionális státusz-színek (címkék, mátrix) — változatlanok */
   --green:   #375623;
   --green-bg:#C6EFCE;
   --yellow:  #9C6500;
   --yellow-bg:#FFEB9C;
   --red:     #9C0006;
   --red-bg:  #FFC7CE;
-  --gray:    #595959;
-  --bg:      #F5F7FA;
+  /* Neutrálisok — a price agent palettája */
+  --gray:    #6B7A99;
+  --text:    #1A1F36;
+  --bg:      #F4F7FB;
   --white:   #ffffff;
-  --border:  #D0D7E3;
-  --radius:  8px;
-  --shadow:  0 2px 8px rgba(0,0,0,.10);
+  --border:  #DDE3ED;
+  --radius:  16px;
+  --shadow:  0 2px 16px rgba(22,27,99,.08);
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: #1a1a2e; font-size: 14px; }
+body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; }
+.mono { font-family: 'JetBrains Mono', monospace; }
 
 /* ── Nav ── */
 nav {
-  background: var(--blue);
+  background: linear-gradient(135deg, var(--navy) 0%, var(--navy2) 100%);
   color: #fff;
   display: flex;
   align-items: center;
   gap: 16px;
   padding: 0 24px;
-  height: 52px;
+  height: 56px;
   position: sticky;
   top: 0;
   z-index: 100;
-  box-shadow: 0 2px 6px rgba(0,0,0,.25);
+  box-shadow: 0 2px 16px rgba(22,27,99,.25);
 }
-nav .logo { font-size: 17px; font-weight: 700; letter-spacing: .3px; margin-right: auto; }
+nav .logo {
+  font-family: 'Oswald', sans-serif;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  margin-right: auto;
+}
 nav button {
   background: transparent;
   border: 1.5px solid rgba(255,255,255,.4);
   color: #fff;
-  padding: 6px 14px;
+  padding: 6px 16px;
   border-radius: 20px;
   cursor: pointer;
   font-size: 13px;
+  font-weight: 500;
   transition: all .2s;
 }
 nav button:hover, nav button.active {
-  background: rgba(255,255,255,.15);
+  background: rgba(255,255,255,.18);
   border-color: #fff;
 }
 
@@ -70,9 +88,11 @@ main { max-width: 1400px; margin: 0 auto; padding: 28px 24px; }
   margin-bottom: 20px;
 }
 .card-title {
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--blue);
+  font-family: 'Oswald', sans-serif;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: .5px;
+  color: var(--navy);
   margin-bottom: 16px;
   display: flex;
   align-items: center;
@@ -81,18 +101,23 @@ main { max-width: 1400px; margin: 0 auto; padding: 28px 24px; }
 
 /* ── Form ── */
 label { display: block; font-weight: 600; margin-bottom: 5px; color: var(--gray); font-size: 13px; }
-input[type=text], textarea {
+input[type=text], input[type=datetime-local], textarea {
   width: 100%;
   border: 1.5px solid var(--border);
-  border-radius: 6px;
-  padding: 8px 12px;
+  border-radius: 10px;
+  padding: 10px 14px;
   font-size: 14px;
   font-family: inherit;
-  transition: border .2s;
+  color: var(--text);
+  transition: border-color .2s, box-shadow .2s;
   background: var(--white);
 }
-input[type=text]:focus, textarea:focus { outline: none; border-color: var(--blue-lt); }
-textarea { resize: vertical; min-height: 200px; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.6; }
+input[type=text]:focus, input[type=datetime-local]:focus, textarea:focus {
+  outline: none;
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgba(0,159,230,.15);
+}
+textarea { resize: vertical; min-height: 200px; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.6; }
 
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 @media (max-width: 700px) { .form-grid { grid-template-columns: 1fr; } }
@@ -116,31 +141,48 @@ textarea { resize: vertical; min-height: 200px; font-family: 'Courier New', mono
   user-select: none;
   font-size: 13px;
 }
-.supplier-chip:hover { border-color: var(--blue-lt); background: #f0f4ff; }
-.supplier-chip.selected { border-color: var(--blue); background: #EBF0FB; color: var(--blue); font-weight: 600; }
+.supplier-chip { border-radius: 10px; }
+.supplier-chip:hover { border-color: var(--blue-lt); background: #E9F7FE; }
+.supplier-chip.selected { border-color: var(--blue); background: #E0F4FD; color: var(--blue-dk); font-weight: 600; }
 .supplier-chip input { accent-color: var(--blue); }
 
 /* ── Buttons ── */
 .btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 7px;
-  padding: 9px 20px;
+  padding: 10px 22px;
   border: none;
-  border-radius: 6px;
+  border-radius: 10px;
   cursor: pointer;
   font-size: 14px;
   font-weight: 600;
-  font-family: inherit;
-  transition: all .2s;
+  font-family: 'Oswald', sans-serif;
+  letter-spacing: .6px;
+  transition: filter .2s, transform .1s, box-shadow .2s, background .2s, border-color .2s, color .2s;
 }
-.btn-primary { background: var(--blue); color: #fff; }
-.btn-primary:hover { background: var(--blue-lt); }
-.btn-success { background: #217346; color: #fff; }
-.btn-success:hover { background: #1a5c38; }
-.btn-ghost { background: transparent; border: 1.5px solid var(--border); color: var(--gray); }
+.btn-primary {
+  background: linear-gradient(135deg, var(--blue) 0%, var(--blue-dk) 100%);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(0,159,230,.30);
+}
+.btn-primary:hover { filter: brightness(1.05); transform: translateY(-1px); }
+.btn-success {
+  background: linear-gradient(135deg, var(--green-acc, #5CB811) 0%, #4a9e0d 100%);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(92,184,17,.25);
+}
+.btn-success:hover { filter: brightness(1.05); transform: translateY(-1px); }
+.btn-ghost { background: var(--white); border: 1.5px solid var(--border); color: var(--gray); }
 .btn-ghost:hover { border-color: var(--blue); color: var(--blue); }
-.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-navy {
+  background: linear-gradient(135deg, var(--navy) 0%, var(--navy2) 100%);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(22,27,99,.28);
+}
+.btn-navy:hover { filter: brightness(1.12); transform: translateY(-1px); }
+.btn:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; transform: none; filter: none; }
 .btn-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 16px; }
 
 /* ── Tags ── */
@@ -158,13 +200,13 @@ textarea { resize: vertical; min-height: 200px; font-family: 'Courier New', mono
 .tag-yellow { background: var(--yellow-bg); color: var(--yellow); }
 .tag-red    { background: var(--red-bg);    color: var(--red); }
 .tag-gray   { background: #e8e8e8;          color: #555; }
-.tag-blue   { background: #dce7f5;          color: var(--blue); }
+.tag-blue   { background: #d8eefb;          color: var(--navy); }
 
 /* ── Tables ── */
 .table-wrap { overflow-x: auto; border-radius: var(--radius); border: 1px solid var(--border); }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th {
-  background: var(--blue);
+  background: var(--navy);
   color: #fff;
   padding: 10px 12px;
   text-align: left;
@@ -177,7 +219,7 @@ td { padding: 9px 12px; border-bottom: 1px solid #eef0f5; vertical-align: middle
 tr:last-child td { border-bottom: none; }
 tr:hover td { background: #f7f9ff; }
 .sticky-col { position: sticky; left: 0; background: var(--white); z-index: 1; border-right: 1px solid var(--border); }
-th.sticky-col { background: var(--blue); z-index: 2; }
+th.sticky-col { background: var(--navy); z-index: 2; }
 
 /* ── Progress bars ── */
 .progress-bar-outer { background: #e8edf5; border-radius: 20px; height: 8px; width: 100%; min-width: 80px; }
@@ -204,7 +246,7 @@ th.sticky-col { background: var(--blue); z-index: 2; }
 }
 .rank-1 { background: #217346; color: #fff; }
 .rank-2 { background: #9C6500; color: #fff; }
-.rank-3 { background: #2F5496; color: #fff; }
+.rank-3 { background: var(--navy2); color: #fff; }
 
 /* ── Stat grid ── */
 .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
@@ -219,7 +261,7 @@ th.sticky-col { background: var(--blue); z-index: 2; }
 .stat-label { font-size: 12px; color: var(--gray); margin-top: 4px; }
 
 /* ── Alert ── */
-.alert { padding: 12px 16px; border-radius: 6px; font-size: 13px; margin-bottom: 14px; }
+.alert { padding: 12px 16px; border-radius: 10px; font-size: 13px; margin-bottom: 14px; }
 .alert-warn { background: #fff3cd; border: 1px solid #ffc107; color: #664d03; }
 .alert-info { background: #cff4fc; border: 1px solid #0dcaf0; color: #055160; }
 .alert-success { background: var(--green-bg); border: 1px solid #aedfa6; color: var(--green); }
@@ -249,7 +291,7 @@ th.sticky-col { background: var(--blue); z-index: 2; }
 #toast.show { opacity: 1; }
 
 /* ── Misc ── */
-.section-title { font-size: 14px; font-weight: 700; color: var(--blue); margin: 20px 0 10px; }
+.section-title { font-family: 'Oswald', sans-serif; font-size: 15px; font-weight: 600; letter-spacing: .5px; color: var(--navy); margin: 20px 0 10px; }
 .text-muted { color: var(--gray); font-size: 12px; }
 .mt8 { margin-top: 8px; }
 .mt16 { margin-top: 16px; }
@@ -261,7 +303,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
 
 <nav>
   <span class="logo">⚙️ Batch Price Agent</span>
-  <button onclick="showScreen('new-run')" id="nav-new-run">+ Új lekérdezés</button>
+  <button onclick="newRun()" id="nav-new-run">+ Új lekérdezés</button>
   <button onclick="showScreen('past-runs')" id="nav-past-runs">Korábbi futások</button>
   <button onclick="window.location.href=window.location.protocol+'//'+window.location.hostname+':8080?select=1'" style="margin-left:auto;opacity:.85">⊞ Alkalmazások</button>
 </nav>
@@ -326,7 +368,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
 ════════════════════════════════════════════ -->
 <div id="screen-preview" class="screen">
   <div class="flex-between" style="margin-bottom:16px">
-    <div style="font-size:18px;font-weight:700;color:var(--blue)" id="preview-title">Mapping előellenőrzés</div>
+    <div style="font-family:'Oswald',sans-serif;font-size:20px;font-weight:600;letter-spacing:.5px;color:var(--navy)" id="preview-title">Mapping előellenőrzés</div>
     <button class="btn btn-ghost" onclick="showScreen('new-run')">← Vissza</button>
   </div>
 
@@ -347,7 +389,10 @@ hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
     <div id="preview-plan"></div>
     <div class="btn-row mt16">
       <button class="btn btn-primary" id="start-run-btn" onclick="startBatchRun()">
-        ▶ Futás indítása
+        ▶ Azonnali futás
+      </button>
+      <button class="btn btn-navy" id="schedule-run-btn" onclick="onScheduleClick()">
+        ⏰ Ütemezett futás
       </button>
       <button class="btn btn-ghost" onclick="showScreen('new-run')">Módosítás</button>
     </div>
@@ -360,7 +405,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
 <div id="screen-progress" class="screen">
   <div class="flex-between" style="margin-bottom:16px">
     <div>
-      <div style="font-size:18px;font-weight:700;color:var(--blue)">Batch futás folyamatban…</div>
+      <div style="font-family:'Oswald',sans-serif;font-size:20px;font-weight:600;letter-spacing:.5px;color:var(--navy)">Batch futás folyamatban…</div>
       <div class="text-muted" id="progress-run-id"></div>
     </div>
   </div>
@@ -401,7 +446,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
 <div id="screen-results" class="screen">
   <div class="flex-between" style="margin-bottom:16px">
     <div>
-      <div style="font-size:18px;font-weight:700;color:var(--blue)" id="results-title">Eredmények</div>
+      <div style="font-family:'Oswald',sans-serif;font-size:20px;font-weight:600;letter-spacing:.5px;color:var(--navy)" id="results-title">Eredmények</div>
       <div class="text-muted" id="results-subtitle"></div>
     </div>
     <div class="btn-row" style="margin-top:0">
@@ -448,8 +493,8 @@ hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
 ════════════════════════════════════════════ -->
 <div id="screen-past-runs" class="screen">
   <div class="flex-between" style="margin-bottom:16px">
-    <div style="font-size:18px;font-weight:700;color:var(--blue)">Korábbi futások</div>
-    <button class="btn btn-primary" onclick="showScreen('new-run')">+ Új lekérdezés</button>
+    <div style="font-family:'Oswald',sans-serif;font-size:20px;font-weight:600;letter-spacing:.5px;color:var(--navy)">Korábbi futások</div>
+    <button class="btn btn-primary" onclick="newRun()">+ Új lekérdezés</button>
   </div>
 
   <div class="card">
@@ -486,7 +531,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
 <div id="vipa-modal-backdrop" class="hidden"
      style="position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px">
   <div style="background:#fff;border-radius:14px;max-width:440px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3);overflow:hidden">
-    <div style="padding:18px 22px;background:var(--blue);color:#fff;font-weight:700;font-size:16px;display:flex;align-items:center;gap:8px">
+    <div style="padding:18px 22px;background:linear-gradient(135deg,var(--navy),var(--navy2));color:#fff;font-family:'Oswald',sans-serif;font-weight:600;letter-spacing:.5px;font-size:17px;display:flex;align-items:center;gap:8px">
       🔑 Vipa bejelentkezés
     </div>
     <div style="padding:22px">
@@ -502,6 +547,34 @@ hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
         <button class="btn btn-ghost" onclick="vipaModalCancel()">Mégse</button>
         <button class="btn btn-primary" id="vipa-modal-submit" onclick="vipaModalSubmit()">Bejelentkezés</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════
+     Ütemezés (slot-választó) popup
+════════════════════════════════════════════ -->
+<div id="schedule-modal-backdrop" class="hidden"
+     style="position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px">
+  <div style="background:#fff;border-radius:14px;max-width:560px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3);overflow:hidden;display:flex;flex-direction:column;max-height:90vh">
+    <div style="padding:18px 22px;background:linear-gradient(135deg,var(--navy),var(--navy2));color:#fff;font-family:'Oswald',sans-serif;font-weight:600;letter-spacing:.5px;font-size:17px;display:flex;align-items:center;gap:8px">
+      ⏰ Ütemezett futás időpontja
+    </div>
+    <div style="padding:20px;overflow:auto">
+      <div style="font-size:13px;color:var(--gray);line-height:1.6;margin-bottom:14px">
+        Add meg a dátumot és a pontos időpontot (percre). A futás ekkor
+        automatikusan elindul.
+      </div>
+      <div style="font-weight:600;margin-bottom:6px">Időpont (dátum és pontos perc)</div>
+      <input type="datetime-local" id="schedule-datetime" step="60"
+             style="width:100%;margin:0 0 10px;padding:9px;border:1px solid var(--border);border-radius:8px;font-size:14px">
+      <div id="schedule-taken-info" style="font-size:12px;color:var(--gray);margin-bottom:8px"></div>
+      <div id="schedule-msg" class="alert hidden" style="margin:14px 0 0"></div>
+    </div>
+    <div style="padding:14px 20px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-ghost" onclick="closeScheduleModal()">Mégse</button>
+      <button class="btn btn-navy" id="schedule-confirm-btn" disabled
+              onclick="confirmSchedule()">Ütemezés</button>
     </div>
   </div>
 </div>
@@ -531,6 +604,25 @@ function showScreen(name) {
   if (navBtn) navBtn.classList.add('active');
 
   if (name === 'past-runs') loadPastRuns();
+}
+
+// Az új-lekérdezés űrlap alaphelyzetbe állítása: projekt neve, cikkszámok,
+// kiválasztott webshopok. Csak a valódi "+ Új lekérdezés" gombok hívják — a
+// "Vissza" / "Módosítás" NEM, hogy módosításkor megmaradjon a beírt adat.
+function resetNewRunForm() {
+  document.getElementById('project-name').value = '';
+  document.getElementById('part-numbers').value = '';
+  const info = document.getElementById('part-count-info');
+  if (info) {
+    info.textContent = '0 / 50 cikkszám';
+    info.style.color = 'var(--gray)';
+  }
+  clearSuppliers();   // kipipálja a webshop-chipeket és üríti a kiválasztást
+}
+
+function newRun() {
+  resetNewRunForm();
+  showScreen('new-run');
 }
 
 // ══════════════════════════════════════════════════════
@@ -571,9 +663,21 @@ function statusTag(status) {
     running:   ['tag-blue', '⏳ fut'],
     partial:   ['tag-yellow', '⚠ részleges'],
     failed:    ['tag-red', '✗ sikertelen'],
+    scheduled: ['tag-blue', '⏰ ütemezve'],
   };
   const [cls, label] = map[status] || ['tag-gray', status];
   return `<span class="tag ${cls}">${label}</span>`;
+}
+
+// "Olvasott" futások nyilvántartása böngészőben (localStorage) — ez alapján
+// tesszük ki az "Új" címkét a még meg nem nyitott eredményekre.
+function _readRunSet() {
+  try { return new Set(JSON.parse(localStorage.getItem('batch_read_runs') || '[]')); }
+  catch { return new Set(); }
+}
+function _markRunRead(id) {
+  const s = _readRunSet(); s.add(id);
+  try { localStorage.setItem('batch_read_runs', JSON.stringify([...s])); } catch {}
 }
 
 // ══════════════════════════════════════════════════════
@@ -745,6 +849,7 @@ document.addEventListener('DOMContentLoaded', () => {
     el.style.color = lines.length > 50 ? 'var(--red)' : 'var(--gray)';
   });
   loadSuppliers();
+  loadConfig();
 });
 
 function getPartNumbers() {
@@ -879,12 +984,15 @@ function renderPreview(data) {
     </table>
   `;
 
+  const schedBtn = document.getElementById('schedule-run-btn');
   if (data.searchable_count === 0) {
     document.getElementById('start-run-btn').disabled = true;
     document.getElementById('start-run-btn').textContent = 'Nincs kereshető elem';
+    if (schedBtn) schedBtn.disabled = true;
   } else {
     document.getElementById('start-run-btn').disabled = false;
-    document.getElementById('start-run-btn').innerHTML = `▶ Futás indítása (${data.searchable_count} keresés)`;
+    document.getElementById('start-run-btn').innerHTML = `▶ Azonnali futás (${data.searchable_count} keresés)`;
+    if (schedBtn) schedBtn.disabled = false;
   }
 }
 
@@ -1087,6 +1195,7 @@ function _updateGlobal(total) {
 // SCREEN 4: Results
 // ══════════════════════════════════════════════════════
 async function loadRunResults(runId) {
+  _markRunRead(runId);   // megnyitás = "olvasott" → eltűnik az "Új" címke
   showScreen('results');
   document.getElementById('results-title').textContent = 'Eredmények betöltése…';
   document.getElementById('mapping-wrap').innerHTML =
@@ -1316,25 +1425,197 @@ async function loadPastRuns() {
       return;
     }
 
-    tbody.innerHTML = runs.map(run => `
-      <tr>
-        <td style="font-weight:600;max-width:240px">${run.project_name}</td>
-        <td>${fmtDate(run.created_at)}</td>
+    const readSet = _readRunSet();
+    tbody.innerHTML = runs.map(run => {
+      const isScheduled = run.status === 'scheduled';
+      const isDone = run.status === 'completed' || run.status === 'partial' || run.status === 'failed';
+      const unread = isDone && !readSet.has(run.id);
+      const newBadge = unread ? '<span class="tag tag-yellow" style="margin-left:6px">Új</span>' : '';
+      const whenCol = isScheduled
+        ? `<span style="color:var(--navy);font-weight:600">⏰ ${fmtDate(run.scheduled_at)}</span>`
+        : fmtDate(run.created_at);
+      const delBtn = `<button class="btn btn-ghost" style="padding:4px 10px;font-size:12px;margin-left:4px;color:var(--red);border-color:#f1c7c7"
+             onclick="deleteRun('${run.id}', ${isScheduled})">🗑 Törlés</button>`;
+      const actions = isScheduled
+        ? `<span style="color:var(--gray);font-size:12px">Indításra vár…</span>${delBtn}`
+        : `<button class="btn btn-ghost" style="padding:4px 10px;font-size:12px"
+             onclick="loadRunResults('${run.id}')">Megnyitás</button>
+           <a href="/batch/run/${run.id}/export.xlsx" class="btn btn-ghost"
+             style="padding:4px 10px;font-size:12px;text-decoration:none;margin-left:4px">📥 Excel</a>${delBtn}`;
+      return `
+      <tr ${unread ? 'style="background:#FFFDF0"' : ''}>
+        <td style="font-weight:600;max-width:240px">${run.project_name}${newBadge}</td>
+        <td>${whenCol}</td>
         <td style="text-align:center">${run.unique_part_count || 0}</td>
         <td style="text-align:center">${(run.selected_suppliers || []).length}</td>
         <td>${statusTag(run.status)}</td>
         <td style="text-align:center;color:#217346"><strong>${run.success_count || 0}</strong></td>
         <td style="text-align:center;color:var(--red)">${run.error_count || 0}</td>
-        <td>
-          <button class="btn btn-ghost" style="padding:4px 10px;font-size:12px"
-            onclick="loadRunResults('${run.id}')">Megnyitás</button>
-          <a href="/batch/run/${run.id}/export.xlsx" class="btn btn-ghost"
-            style="padding:4px 10px;font-size:12px;text-decoration:none;margin-left:4px">📥 Excel</a>
-        </td>
-      </tr>
-    `).join('');
+        <td>${actions}</td>
+      </tr>`;
+    }).join('');
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="8"><div class="alert alert-error">${e.message}</div></td></tr>`;
+  }
+}
+
+// ══════════════════════════════════════════════════════
+// Ütemezett futás — slot-választó (19:00–05:00, 30 perces sávok, 7 éjszaka)
+// ══════════════════════════════════════════════════════
+// Ütemezési mód: 'manual' (lokál → dátum+idő választó) vagy 'auto' (szerver → 20:00-tól)
+let _appConfig = { schedule_mode: 'manual', auto_spacing_min: 40, auto_start_hour: 20 };
+async function loadConfig() {
+  try { const r = await fetch('/config'); _appConfig = await r.json(); } catch (e) { /* marad a manual alapérték */ }
+}
+
+// Az "Ütemezett futás" gomb két viselkedése a környezet szerint
+function onScheduleClick() {
+  if (_appConfig.schedule_mode === 'auto') scheduleAuto();
+  else openScheduleModal();
+}
+
+// Szerver mód: a backend osztja ki a következő szabad 40 perces sávot (20:00-tól)
+async function scheduleAuto() {
+  const data = state.previewData;
+  if (!data) return;
+  const runSuppliers = data.selected_suppliers.filter(sid =>
+    data.items.some(it => it.suppliers[sid] && it.suppliers[sid].status === 'mapped'));
+  if (runSuppliers.length === 0) { toast('Egyik kiválasztott webshopban sincs kereshető cikkszám.'); return; }
+
+  const btn = document.getElementById('schedule-run-btn');
+  const html = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Ütemezés…';
+  try {
+    const res = await fetch('/batch/schedule', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project_name: data.project_name,
+        selected_suppliers: runSuppliers,
+        gepcoop_part_numbers: data.items.map(i => i.gepcoop_part_no),
+        // szerver módban nincs időpont — a backend osztja ki a következő szabad sávot
+      }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || 'Hiba történt');
+    const when = new Date(d.scheduled_at).toLocaleString('hu-HU', { dateStyle: 'short', timeStyle: 'short' });
+    toast('Ütemezve: ' + when + ' — megtalálod a „Korábbi futások" között.');
+    showScreen('past-runs');
+  } catch (err) {
+    toast('⚠ ' + err.message);
+  } finally {
+    btn.disabled = false; btn.innerHTML = html;
+  }
+}
+
+function scheduleMsg(kind, text) {
+  const el = document.getElementById('schedule-msg');
+  if (!text) { el.classList.add('hidden'); return; }
+  el.className = `alert alert-${kind}`;
+  el.textContent = text;
+  el.classList.remove('hidden');
+}
+
+let _scheduleTaken = [];   // a már ütemezett időpontok (ISO) — tájékoztatásként
+
+// datetime-local mezőhöz: YYYY-MM-DDTHH:MM (helyi idő)
+function _toLocalInputValue(d) {
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function renderScheduleTakenInfo() {
+  const el = document.getElementById('schedule-taken-info');
+  if (!_scheduleTaken.length) { el.textContent = ''; return; }
+  const times = _scheduleTaken
+    .map(t => new Date(t).toLocaleString('hu-HU', { dateStyle: 'short', timeStyle: 'short' }))
+    .sort();
+  el.textContent = 'Már ütemezve: ' + times.join(' · ');
+}
+
+async function openScheduleModal() {
+  scheduleMsg('', '');
+  // Alapérték: ma 20:00 (ha már elmúlt, holnap 20:00) — kerek, de szabadon átírható
+  const def = new Date();
+  def.setSeconds(0, 0);
+  if (def.getHours() >= 20) def.setDate(def.getDate() + 1);
+  def.setHours(20, 0, 0, 0);
+  document.getElementById('schedule-datetime').value = _toLocalInputValue(def);
+
+  // A már ütemezett időpontok lekérése (csak tájékoztatás)
+  _scheduleTaken = [];
+  try {
+    const res = await fetch('/batch/runs');
+    const runs = await res.json();
+    _scheduleTaken = (runs || [])
+      .filter(r => r.status === 'scheduled' && r.scheduled_at)
+      .map(r => r.scheduled_at);
+  } catch (e) { /* nem kritikus */ }
+  renderScheduleTakenInfo();
+
+  document.getElementById('schedule-confirm-btn').disabled = false;
+  document.getElementById('schedule-modal-backdrop').classList.remove('hidden');
+}
+
+function closeScheduleModal() {
+  document.getElementById('schedule-modal-backdrop').classList.add('hidden');
+}
+
+async function confirmSchedule() {
+  const data = state.previewData;
+  if (!data) return;
+
+  const val = document.getElementById('schedule-datetime').value;
+  if (!val) { scheduleMsg('error', '⚠ Adj meg egy időpontot.'); return; }
+  const when = new Date(val);   // a datetime-local értéket helyi időként értelmezi
+  if (isNaN(when.getTime())) { scheduleMsg('error', '⚠ Érvénytelen időpont.'); return; }
+  if (when.getTime() <= Date.now()) { scheduleMsg('error', '⚠ Jövőbeli időpontot adj meg.'); return; }
+
+  // Csak a ténylegesen kereshető webshopok (mint az azonnali futásnál)
+  const runSuppliers = data.selected_suppliers.filter(sid =>
+    data.items.some(it => it.suppliers[sid] && it.suppliers[sid].status === 'mapped'));
+  if (runSuppliers.length === 0) {
+    scheduleMsg('error', '⚠ Egyik kiválasztott webshopban sincs kereshető cikkszám.');
+    return;
+  }
+
+  const btn = document.getElementById('schedule-confirm-btn');
+  btn.disabled = true;
+  scheduleMsg('info', 'Ütemezés mentése…');
+  try {
+    const res = await fetch('/batch/schedule', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project_name: data.project_name,
+        selected_suppliers: runSuppliers,
+        gepcoop_part_numbers: data.items.map(i => i.gepcoop_part_no),
+        scheduled_at: when.toISOString(),   // UTC ISO
+      }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || 'Hiba történt');
+    closeScheduleModal();
+    toast('Ütemezve! Megtalálod a „Korábbi futások" között.');
+    showScreen('past-runs');
+  } catch (err) {
+    scheduleMsg('error', `⚠ ${err.message}`);
+    btn.disabled = false;
+  }
+}
+
+async function deleteRun(id, isScheduled) {
+  const msg = isScheduled
+    ? 'Biztosan törlöd ezt az ÜTEMEZETT futást? Ezután este NEM fog elindulni, és a felszabaduló időpont újra választható lesz.'
+    : 'Biztosan törlöd ezt a futást az EREDMÉNYÉVEL együtt? A művelet nem vonható vissza.';
+  if (!confirm(msg)) return;
+  try {
+    const res = await fetch('/batch/run/' + id, { method: 'DELETE' });
+    if (!res.ok) { const d = await res.json(); throw new Error(d.detail || 'Hiba történt'); }
+    toast(isScheduled ? 'Ütemezett futás törölve.' : 'Futás törölve.');
+    loadPastRuns();
+  } catch (e) {
+    toast('⚠ ' + e.message);
   }
 }
 </script>

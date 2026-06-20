@@ -57,18 +57,9 @@ def _query_row(part_no: str) -> dict | None:
     return (res2.data or [None])[0]
 
 
-async def fetch_price(supplier_part_no: str, on_progress=None) -> dict:
-    async def emit(msg: str) -> None:
-        log.info(msg)
-        if on_progress:
-            await on_progress({"step": "lookup", "status": "running", "msg": msg})
-
-    part_no = (supplier_part_no or "").strip()
-    await emit(f"Looking up {part_no} in Argip price list…")
-    row = _query_row(part_no)
-    if not row:
-        raise RuntimeError(MSG_NOT_FOUND)
-
+def _build_result(part_no: str, row: dict) -> dict:
+    """Build the normalised result dict from an Argip price-list row.
+    Raises RuntimeError(MSG_NOT_PRICED) when no base price is set."""
     base_price = row.get("base_price_eur")
     if base_price in (None, ""):
         raise RuntimeError(MSG_NOT_PRICED)
@@ -96,3 +87,60 @@ async def fetch_price(supplier_part_no: str, on_progress=None) -> dict:
         "argip_moq_lvl_2_pcs": int(row["moq_lvl_2_pcs"]) if row.get("moq_lvl_2_pcs") not in (None, "") else None,
         "queried_at": datetime.now().isoformat(timespec="seconds"),
     }
+
+
+# ── Single lookup (price agent) ──────────────────────────────────────────────
+
+async def fetch_price(supplier_part_no: str, on_progress=None) -> dict:
+    async def emit(msg: str) -> None:
+        log.info(msg)
+        if on_progress:
+            await on_progress({"step": "lookup", "status": "running", "msg": msg})
+
+    part_no = (supplier_part_no or "").strip()
+    await emit(f"Looking up {part_no} in Argip price list…")
+    row = _query_row(part_no)
+    if not row:
+        raise RuntimeError(MSG_NOT_FOUND)
+    return _build_result(part_no, row)
+
+
+# ── Batch lookup (batch agent) ───────────────────────────────────────────────
+
+async def fetch_prices(part_nos: list[str], on_progress=None, on_item=None) -> list[dict]:
+    """Look up several parts in the Argip price list. Argip is a pure Supabase
+    lookup (no browser/login), so this reuses the cached client per part; a
+    single part's failure never aborts the rest."""
+    async def emit(msg: str) -> None:
+        log.info(msg)
+        if on_progress:
+            await on_progress({"step": "lookup", "status": "running", "msg": msg})
+
+    results: list[dict] = []
+    if not part_nos:
+        return results
+
+    total = len(part_nos)
+    for i, raw_pn in enumerate(part_nos):
+        pn = (raw_pn or "").strip()
+        try:
+            await emit(f"Looking up {pn} in Argip price list…")
+            row = _query_row(pn)
+            if not row:
+                raise RuntimeError(MSG_NOT_FOUND)
+            r = _build_result(pn, row)
+            results.append(r)
+            if on_item:
+                await on_item(i, total, pn, r, None)
+        except RuntimeError as exc:
+            msg = str(exc)
+            results.append({"supplier_part_no": pn, "error": msg})
+            if on_item:
+                await on_item(i, total, pn, None, msg)
+        except Exception as exc:
+            log.exception("Unexpected error during Argip lookup (%s): %s", pn, exc)
+            msg = f"Argip lookup failed: {exc}"
+            results.append({"supplier_part_no": pn, "error": msg})
+            if on_item:
+                await on_item(i, total, pn, None, msg)
+    return results

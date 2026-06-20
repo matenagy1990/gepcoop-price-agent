@@ -55,7 +55,10 @@ async def _is_logged_in(page) -> bool:
     if "/customer/account/login" in page.url:
         return False
     try:
-        await page.wait_for_selector("a:has-text('Quickinput')", timeout=4000)
+        # Hosszabb határidő: párhuzamos terhelés alatt a navigáció >4 mp is lehet,
+        # ami korábban hamis "nincs belépve" eredményt adott (a belépés valójában
+        # sikerült, csak a Quickinput menü még nem renderelődött ki időben).
+        await page.wait_for_selector("a:has-text('Quickinput')", timeout=10000)
         return True
     except PlaywrightTimeout:
         return False
@@ -416,7 +419,166 @@ async def _log_search_state(page, supplier_part_no: str, prefix: str = "Reyher")
         log.warning("%s state logging failed: %s", prefix, exc)
 
 
-# ── Main scraper ───────────────────────────────────────────────────────────────
+# ── Session / login (shared) ─────────────────────────────────────────────────
+
+async def _login_or_restore(pw, emit: Callable):
+    """Launch a browser and return (browser, context, page) on a logged-in
+    rio.reyher.de context. Restores a fresh session when possible, otherwise
+    performs the full login (and saves a new session). Shared by both entrypoints.
+    """
+    session = load_session(SESSION_FILE)
+    use_session = bool(session and session_is_fresh(session, _SESSION_MAX_AGE_HOURS))
+
+    browser = await pw.chromium.launch(headless=True)
+
+    if use_session:
+        log.info("Restoring saved session (age < 23 h)")
+        try:
+            context = await browser.new_context(storage_state=session["state"])
+        except Exception as exc:
+            log.warning(f"Could not restore session state: {exc}")
+            use_session = False
+            invalidate_session(SESSION_FILE)
+            context = await browser.new_context()
+    else:
+        if session:
+            log.info("Session stale (> 23 h) — proactive re-login")
+            invalidate_session(SESSION_FILE)
+        context = await browser.new_context()
+
+    page = await context.new_page()
+    await emit("Opening rio.reyher.de…")
+
+    if use_session:
+        await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=15000)
+        if not await _is_logged_in(page):
+            log.warning("Restored session is no longer valid — re-logging in")
+            use_session = False
+            invalidate_session(SESSION_FILE)
+            await browser.close()
+            browser  = await pw.chromium.launch(headless=True)
+            context  = await browser.new_context()
+            page     = await context.new_page()
+        else:
+            log.info("Session valid (Quickinput nav link present)")
+
+    if not use_session:
+        await _login(page, emit)
+        await save_session(context, SESSION_FILE)
+
+    return browser, context, page
+
+
+async def _search_and_parse(page, supplier_part_no: str, emit: Callable) -> dict:
+    """Search one part on a logged-in reyher page and parse price + stock.
+    Raises RuntimeError(MSG_NOT_FOUND / MSG_NOT_PRICED) on definitive outcomes."""
+    # ── Step 2: navigate to search results ────────────────────────────
+    await emit(f"Searching for {supplier_part_no} on rio.reyher.de…")
+    search_url = SEARCH_URL.format(part_no=supplier_part_no)
+
+    # networkidle is required: the SAP AJAX call that injects the price
+    # fires after domcontentloaded, and networkidle ensures it has completed.
+    await page.goto(search_url, wait_until="networkidle", timeout=30000)
+    log.info(f"Search page loaded: {page.url}")
+    await _log_search_state(page, supplier_part_no, prefix="Reyher search")
+
+    # ── Step 3: validate result count (structured first) ───────────────
+    result_rows = await page.locator("table.table tbody tr").count()
+    if result_rows == 0:
+        raise RuntimeError(MSG_NOT_FOUND)
+
+    # Text fallback for "no results" pages that still render the table skeleton
+    body_text = await page.locator("body").inner_text()
+    if "Nem található" in body_text or "0 árucikket eredményezett" in body_text:
+        raise RuntimeError(MSG_NOT_FOUND)
+
+    log.info(f"{result_rows} result row(s) found for {supplier_part_no}")
+
+    # ── Step 4: open product modal and extract own price ───────────────
+    await emit("Reading price and stock from rio.reyher.de…")
+
+    modal_info = None
+    try:
+        await _open_product_modal(page)
+        # Trigger the availability check so "Available quantity" reflects
+        # the real warehouse stock, not the default order quantity.
+        await _check_real_availability(page)
+        modal_info = await _extract_modal_price_info(page)
+        log.info("Reyher modal info: %r", modal_info)
+    except (PlaywrightTimeout, RuntimeError) as exc:
+        log.warning("Reyher product modal unavailable, will use search-table fallback: %s", exc)
+
+    if modal_info and modal_info.get("own_price"):
+        price_raw = _parse_price(modal_info["own_price"])
+        price_unit_qty = modal_info.get("own_qty") or modal_info.get("quantity_pu") or 100
+        stock_value = modal_info.get("stock")
+        log.info(
+            "Reyher modal own price parsed: %s EUR / %s pcs, stock=%s",
+            price_raw,
+            price_unit_qty,
+            stock_value,
+        )
+    else:
+        log.info("Reyher modal own price missing — falling back to search table price")
+
+        _PRICE_JS = """() => {
+            const col = document.querySelector(
+                'table.table tbody tr:first-child .productlist_table-column-value'
+            );
+            return col && col.innerText.includes('EUR');
+        }"""
+
+        try:
+            await page.wait_for_function(_PRICE_JS, timeout=15000)
+            log.info("Price appeared in search table without extra click")
+        except PlaywrightTimeout:
+            log.warning("Reyher search table price still absent")
+            await _log_search_state(page, supplier_part_no, prefix="Reyher price-missing")
+
+        price_cell_text = await _extract_price_cell_text(page)
+
+        log.info(f"Price cell raw text: {price_cell_text!r}")
+
+        if not price_cell_text or "EUR" not in price_cell_text:
+            # The product row is present, but no usable price is shown.
+            raise RuntimeError(MSG_NOT_PRICED)
+
+        price_match = re.search(r"([\d,.]+)\s*\xa0?EUR", price_cell_text)
+        if not price_match:
+            raise RuntimeError(MSG_NOT_PRICED)
+        price_raw = _parse_price(price_match.group(1))
+
+        price_unit_qty = await _extract_row_unit_qty(page, price_cell_text)
+        if price_unit_qty:
+            log.info("Reyher row-specific unit_qty=%s from result row", price_unit_qty)
+        else:
+            header_text = await _extract_header_text(page)
+            price_unit_qty = _parse_unit_qty_from_header(header_text)
+            log.info(
+                "Reyher row-specific qty missing, header fallback %r → unit_qty=%s",
+                header_text,
+                price_unit_qty,
+            )
+
+        stock_value = None
+        log.info("Stock not available in search-table fallback — returning None")
+
+    log.info(
+        f"Parsed — price_raw={price_raw} EUR / {price_unit_qty} db, stock={stock_value}"
+    )
+
+    return {
+        "supplier_part_no": supplier_part_no,
+        "price_raw":        price_raw,
+        "price_unit_qty":   price_unit_qty,
+        "currency":         "EUR",
+        "unit":             "db",
+        "stock":            stock_value,
+        "queried_at":       datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+# ── Single lookup (price agent) ──────────────────────────────────────────────
 
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
     async def emit(msg: str):
@@ -424,156 +586,10 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         if on_progress:
             await on_progress({"step": "browser", "status": "running", "msg": msg})
 
-    session = load_session(SESSION_FILE)
-    use_session = bool(session and session_is_fresh(session, _SESSION_MAX_AGE_HOURS))
-
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
-
-        if use_session:
-            log.info("Restoring saved session (age < 23 h)")
-            try:
-                context = await browser.new_context(storage_state=session["state"])
-            except Exception as exc:
-                log.warning(f"Could not restore session state: {exc}")
-                use_session = False
-                invalidate_session(SESSION_FILE)
-                context = await browser.new_context()
-        else:
-            if session:
-                log.info("Session stale (> 23 h) — proactive re-login")
-                invalidate_session(SESSION_FILE)
-            context = await browser.new_context()
-
-        page = await context.new_page()
-
+        browser, context, page = await _login_or_restore(pw, emit)
         try:
-            await emit("Opening rio.reyher.de…")
-
-            # ── Step 1: restore session or do fresh login ──────────────────────
-            if use_session:
-                await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=15000)
-
-                if not await _is_logged_in(page):
-                    log.warning("Restored session is no longer valid — re-logging in")
-                    use_session = False
-                    invalidate_session(SESSION_FILE)
-                    await browser.close()
-                    browser  = await pw.chromium.launch(headless=True)
-                    context  = await browser.new_context()
-                    page     = await context.new_page()
-                else:
-                    log.info("Session valid (Quickinput nav link present)")
-
-            if not use_session:
-                await _login(page, emit)
-                await save_session(context, SESSION_FILE)
-
-            # ── Step 2: navigate to search results ────────────────────────────
-            await emit(f"Searching for {supplier_part_no} on rio.reyher.de…")
-            search_url = SEARCH_URL.format(part_no=supplier_part_no)
-
-            # networkidle is required: the SAP AJAX call that injects the price
-            # fires after domcontentloaded, and networkidle ensures it has completed.
-            await page.goto(search_url, wait_until="networkidle", timeout=30000)
-            log.info(f"Search page loaded: {page.url}")
-            await _log_search_state(page, supplier_part_no, prefix="Reyher search")
-
-            # ── Step 3: validate result count (structured first) ───────────────
-            result_rows = await page.locator("table.table tbody tr").count()
-            if result_rows == 0:
-                raise RuntimeError(MSG_NOT_FOUND)
-
-            # Text fallback for "no results" pages that still render the table skeleton
-            body_text = await page.locator("body").inner_text()
-            if "Nem található" in body_text or "0 árucikket eredményezett" in body_text:
-                raise RuntimeError(MSG_NOT_FOUND)
-
-            log.info(f"{result_rows} result row(s) found for {supplier_part_no}")
-
-            # ── Step 4: open product modal and extract own price ───────────────
-            await emit("Reading price and stock from rio.reyher.de…")
-
-            modal_info = None
-            try:
-                await _open_product_modal(page)
-                # Trigger the availability check so "Available quantity" reflects
-                # the real warehouse stock, not the default order quantity.
-                await _check_real_availability(page)
-                modal_info = await _extract_modal_price_info(page)
-                log.info("Reyher modal info: %r", modal_info)
-            except (PlaywrightTimeout, RuntimeError) as exc:
-                log.warning("Reyher product modal unavailable, will use search-table fallback: %s", exc)
-
-            if modal_info and modal_info.get("own_price"):
-                price_raw = _parse_price(modal_info["own_price"])
-                price_unit_qty = modal_info.get("own_qty") or modal_info.get("quantity_pu") or 100
-                stock_value = modal_info.get("stock")
-                log.info(
-                    "Reyher modal own price parsed: %s EUR / %s pcs, stock=%s",
-                    price_raw,
-                    price_unit_qty,
-                    stock_value,
-                )
-            else:
-                log.info("Reyher modal own price missing — falling back to search table price")
-
-                _PRICE_JS = """() => {
-                    const col = document.querySelector(
-                        'table.table tbody tr:first-child .productlist_table-column-value'
-                    );
-                    return col && col.innerText.includes('EUR');
-                }"""
-
-                try:
-                    await page.wait_for_function(_PRICE_JS, timeout=15000)
-                    log.info("Price appeared in search table without extra click")
-                except PlaywrightTimeout:
-                    log.warning("Reyher search table price still absent")
-                    await _log_search_state(page, supplier_part_no, prefix="Reyher price-missing")
-
-                price_cell_text = await _extract_price_cell_text(page)
-
-                log.info(f"Price cell raw text: {price_cell_text!r}")
-
-                if not price_cell_text or "EUR" not in price_cell_text:
-                    # The product row is present, but no usable price is shown.
-                    raise RuntimeError(MSG_NOT_PRICED)
-
-                price_match = re.search(r"([\d,.]+)\s*\xa0?EUR", price_cell_text)
-                if not price_match:
-                    raise RuntimeError(MSG_NOT_PRICED)
-                price_raw = _parse_price(price_match.group(1))
-
-                price_unit_qty = await _extract_row_unit_qty(page, price_cell_text)
-                if price_unit_qty:
-                    log.info("Reyher row-specific unit_qty=%s from result row", price_unit_qty)
-                else:
-                    header_text = await _extract_header_text(page)
-                    price_unit_qty = _parse_unit_qty_from_header(header_text)
-                    log.info(
-                        "Reyher row-specific qty missing, header fallback %r → unit_qty=%s",
-                        header_text,
-                        price_unit_qty,
-                    )
-
-                stock_value = None
-                log.info("Stock not available in search-table fallback — returning None")
-
-            log.info(
-                f"Parsed — price_raw={price_raw} EUR / {price_unit_qty} db, stock={stock_value}"
-            )
-
-            return {
-                "supplier_part_no": supplier_part_no,
-                "price_raw":        price_raw,
-                "price_unit_qty":   price_unit_qty,
-                "currency":         "EUR",
-                "unit":             "db",
-                "stock":            stock_value,
-                "queried_at":       datetime.now().isoformat(timespec="seconds"),
-            }
-
+            return await _search_and_parse(page, supplier_part_no, emit)
         except RuntimeError:
             raise
         except Exception as exc:
@@ -582,3 +598,49 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         finally:
             await browser.close()
             log.info("Browser closed")
+
+
+# ── Batch lookup (batch agent) ───────────────────────────────────────────────
+
+async def fetch_prices(
+    part_nos: list[str],
+    on_progress: Callable | None = None,
+    on_item: Callable | None = None,
+) -> list[dict]:
+    """Look up several parts in ONE reyher session (login once, reuse browser)."""
+    async def emit(msg: str):
+        log.info(msg)
+        if on_progress:
+            await on_progress({"step": "browser", "status": "running", "msg": msg})
+
+    results: list[dict] = []
+    if not part_nos:
+        return results
+
+    total = len(part_nos)
+
+    async with async_playwright() as pw:
+        browser, context, page = await _login_or_restore(pw, emit)
+        try:
+            for i, pn in enumerate(part_nos):
+                try:
+                    r = await _search_and_parse(page, pn, emit)
+                    results.append(r)
+                    if on_item:
+                        await on_item(i, total, pn, r, None)
+                except RuntimeError as exc:
+                    msg = str(exc)
+                    results.append({"supplier_part_no": pn, "error": msg})
+                    if on_item:
+                        await on_item(i, total, pn, None, msg)
+                except Exception as exc:
+                    log.exception(f"Unexpected error during rio.reyher.de scrape ({pn}): {exc}")
+                    msg = f"rio.reyher.de scrape failed: {exc}"
+                    results.append({"supplier_part_no": pn, "error": msg})
+                    if on_item:
+                        await on_item(i, total, pn, None, msg)
+        finally:
+            await browser.close()
+            log.info("Browser closed")
+
+    return results

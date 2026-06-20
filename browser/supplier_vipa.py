@@ -7,6 +7,13 @@ main.py can emit a password_required event with otp=True.
 A fresh session is established via:
   POST /vipa/initiate-login  — sends OTP email, keeps browser open, waits
   POST /vipa/complete-login  — submits the token, saves the session file
+
+Entrypoints:
+  fetch_price(part)       — single lookup (price agent), one browser.
+  fetch_prices(parts, …)  — batch lookup (batch agent): restores the session and
+                            opens the browser ONCE, then searches every part on
+                            the same page. Shared `_search_and_parse` keeps the
+                            DOM/parse logic in one place.
 """
 
 import logging
@@ -66,7 +73,7 @@ def _parse_price_per_qty(text: str) -> tuple[float, int] | None:
     Parse '546,91 €/1000' or '54,69 €/100' into (price_raw, price_unit_qty).
     Returns None if no match.
     """
-    m = re.search(r"([0-9 .,\u00a0]+)\s*€\s*/\s*([0-9 .,\u00a0]+)", text or "")
+    m = re.search(r"([0-9 ., ]+)\s*€\s*/\s*([0-9 ., ]+)", text or "")
     if not m:
         return None
     price_str = m.group(1).replace(" ", "").replace(".", "").replace(",", ".")
@@ -204,80 +211,97 @@ async def _parse_product_table_price(page, part_no: str) -> tuple[float, int, in
     return parsed[0], parsed[1], stock or _parse_stock(row_text)
 
 
+async def _open_logged_in(pw, emit: Callable):
+    """Restore the saved session and open a logged-in browser.
+
+    Raises RuntimeError(VIPA_OTP_REQUIRED) when no usable session exists or the
+    site no longer accepts it. Returns (browser, context, page) on success, with
+    `page` already on the Vipa home and confirmed logged in.
+    """
+    session = load_session(SESSION_FILE)
+    if not (session and session_is_fresh(session, SESSION_MAX_AGE_HOURS)):
+        if session:
+            invalidate_session(SESSION_FILE)
+        raise RuntimeError(VIPA_OTP_REQUIRED)
+
+    browser = await pw.chromium.launch(headless=True)
+    try:
+        context = await browser.new_context(storage_state=session["state"])
+        log.info("Restored saved Vipa session (age < %s h)", SESSION_MAX_AGE_HOURS)
+    except Exception as exc:
+        log.warning("Could not restore Vipa session: %s", exc)
+        invalidate_session(SESSION_FILE)
+        await browser.close()
+        raise RuntimeError(VIPA_OTP_REQUIRED) from exc
+
+    page = await context.new_page()
+    await emit("Opening vipafasteners.com…")
+    await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=30000)
+
+    if not await _is_logged_in(page):
+        log.info("Vipa session expired on server side")
+        invalidate_session(SESSION_FILE)
+        await browser.close()
+        raise RuntimeError(VIPA_OTP_REQUIRED)
+
+    return browser, context, page
+
+
+async def _search_and_parse(page, supplier_part_no: str, emit: Callable) -> dict:
+    """Search one part on a logged-in Vipa page and parse price + stock."""
+    part_no = (supplier_part_no or "").strip()
+
+    await emit(f"Searching for {part_no} on Vipa…")
+    await page.goto(
+        SEARCH_URL.format(part_no=quote(part_no, safe="")),
+        wait_until="domcontentloaded",
+        timeout=20000,
+    )
+
+    # The search results page should show a product link with ?_sku=<part_no>
+    product_href = await _find_product_href(page, part_no)
+    if not product_href:
+        raise RuntimeError(MSG_NOT_FOUND)
+
+    product_url = urljoin(HOME_URL, product_href)
+
+    await emit("Opening product details on Vipa…")
+    await page.goto(product_url, wait_until="networkidle", timeout=30000)
+
+    await emit("Reading availability and price from Vipa…")
+    price_raw, price_unit_qty, stock = await _parse_product_table_price(page, part_no)
+
+    if not has_numeric_price(str(price_raw)):
+        raise RuntimeError(MSG_NOT_PRICED)
+
+    log.info(
+        "Vipa parsed — part=%s price=%s EUR/%s stock=%s url=%s",
+        part_no, price_raw, price_unit_qty, stock, product_url,
+    )
+    return {
+        "supplier_part_no": part_no,
+        "price_raw":        price_raw,
+        "price_unit_qty":   price_unit_qty,
+        "currency":         "EUR",
+        "unit":             "db",
+        "stock":            stock,
+        "product_url":      product_url,
+        "queried_at":       datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+# ── Single lookup (price agent) ──────────────────────────────────────────────
+
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
     async def emit(msg: str) -> None:
         log.info(msg)
         if on_progress:
             await on_progress({"step": "browser", "status": "running", "msg": msg})
 
-    part_no = (supplier_part_no or "").strip()
-    session = load_session(SESSION_FILE)
-    use_session = bool(session and session_is_fresh(session, SESSION_MAX_AGE_HOURS))
-
-    if not use_session:
-        if session:
-            invalidate_session(SESSION_FILE)
-        raise RuntimeError(VIPA_OTP_REQUIRED)
-
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
+        browser, context, page = await _open_logged_in(pw, emit)
         try:
-            context = await browser.new_context(storage_state=session["state"])
-            log.info("Restored saved Vipa session (age < %s h)", SESSION_MAX_AGE_HOURS)
-        except Exception as exc:
-            log.warning("Could not restore Vipa session: %s", exc)
-            invalidate_session(SESSION_FILE)
-            raise RuntimeError(VIPA_OTP_REQUIRED) from exc
-
-        page = await context.new_page()
-
-        try:
-            await emit("Opening vipafasteners.com…")
-            await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=30000)
-
-            if not await _is_logged_in(page):
-                log.info("Vipa session expired on server side")
-                invalidate_session(SESSION_FILE)
-                raise RuntimeError(VIPA_OTP_REQUIRED)
-
-            await emit(f"Searching for {part_no} on Vipa…")
-            await page.goto(
-                SEARCH_URL.format(part_no=quote(part_no, safe="")),
-                wait_until="domcontentloaded",
-                timeout=20000,
-            )
-
-            # The search results page should show a product link with ?_sku=<part_no>
-            product_href = await _find_product_href(page, part_no)
-            if not product_href:
-                raise RuntimeError(MSG_NOT_FOUND)
-
-            product_url = urljoin(HOME_URL, product_href)
-
-            await emit("Opening product details on Vipa…")
-            await page.goto(product_url, wait_until="networkidle", timeout=30000)
-
-            await emit("Reading availability and price from Vipa…")
-            price_raw, price_unit_qty, stock = await _parse_product_table_price(page, part_no)
-
-            if not has_numeric_price(str(price_raw)):
-                raise RuntimeError(MSG_NOT_PRICED)
-
-            log.info(
-                "Vipa parsed — part=%s price=%s EUR/%s stock=%s url=%s",
-                part_no, price_raw, price_unit_qty, stock, product_url,
-            )
-            return {
-                "supplier_part_no": part_no,
-                "price_raw":        price_raw,
-                "price_unit_qty":   price_unit_qty,
-                "currency":         "EUR",
-                "unit":             "db",
-                "stock":            stock,
-                "product_url":      product_url,
-                "queried_at":       datetime.now().isoformat(timespec="seconds"),
-            }
-
+            return await _search_and_parse(page, supplier_part_no, emit)
         except RuntimeError:
             raise
         except Exception as exc:
@@ -286,3 +310,59 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         finally:
             await browser.close()
             log.info("Vipa browser closed")
+
+
+# ── Batch lookup (batch agent) ───────────────────────────────────────────────
+
+async def fetch_prices(
+    part_nos: list[str],
+    on_progress: Callable | None = None,
+    on_item: Callable | None = None,
+) -> list[dict]:
+    """Look up several parts in ONE Vipa session.
+
+    Restores the session and opens the browser once, then searches every part on
+    the same page. Returns a list aligned to `part_nos`; each entry is a success
+    dict (same shape as fetch_price) or {"supplier_part_no", "error"}.
+
+    If no usable session exists, RAISES RuntimeError(VIPA_OTP_REQUIRED) before any
+    part — the batch layer then marks the whole supplier as login-required (no
+    headless OTP mid-batch). A single part's failure never aborts the rest.
+    """
+    async def emit(msg: str) -> None:
+        log.info(msg)
+        if on_progress:
+            await on_progress({"step": "browser", "status": "running", "msg": msg})
+
+    results: list[dict] = []
+    if not part_nos:
+        return results
+
+    total = len(part_nos)
+
+    async with async_playwright() as pw:
+        # No session → raise before touching any part (whole-supplier login error).
+        browser, context, page = await _open_logged_in(pw, emit)
+        try:
+            for i, pn in enumerate(part_nos):
+                try:
+                    r = await _search_and_parse(page, pn, emit)
+                    results.append(r)
+                    if on_item:
+                        await on_item(i, total, pn, r, None)
+                except RuntimeError as exc:
+                    msg = str(exc)
+                    results.append({"supplier_part_no": pn, "error": msg})
+                    if on_item:
+                        await on_item(i, total, pn, None, msg)
+                except Exception as exc:
+                    log.exception("Unexpected error during Vipa scrape (%s): %s", pn, exc)
+                    msg = f"Vipa scrape failed: {exc}"
+                    results.append({"supplier_part_no": pn, "error": msg})
+                    if on_item:
+                        await on_item(i, total, pn, None, msg)
+        finally:
+            await browser.close()
+            log.info("Vipa browser closed")
+
+    return results

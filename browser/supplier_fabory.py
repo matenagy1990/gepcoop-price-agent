@@ -18,6 +18,12 @@ Search flow:
 
 Price format: "605 Ft" → 605 HUF per unit_qty pieces (unit_qty from "Ár /" column)
 Stock format: "Készleten" = in stock, anything else = out of stock
+
+Entrypoints:
+  fetch_price(part)       — single lookup (price agent), one browser.
+  fetch_prices(parts, …)  — batch lookup (batch agent): login once, reuse the
+                            browser for every part. Shared `_login_or_restore`
+                            and `_search_and_parse` keep the logic in one place.
 """
 
 import logging
@@ -65,12 +71,12 @@ async def _extract_top_variant_price(page) -> tuple[float, int] | None:
     if not price_text or not unit_text:
         return None
 
-    price_match = re.search(r"([\d][\d\s\u00a0]*)\s*Ft", price_text)
+    price_match = re.search(r"([\d][\d\s ]*)\s*Ft", price_text)
     unit_match = re.search(r"(\d+)", unit_text)
     if not price_match or not unit_match:
         return None
 
-    price_raw = float(re.sub(r"[\s\u00a0]", "", price_match.group(1)))
+    price_raw = float(re.sub(r"[\s ]", "", price_match.group(1)))
     unit_qty = int(unit_match.group(1))
     return price_raw, unit_qty
 
@@ -120,15 +126,206 @@ async def _extract_price_and_unit_structured(page) -> tuple[float, int] | None:
     if not price_text or not unit_text:
         return None
 
-    price_match = re.search(r"([\d][\d\s\u00a0]*)\s*Ft", price_text)
+    price_match = re.search(r"([\d][\d\s ]*)\s*Ft", price_text)
     unit_match = re.search(r"ár\s*/\s*(\d+)", unit_text, re.IGNORECASE)
     if not price_match or not unit_match:
         return None
 
-    price_raw = float(re.sub(r"[\s\u00a0]", "", price_match.group(1)))
+    price_raw = float(re.sub(r"[\s ]", "", price_match.group(1)))
     unit_qty = int(unit_match.group(1))
     return price_raw, unit_qty
-# ── Main scraper ───────────────────────────────────────────────────────────────
+
+
+# ── Session / login (shared) ─────────────────────────────────────────────────
+
+async def _login_or_restore(pw, emit: Callable, verify_url: str):
+    """Launch a browser and return (browser, context, page) on a logged-in fabory
+    context. Verifies a fresh session against `verify_url` (a search URL); on
+    redirect to /login it re-logs in, then leaves `page` on `verify_url`."""
+    session = load_session(_SESSION_FILE)
+    use_session = bool(session and session_is_fresh(session, _SESSION_MAX_AGE_H))
+
+    browser = await pw.chromium.launch(headless=True)
+
+    if use_session:
+        log.info("Restoring saved session (age < 20 h)")
+        try:
+            context = await browser.new_context(storage_state=session["state"])
+        except Exception as exc:
+            log.warning(f"Could not restore session state: {exc}")
+            use_session = False
+            invalidate_session(_SESSION_FILE)
+            context = await browser.new_context()
+    else:
+        if session:
+            log.info("Session stale (> 20 h) — proactive re-login")
+            invalidate_session(_SESSION_FILE)
+        context = await browser.new_context()
+
+    page = await context.new_page()
+    await emit("Opening fabory.com…")
+
+    # ── Step 1: try session restore ───────────────────────────────────
+    if use_session:
+        await page.goto(verify_url, wait_until="domcontentloaded", timeout=20000)
+        log.info(f"After session restore, URL: {page.url}")
+
+        if "/login" in page.url:
+            log.warning("Session invalid — falling back to full login")
+            use_session = False
+            invalidate_session(_SESSION_FILE)
+            await browser.close()
+            browser  = await pw.chromium.launch(headless=True)
+            context  = await browser.new_context()
+            page     = await context.new_page()
+        else:
+            log.info("Session valid — login skipped")
+
+    # ── Step 2: full login (if needed) ───────────────────────────────
+    if not use_session:
+        await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+        log.info(f"Loaded login page: {page.url}")
+
+        try:
+            await page.get_by_role("button", name="Összes elfogadása").click(timeout=5000)
+            log.info("Cookie banner accepted")
+        except PlaywrightTimeout:
+            log.info("No cookie banner appeared")
+
+        await emit("Logging in to fabory.com…")
+        username = os.getenv("SUPPLIER_E_USERNAME", "")
+        log.info(f"Filling login form for user: {username}")
+
+        await page.get_by_role("textbox", name="Email cím").fill(username)
+        await page.locator("input[placeholder='Jelszó']").fill(os.getenv("SUPPLIER_E_PASSWORD", ""))
+        await page.get_by_role("button", name="Belépés").click()
+
+        try:
+            # A belépés akkor sikeres, ha elhagytuk a /login oldalt (a Fabory
+            # /hu, /hu/ vagy /hu?… címre is irányíthat). A korábbi pontos
+            # wait_for_url("…/hu") túl szigorú volt: párhuzamos terhelés alatt
+            # lejárt a 15 mp, miközben a belépés valójában sikerült. Ez elnézőbb
+            # (bármely nem-/login URL = siker) és hosszabb határidőt ad.
+            await page.wait_for_function(
+                "() => !location.pathname.includes('/login')",
+                timeout=30000,
+            )
+            log.info(f"Login successful: {page.url}")
+        except PlaywrightTimeout:
+            log.error(f"Login failed — URL: {page.url}")
+            raise RuntimeError("Login to fabory.com failed. Please check credentials.")
+
+        await save_session(context, _SESSION_FILE)
+
+        await page.goto(verify_url, wait_until="domcontentloaded", timeout=20000)
+
+    return browser, context, page
+
+
+async def _search_and_parse(page, supplier_part_no: str, emit: Callable, navigate: bool = True) -> dict:
+    """Search one part on a logged-in fabory page and parse price + stock.
+    When `navigate` is True it loads the part's search URL first."""
+    search_url = SEARCH_URL.format(part_no=quote(supplier_part_no, safe=""))
+    log.info("Fabory search uses supplier_part_no=%r", supplier_part_no)
+    await emit(f"Searching for {supplier_part_no} on fabory.com…")
+    if navigate:
+        await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
+
+    log.info(f"Search page loaded: {page.url}")
+    try:
+        await page.wait_for_function(
+            """() => {
+                const hasProductLink = !!document.querySelector("a[href*='/p/']");
+                const txt = (document.body.innerText || '').toLowerCase();
+                const hasNoResults = txt.includes('0 találat') || txt.includes('no results');
+                return hasProductLink || hasNoResults;
+            }""",
+            timeout=8000,
+        )
+    except PlaywrightTimeout:
+        log.warning("No explicit search result marker appeared after 8s — continuing anyway")
+
+    body_text = await page.locator("body").inner_text()
+    if "0 találat" in body_text or "no results" in body_text.lower():
+        raise RuntimeError(MSG_NOT_FOUND)
+
+    if "/search" in page.url:
+        log.info("On search results page, clicking first product link")
+        try:
+            await page.locator("a[href*='/p/']").first.click(timeout=8000)
+            await page.wait_for_load_state("domcontentloaded")
+            await page.wait_for_function(
+                "() => document.body.innerText.includes('Ft') || document.body.innerText.includes('Készleten') || document.body.innerText.includes('Nincs készleten')",
+                timeout=10000,
+            )
+            log.info(f"Product page: {page.url}")
+        except PlaywrightTimeout:
+            # Search returned results, but the product page/price did not load.
+            raise RuntimeError(MSG_NOT_PRICED)
+
+    try:
+        await page.wait_for_function(
+            """() => {
+                const price = document.querySelector(".product-variant b.price");
+                const unit = document.querySelector(".product-variant [data-product-price-unitquantity]");
+                return !!price && !!unit &&
+                       !!(price.textContent || '').trim() &&
+                       !!(unit.textContent || '').trim();
+            }""",
+            timeout=10000,
+        )
+    except PlaywrightTimeout:
+        log.warning("Fabory top variant pricing block did not fully load within 10s")
+    await emit("Reading price and stock from fabory.com…")
+
+    body_text = await page.locator("body").inner_text()
+    log.info(f"Page URL: {page.url}")
+
+    top_variant = await _extract_top_variant_price(page)
+    if top_variant:
+        price_raw, unit_qty = top_variant
+        log.info("Price extracted from Fabory top variant block")
+    else:
+        structured = await _extract_price_and_unit_structured(page)
+        if structured:
+            price_raw, unit_qty = structured
+            log.info("Price extracted via structured DOM scan")
+        else:
+            price_match = re.search(
+                r"([\d][\d\s ]*)\s*Ft\s*/\s*ár\s*/\s*(\d+)",
+                body_text,
+            )
+            if not price_match:
+                # Product page is open, but no usable price is shown.
+                raise RuntimeError(MSG_NOT_PRICED)
+            price_raw = float(re.sub(r"[\s ]", "", price_match.group(1)))
+            unit_qty = int(price_match.group(2))
+            log.info("Price extracted via body-text fallback")
+    log.info(f"Price: {price_raw} Ft / {unit_qty} db")
+
+    stock_value = await _extract_top_variant_stock(page)
+    if stock_value is None:
+        log.warning("Fabory top variant stock marker not found — falling back to page-wide stock text")
+        if await page.get_by_text("Nincs készleten", exact=False).count():
+            stock_value = 0
+        elif await page.get_by_text("Készleten", exact=False).count() or await page.get_by_text("Raktáron", exact=False).count():
+            stock_value = "Raktáron"
+        else:
+            stock_value = None
+    log.info(f"Stock: {stock_value}")
+
+    return {
+        "supplier_part_no": supplier_part_no,
+        "price_raw":        price_raw,
+        "price_unit_qty":   unit_qty,
+        "currency":         "HUF",
+        "unit":             "db",
+        "stock":            stock_value,
+        "queried_at":       datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+# ── Single lookup (price agent) ──────────────────────────────────────────────
 
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
     async def emit(msg: str):
@@ -136,177 +333,12 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         if on_progress:
             await on_progress({"step": "browser", "status": "running", "msg": msg})
 
-    session = load_session(_SESSION_FILE)
-    use_session = bool(session and session_is_fresh(session, _SESSION_MAX_AGE_H))
-
+    search_url = SEARCH_URL.format(part_no=quote(supplier_part_no, safe=""))
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
-
-        if use_session:
-            log.info("Restoring saved session (age < 20 h)")
-            try:
-                context = await browser.new_context(storage_state=session["state"])
-            except Exception as exc:
-                log.warning(f"Could not restore session state: {exc}")
-                use_session = False
-                invalidate_session(_SESSION_FILE)
-                context = await browser.new_context()
-        else:
-            if session:
-                log.info("Session stale (> 20 h) — proactive re-login")
-                invalidate_session(_SESSION_FILE)
-            context = await browser.new_context()
-
-        page = await context.new_page()
-
+        browser, context, page = await _login_or_restore(pw, emit, search_url)
         try:
-            await emit("Opening fabory.com…")
-            search_url = SEARCH_URL.format(part_no=quote(supplier_part_no, safe=""))
-            log.info("Fabory search uses supplier_part_no=%r", supplier_part_no)
-
-            # ── Step 1: try session restore ───────────────────────────────────
-            if use_session:
-                await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
-                log.info(f"After session restore, URL: {page.url}")
-
-                if "/login" in page.url:
-                    log.warning("Session invalid — falling back to full login")
-                    use_session = False
-                    invalidate_session(_SESSION_FILE)
-                    await browser.close()
-                    browser  = await pw.chromium.launch(headless=True)
-                    context  = await browser.new_context()
-                    page     = await context.new_page()
-                else:
-                    log.info("Session valid — login skipped")
-
-            # ── Step 2: full login (if needed) ───────────────────────────────
-            if not use_session:
-                await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-                log.info(f"Loaded login page: {page.url}")
-
-                try:
-                    await page.get_by_role("button", name="Összes elfogadása").click(timeout=5000)
-                    log.info("Cookie banner accepted")
-                except PlaywrightTimeout:
-                    log.info("No cookie banner appeared")
-
-                await emit("Logging in to fabory.com…")
-                username = os.getenv("SUPPLIER_E_USERNAME", "")
-                log.info(f"Filling login form for user: {username}")
-
-                await page.get_by_role("textbox", name="Email cím").fill(username)
-                await page.locator("input[placeholder='Jelszó']").fill(os.getenv("SUPPLIER_E_PASSWORD", ""))
-                await page.get_by_role("button", name="Belépés").click()
-
-                try:
-                    await page.wait_for_url("https://www.fabory.com/hu", timeout=15000)
-                    log.info(f"Login successful: {page.url}")
-                except PlaywrightTimeout:
-                    log.error(f"Login failed — URL: {page.url}")
-                    raise RuntimeError("Login to fabory.com failed. Please check credentials.")
-
-                await save_session(context, _SESSION_FILE)
-
-                await emit(f"Searching for {supplier_part_no} on fabory.com…")
-                await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
-
-            else:
-                await emit(f"Searching for {supplier_part_no} on fabory.com…")
-
-            log.info(f"Search page loaded: {page.url}")
-            try:
-                await page.wait_for_function(
-                    """() => {
-                        const hasProductLink = !!document.querySelector("a[href*='/p/']");
-                        const txt = (document.body.innerText || '').toLowerCase();
-                        const hasNoResults = txt.includes('0 találat') || txt.includes('no results');
-                        return hasProductLink || hasNoResults;
-                    }""",
-                    timeout=8000,
-                )
-            except PlaywrightTimeout:
-                log.warning("No explicit search result marker appeared after 8s — continuing anyway")
-
-            body_text = await page.locator("body").inner_text()
-            if "0 találat" in body_text or "no results" in body_text.lower():
-                raise RuntimeError(MSG_NOT_FOUND)
-
-            if "/search" in page.url:
-                log.info("On search results page, clicking first product link")
-                try:
-                    await page.locator("a[href*='/p/']").first.click(timeout=8000)
-                    await page.wait_for_load_state("domcontentloaded")
-                    await page.wait_for_function(
-                        "() => document.body.innerText.includes('Ft') || document.body.innerText.includes('Készleten') || document.body.innerText.includes('Nincs készleten')",
-                        timeout=10000,
-                    )
-                    log.info(f"Product page: {page.url}")
-                except PlaywrightTimeout:
-                    # Search returned results, but the product page/price did not load.
-                    raise RuntimeError(MSG_NOT_PRICED)
-
-            try:
-                await page.wait_for_function(
-                    """() => {
-                        const price = document.querySelector(".product-variant b.price");
-                        const unit = document.querySelector(".product-variant [data-product-price-unitquantity]");
-                        return !!price && !!unit &&
-                               !!(price.textContent || '').trim() &&
-                               !!(unit.textContent || '').trim();
-                    }""",
-                    timeout=10000,
-                )
-            except PlaywrightTimeout:
-                log.warning("Fabory top variant pricing block did not fully load within 10s")
-            await emit("Reading price and stock from fabory.com…")
-
-            body_text = await page.locator("body").inner_text()
-            log.info(f"Page URL: {page.url}")
-
-            top_variant = await _extract_top_variant_price(page)
-            if top_variant:
-                price_raw, unit_qty = top_variant
-                log.info("Price extracted from Fabory top variant block")
-            else:
-                structured = await _extract_price_and_unit_structured(page)
-                if structured:
-                    price_raw, unit_qty = structured
-                    log.info("Price extracted via structured DOM scan")
-                else:
-                    price_match = re.search(
-                        r"([\d][\d\s\u00a0]*)\s*Ft\s*/\s*ár\s*/\s*(\d+)",
-                        body_text,
-                    )
-                    if not price_match:
-                        # Product page is open, but no usable price is shown.
-                        raise RuntimeError(MSG_NOT_PRICED)
-                    price_raw = float(re.sub(r"[\s\u00a0]", "", price_match.group(1)))
-                    unit_qty = int(price_match.group(2))
-                    log.info("Price extracted via body-text fallback")
-            log.info(f"Price: {price_raw} Ft / {unit_qty} db")
-
-            stock_value = await _extract_top_variant_stock(page)
-            if stock_value is None:
-                log.warning("Fabory top variant stock marker not found — falling back to page-wide stock text")
-                if await page.get_by_text("Nincs készleten", exact=False).count():
-                    stock_value = 0
-                elif await page.get_by_text("Készleten", exact=False).count() or await page.get_by_text("Raktáron", exact=False).count():
-                    stock_value = "Raktáron"
-                else:
-                    stock_value = None
-            log.info(f"Stock: {stock_value}")
-
-            return {
-                "supplier_part_no": supplier_part_no,
-                "price_raw":        price_raw,
-                "price_unit_qty":   unit_qty,
-                "currency":         "HUF",
-                "unit":             "db",
-                "stock":            stock_value,
-                "queried_at":       datetime.now().isoformat(timespec="seconds"),
-            }
-
+            # `page` is already on this part's search result page.
+            return await _search_and_parse(page, supplier_part_no, emit, navigate=False)
         except RuntimeError:
             raise
         except Exception as exc:
@@ -315,3 +347,50 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         finally:
             await browser.close()
             log.info("Browser closed")
+
+
+# ── Batch lookup (batch agent) ───────────────────────────────────────────────
+
+async def fetch_prices(
+    part_nos: list[str],
+    on_progress: Callable | None = None,
+    on_item: Callable | None = None,
+) -> list[dict]:
+    """Look up several parts in ONE fabory session (login once, reuse browser)."""
+    async def emit(msg: str):
+        log.info(msg)
+        if on_progress:
+            await on_progress({"step": "browser", "status": "running", "msg": msg})
+
+    results: list[dict] = []
+    if not part_nos:
+        return results
+
+    total = len(part_nos)
+    first_url = SEARCH_URL.format(part_no=quote(part_nos[0], safe=""))
+
+    async with async_playwright() as pw:
+        browser, context, page = await _login_or_restore(pw, emit, first_url)
+        try:
+            for i, pn in enumerate(part_nos):
+                try:
+                    r = await _search_and_parse(page, pn, emit, navigate=True)
+                    results.append(r)
+                    if on_item:
+                        await on_item(i, total, pn, r, None)
+                except RuntimeError as exc:
+                    msg = str(exc)
+                    results.append({"supplier_part_no": pn, "error": msg})
+                    if on_item:
+                        await on_item(i, total, pn, None, msg)
+                except Exception as exc:
+                    log.exception(f"Unexpected error during fabory.com scrape ({pn}): {exc}")
+                    msg = f"fabory.com scrape failed: {exc}"
+                    results.append({"supplier_part_no": pn, "error": msg})
+                    if on_item:
+                        await on_item(i, total, pn, None, msg)
+        finally:
+            await browser.close()
+            log.info("Browser closed")
+
+    return results

@@ -89,7 +89,220 @@ async def _log_login_failure(page, filled_user: str, filled_pass: str,
     log.error("═" * 60)
 
 
-# ── main entry point ──────────────────────────────────────────────────────────
+# ── Session / login (shared) ─────────────────────────────────────────────────
+
+async def _login_or_restore(pw, emit: Callable):
+    """Launch a browser and return (browser, context, page) on a logged-in
+    webshop.koelner.hu context. Restores saved cookies and logs in only when the
+    login form is still present. Shared by both entrypoints."""
+    browser = await pw.chromium.launch(headless=True)
+
+    context = None
+    session = load_session(_SESSION_FILE)
+    if session:
+        try:
+            context = await browser.new_context(storage_state=session["state"])
+            log.info(f"Loaded saved session from {_SESSION_FILE}")
+        except Exception as exc:
+            log.warning(f"Session file unreadable, starting fresh: {exc}")
+            invalidate_session(_SESSION_FILE)
+
+    if context is None:
+        context = await browser.new_context()
+
+    page = await context.new_page()
+
+    async def handle_dialog(dialog):
+        log.info(f"Dialog dismissed: '{dialog.message}'")
+        await dialog.accept()
+
+    page.on("dialog", handle_dialog)
+
+    await emit("Opening webshop.koelner.hu…")
+
+    # ── Step 1: check if existing session is still valid ──────────────
+    # Koelner does NOT redirect after login — the URL stays on /belepes/.
+    # The reliable indicator is whether the login form (#login_username)
+    # is present (not logged in) or absent (already logged in).
+    await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=15000)
+    await page.wait_for_selector("#login_username, #user-menu, .logout", state="attached", timeout=8000)
+    log.info(f"After navigating to LOGIN_URL, landed on: {page.url}")
+
+    # Dismiss cookie/consent banner wherever we are
+    try:
+        await page.get_by_role("button", name="Rendben").click(timeout=3000)
+        await page.wait_for_timeout(200)  # brief settle after cookie banner dismiss
+        log.info("Cookie notice accepted")
+    except PlaywrightTimeout:
+        log.info("No cookie notice appeared")
+
+    already_logged_in = await page.locator("#login_username").count() == 0
+
+    if already_logged_in:
+        log.info("Session still valid — login form absent, skipping login")
+        await emit("Session active — skipping login…")
+    else:
+        # ── Step 2: full login ────────────────────────────────────────
+        log.info("Session expired or absent — performing full login")
+        await emit("Logging in to webshop.koelner.hu…")
+        log.info(f"Login page URL: {page.url}")
+
+        username = os.getenv("SUPPLIER_C_USERNAME", "")
+        log.info(f"Filling login form for user: '{username}'")
+
+        await page.locator("#login_username").fill(username)
+        await page.locator("#login_password").fill(os.getenv("SUPPLIER_C_PASSWORD", ""))
+
+        filled_user = await page.locator("#login_username").input_value()
+        filled_pass = await page.locator("#login_password").input_value()
+        log.info(f"Form filled — username: '{filled_user}', "
+                 f"password length: {len(filled_pass)} chars")
+
+        await page.locator("#loginbutton").click()
+        log.info("Login button clicked, waiting for login form to disappear…")
+        # Koelner stays on /belepes/ after both success and failure.
+        # Success = login form is gone; failure = form still present.
+        try:
+            await page.locator("#login_username").wait_for(state="hidden", timeout=10000)
+        except PlaywrightTimeout:
+            pass  # form still visible → check below will catch failure
+
+        login_form_present = await page.locator("#login_username").count() > 0
+
+        if login_form_present:
+            await _log_login_failure(
+                page, filled_user, filled_pass,
+                still_on_login=True, login_form_present=True,
+            )
+            raise RuntimeError(
+                "Login to webshop.koelner.hu failed. Please check credentials."
+            )
+
+        log.info(f"Login successful — login form gone, url={page.url}")
+        try:
+            await save_session(context, _SESSION_FILE)
+        except Exception as exc:
+            log.warning(f"Could not save session: {exc}")
+
+    return browser, context, page
+
+
+async def _search_and_parse(page, supplier_part_no: str, emit: Callable) -> dict:
+    """Search one part on a logged-in koelner page and parse price + stock."""
+    # ── Step 3: search ────────────────────────────────────────────────
+    search_url = SEARCH_URL.format(part_no=supplier_part_no)
+    await emit(f"Searching for part {supplier_part_no} on webshop.koelner.hu…")
+    log.info(f"Navigating to search URL: {search_url}")
+
+    await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
+    # Wait for search results container or empty-state indicator
+    await page.wait_for_selector(".products, .item, [class*='no-result'], h1, .alert-message", state="attached", timeout=8000)
+    log.info(f"Search page loaded: {page.url}")
+
+    body_text = await page.locator("body").inner_text(timeout=10000)
+
+    if "Keresés a termékek között (0)" in body_text:
+        log.warning(f"Zero results for part {supplier_part_no}")
+        raise RuntimeError(MSG_NOT_FOUND)
+
+    # ── Step 4: collect product-group links ───────────────────────────
+    item_links = await page.locator(".item a.products__link").all()
+    seen_hrefs: set = set()
+    item_hrefs = []
+    for link in item_links:
+        href = await link.get_attribute("href")
+        if href and href not in seen_hrefs:
+            seen_hrefs.add(href)
+            item_hrefs.append(href)
+
+    log.info(f"Product groups found (unique): {len(item_hrefs)}")
+    if not item_hrefs:
+        raise RuntimeError(MSG_NOT_FOUND)
+
+    # ── Step 5: find the item-selected row ────────────────────────────
+    await emit("Reading price and stock from webshop.koelner.hu…")
+    target_row = None
+
+    for idx, href in enumerate(item_hrefs):
+        if "cikkszam=" in href:
+            modified = re.sub(r"cikkszam=[^&]+", f"cikkszam={supplier_part_no}", href)
+        else:
+            sep = "&" if "?" in href else "?"
+            modified = href + f"{sep}cikkszam={supplier_part_no}"
+        product_url = (
+            f"https://webshop.koelner.hu{modified}"
+            if modified.startswith("/") else modified
+        )
+        log.info(f"Checking group {idx+1}/{len(item_hrefs)}: {product_url}")
+        await page.goto(product_url, wait_until="domcontentloaded", timeout=20000)
+        # Wait for the lazy-loaded product table to appear
+        try:
+            await page.wait_for_selector("table tbody tr.gy_item", state="attached", timeout=8000)
+        except PlaywrightTimeout:
+            pass  # no matching rows → selected check below returns empty
+
+        selected = await page.locator("table tbody tr.gy_item.item-selected").all()
+        if selected:
+            target_row = selected[0]
+            cikkszam_text = ""
+            try:
+                cikkszam_text = await target_row.locator("td.CIKKSZAM").inner_text(timeout=1500)
+            except PlaywrightTimeout:
+                pass
+            log.info(f"  ✓ item-selected found (CIKKSZAM='{cikkszam_text.strip()}') on {page.url}")
+            break
+
+        log.info("  No item-selected row on this group page")
+
+    if target_row is None:
+        raise RuntimeError(MSG_NOT_FOUND)
+
+    # ── Step 6: read price ────────────────────────────────────────────
+    price_text = await target_row.locator("td.NETTO").inner_text(timeout=5000)
+    price_text = price_text.strip()
+    log.info(f"Nettó egységár raw: '{price_text}'")
+
+    if not price_text or not has_numeric_price(price_text):
+        # The variant row was found, but no usable net unit price is shown.
+        raise RuntimeError(MSG_NOT_PRICED)
+
+    price_raw      = _parse_hu_price(price_text)
+    price_unit_qty = 1      # Nettó egységár is already per-piece
+    log.info(f"Parsed price: {price_raw} HUF/db")
+
+    # ── Step 7: read stock ────────────────────────────────────────────
+    try:
+        stock_text = await target_row.locator(
+            "td.KESZLET .keszlet span"
+        ).inner_text(timeout=5000)
+        stock_text = stock_text.strip()
+        log.info(f"Stock text: '{stock_text}'")
+        stock = stock_text if stock_text else "X"
+    except PlaywrightTimeout:
+        stock = "X"
+        log.warning("Stock element not found, assuming out of stock")
+
+    # The scrape ends on the exact product-group page with the variant
+    # selected (…?cid=…&cikkszam=<part>). Hand that URL back so
+    # "Tovább a honlapra" opens the product directly, instead of the
+    # ?keres= results list (which may show several product groups).
+    product_url = page.url if "cikkszam=" in page.url else None
+
+    result = {
+        "supplier_part_no": supplier_part_no,
+        "price_raw":        price_raw,
+        "price_unit_qty":   price_unit_qty,
+        "currency":         "HUF",
+        "unit":             "db",
+        "stock":            stock,
+        "product_url":      product_url,
+        "queried_at":       datetime.now().isoformat(timespec="seconds"),
+    }
+    log.info(f"Final result: {result}")
+    return result
+
+
+# ── Single lookup (price agent) ──────────────────────────────────────────────
 
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
     async def emit(msg: str):
@@ -98,211 +311,9 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
             await on_progress({"step": "browser", "status": "running", "msg": msg})
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
-
-        # Load saved session cookies if available
-        context = None
-        session = load_session(_SESSION_FILE)
-        if session:
-            try:
-                context = await browser.new_context(storage_state=session["state"])
-                log.info(f"Loaded saved session from {_SESSION_FILE}")
-            except Exception as exc:
-                log.warning(f"Session file unreadable, starting fresh: {exc}")
-                invalidate_session(_SESSION_FILE)
-
-        if context is None:
-            context = await browser.new_context()
-
-        page = await context.new_page()
-
-        async def handle_dialog(dialog):
-            log.info(f"Dialog dismissed: '{dialog.message}'")
-            await dialog.accept()
-
-        page.on("dialog", handle_dialog)
-
+        browser, context, page = await _login_or_restore(pw, emit)
         try:
-            await emit("Opening webshop.koelner.hu…")
-
-            # ── Step 1: check if existing session is still valid ──────────────
-            # Koelner does NOT redirect after login — the URL stays on /belepes/.
-            # The reliable indicator is whether the login form (#login_username)
-            # is present (not logged in) or absent (already logged in).
-            await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=15000)
-            # Wait for either the login form or a logged-in indicator to appear
-            await page.wait_for_selector("#login_username, #user-menu, .logout", state="attached", timeout=8000)
-            log.info(f"After navigating to LOGIN_URL, landed on: {page.url}")
-
-            # Dismiss cookie/consent banner wherever we are
-            try:
-                await page.get_by_role("button", name="Rendben").click(timeout=3000)
-                await page.wait_for_timeout(200)  # brief settle after cookie banner dismiss
-                log.info("Cookie notice accepted")
-            except PlaywrightTimeout:
-                log.info("No cookie notice appeared")
-
-            already_logged_in = await page.locator("#login_username").count() == 0
-
-            if already_logged_in:
-                log.info("Session still valid — login form absent, skipping login")
-                await emit("Session active — skipping login…")
-
-            else:
-                # ── Step 2: full login ────────────────────────────────────────
-                log.info("Session expired or absent — performing full login")
-                await emit("Logging in to webshop.koelner.hu…")
-                log.info(f"Login page URL: {page.url}")
-
-                username = os.getenv("SUPPLIER_C_USERNAME", "")
-                log.info(f"Filling login form for user: '{username}'")
-
-                await page.locator("#login_username").fill(username)
-                await page.locator("#login_password").fill(os.getenv("SUPPLIER_C_PASSWORD", ""))
-
-                filled_user = await page.locator("#login_username").input_value()
-                filled_pass = await page.locator("#login_password").input_value()
-                log.info(f"Form filled — username: '{filled_user}', "
-                         f"password length: {len(filled_pass)} chars")
-
-                await page.locator("#loginbutton").click()
-                log.info("Login button clicked, waiting for login form to disappear…")
-                # Koelner stays on /belepes/ after both success and failure.
-                # Success = login form is gone; failure = form still present.
-                try:
-                    await page.locator("#login_username").wait_for(state="hidden", timeout=10000)
-                except PlaywrightTimeout:
-                    pass  # form still visible → check below will catch failure
-
-                login_form_present = await page.locator("#login_username").count() > 0
-
-                if login_form_present:
-                    await _log_login_failure(
-                        page, filled_user, filled_pass,
-                        still_on_login=True, login_form_present=True,
-                    )
-                    raise RuntimeError(
-                        "Login to webshop.koelner.hu failed. Please check credentials."
-                    )
-
-                log.info(f"Login successful — login form gone, url={page.url}")
-                try:
-                    await save_session(context, _SESSION_FILE)
-                except Exception as exc:
-                    log.warning(f"Could not save session: {exc}")
-
-            # ── Step 3: search ────────────────────────────────────────────────
-            search_url = SEARCH_URL.format(part_no=supplier_part_no)
-            await emit(f"Searching for part {supplier_part_no} on webshop.koelner.hu…")
-            log.info(f"Navigating to search URL: {search_url}")
-
-            await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
-            # Wait for search results container or empty-state indicator
-            await page.wait_for_selector(".products, .item, [class*='no-result'], h1, .alert-message", state="attached", timeout=8000)
-            log.info(f"Search page loaded: {page.url}")
-
-            body_text = await page.locator("body").inner_text(timeout=10000)
-
-            if "Keresés a termékek között (0)" in body_text:
-                log.warning(f"Zero results for part {supplier_part_no}")
-                raise RuntimeError(MSG_NOT_FOUND)
-
-            # ── Step 4: collect product-group links ───────────────────────────
-            item_links = await page.locator(".item a.products__link").all()
-            seen_hrefs: set = set()
-            item_hrefs = []
-            for link in item_links:
-                href = await link.get_attribute("href")
-                if href and href not in seen_hrefs:
-                    seen_hrefs.add(href)
-                    item_hrefs.append(href)
-
-            log.info(f"Product groups found (unique): {len(item_hrefs)}")
-            if not item_hrefs:
-                raise RuntimeError(MSG_NOT_FOUND)
-
-            # ── Step 5: find the item-selected row ────────────────────────────
-            await emit("Reading price and stock from webshop.koelner.hu…")
-            target_row = None
-
-            for idx, href in enumerate(item_hrefs):
-                if "cikkszam=" in href:
-                    modified = re.sub(r"cikkszam=[^&]+", f"cikkszam={supplier_part_no}", href)
-                else:
-                    sep = "&" if "?" in href else "?"
-                    modified = href + f"{sep}cikkszam={supplier_part_no}"
-                product_url = (
-                    f"https://webshop.koelner.hu{modified}"
-                    if modified.startswith("/") else modified
-                )
-                log.info(f"Checking group {idx+1}/{len(item_hrefs)}: {product_url}")
-                await page.goto(product_url, wait_until="domcontentloaded", timeout=20000)
-                # Wait for the lazy-loaded product table to appear
-                try:
-                    await page.wait_for_selector("table tbody tr.gy_item", state="attached", timeout=8000)
-                except PlaywrightTimeout:
-                    pass  # no matching rows → selected check below returns empty
-
-                selected = await page.locator("table tbody tr.gy_item.item-selected").all()
-                if selected:
-                    target_row = selected[0]
-                    cikkszam_text = ""
-                    try:
-                        cikkszam_text = await target_row.locator("td.CIKKSZAM").inner_text(timeout=1500)
-                    except PlaywrightTimeout:
-                        pass
-                    log.info(f"  ✓ item-selected found (CIKKSZAM='{cikkszam_text.strip()}') on {page.url}")
-                    break
-
-                log.info("  No item-selected row on this group page")
-
-            if target_row is None:
-                raise RuntimeError(MSG_NOT_FOUND)
-
-            # ── Step 6: read price ────────────────────────────────────────────
-            price_text = await target_row.locator("td.NETTO").inner_text(timeout=5000)
-            price_text = price_text.strip()
-            log.info(f"Nettó egységár raw: '{price_text}'")
-
-            if not price_text or not has_numeric_price(price_text):
-                # The variant row was found, but no usable net unit price is shown.
-                raise RuntimeError(MSG_NOT_PRICED)
-
-            price_raw      = _parse_hu_price(price_text)
-            price_unit_qty = 1      # Nettó egységár is already per-piece
-            log.info(f"Parsed price: {price_raw} HUF/db")
-
-            # ── Step 7: read stock ────────────────────────────────────────────
-            try:
-                stock_text = await target_row.locator(
-                    "td.KESZLET .keszlet span"
-                ).inner_text(timeout=5000)
-                stock_text = stock_text.strip()
-                log.info(f"Stock text: '{stock_text}'")
-                stock = stock_text if stock_text else "X"
-            except PlaywrightTimeout:
-                stock = "X"
-                log.warning("Stock element not found, assuming out of stock")
-
-            # The scrape ends on the exact product-group page with the variant
-            # selected (…?cid=…&cikkszam=<part>). Hand that URL back so
-            # "Tovább a honlapra" opens the product directly, instead of the
-            # ?keres= results list (which may show several product groups).
-            product_url = page.url if "cikkszam=" in page.url else None
-
-            result = {
-                "supplier_part_no": supplier_part_no,
-                "price_raw":        price_raw,
-                "price_unit_qty":   price_unit_qty,
-                "currency":         "HUF",
-                "unit":             "db",
-                "stock":            stock,
-                "product_url":      product_url,
-                "queried_at":       datetime.now().isoformat(timespec="seconds"),
-            }
-            log.info(f"Final result: {result}")
-            return result
-
+            return await _search_and_parse(page, supplier_part_no, emit)
         except RuntimeError:
             raise
         except Exception as exc:
@@ -311,3 +322,49 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         finally:
             await browser.close()
             log.info("Browser closed")
+
+
+# ── Batch lookup (batch agent) ───────────────────────────────────────────────
+
+async def fetch_prices(
+    part_nos: list[str],
+    on_progress: Callable | None = None,
+    on_item: Callable | None = None,
+) -> list[dict]:
+    """Look up several parts in ONE koelner session (login once, reuse browser)."""
+    async def emit(msg: str):
+        log.info(msg)
+        if on_progress:
+            await on_progress({"step": "browser", "status": "running", "msg": msg})
+
+    results: list[dict] = []
+    if not part_nos:
+        return results
+
+    total = len(part_nos)
+
+    async with async_playwright() as pw:
+        browser, context, page = await _login_or_restore(pw, emit)
+        try:
+            for i, pn in enumerate(part_nos):
+                try:
+                    r = await _search_and_parse(page, pn, emit)
+                    results.append(r)
+                    if on_item:
+                        await on_item(i, total, pn, r, None)
+                except RuntimeError as exc:
+                    msg = str(exc)
+                    results.append({"supplier_part_no": pn, "error": msg})
+                    if on_item:
+                        await on_item(i, total, pn, None, msg)
+                except Exception as exc:
+                    log.exception(f"Unexpected error during webshop.koelner.hu scrape ({pn}): {exc}")
+                    msg = f"webshop.koelner.hu scrape failed: {exc}"
+                    results.append({"supplier_part_no": pn, "error": msg})
+                    if on_item:
+                        await on_item(i, total, pn, None, msg)
+        finally:
+            await browser.close()
+            log.info("Browser closed")
+
+    return results

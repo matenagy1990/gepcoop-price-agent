@@ -296,133 +296,147 @@ async def _login_and_locate_row(page, supplier_part_no: str, emit: Callable):
     raise RuntimeError(MSG_NOT_FOUND)
 
 
+async def _open_portal(pw, emit: Callable):
+    """Launch a browser, restore the session if fresh, and open the SPA portal
+    with #header-search ready. Returns (browser, context, page).
+
+    Login itself is handled lazily by `_login_and_locate_row`, which detects the
+    logged-in state and only logs in when needed (kingb2b throttles repeated
+    automated logins, so we reuse the saved session whenever possible)."""
+    session = load_session(SESSION_FILE)
+    use_session = bool(session and session_is_fresh(session, SESSION_MAX_AGE_HOURS))
+
+    browser = await pw.chromium.launch(headless=True)
+    if use_session:
+        try:
+            ctx = await browser.new_context(storage_state=session["state"])
+            log.info("Restored saved session (age < 20 h)")
+        except Exception as exc:
+            log.warning(f"Could not restore saved session: {exc}")
+            invalidate_session(SESSION_FILE)
+            use_session = False
+            ctx = await browser.new_context()
+    else:
+        if session:
+            log.info("Session stale (> 20 h) — proactive re-login")
+            invalidate_session(SESSION_FILE)
+        ctx = await browser.new_context()
+    page = await ctx.new_page()
+
+    await emit("Opening kingb2b.it…")
+    # networkidle is required when restoring a session so the SPA fully
+    # initialises its search API state before we type a query.
+    wait_until = "networkidle" if use_session else "domcontentloaded"
+    await page.goto(PORTAL_URL, wait_until=wait_until, timeout=30000)
+    await page.wait_for_selector("#header-search", timeout=15000)
+    await page.wait_for_function(
+        "() => document.querySelector('#header-search')?.offsetParent !== null",
+        timeout=5000,
+    )
+    log.info("Portal loaded")
+    return browser, ctx, page
+
+
+async def _extract_row(page, row_locator, supplier_part_no: str, emit: Callable) -> dict:
+    """Wait for the injected price on the located row and parse price + stock."""
+    await emit("Reading price and stock from kingb2b.it…")
+    try:
+        await page.wait_for_function(
+            f"""() => {{
+                const row = document.querySelector('tr.articoli-row[id="{supplier_part_no}"]');
+                if (row) return row.querySelector('td[data-cell="PREZZO"]')?.innerText.trim() !== '';
+                const rows = [...document.querySelectorAll('table.tabella-articoli tr')];
+                const generic = rows.find(r => (r.innerText || '').includes("{supplier_part_no}"));
+                return !!generic && /\\d+[,.]?\\d*\\s*(%|N)/.test((generic.innerText || '').trim());
+            }}""",
+            timeout=8000,
+        )
+    except PlaywrightTimeout:
+        await _log_results_state(page, supplier_part_no, prefix="KingB2B price-timeout")
+        raise RuntimeError(MSG_NOT_PRICED)
+
+    # ── Extract price ──────────────────────────────────────────
+    if await row_locator.locator('td[data-cell="PREZZO"]').count():
+        prezzo_text = await row_locator.locator('td[data-cell="PREZZO"]').inner_text()
+        prezzo_text = prezzo_text.strip()
+    else:
+        row_text = (await row_locator.inner_text()).strip()
+        m = re.search(r'(\d+[,.]\d+)\s*(%|N)\b', row_text)
+        if not m:
+            raise RuntimeError(MSG_NOT_PRICED)
+        prezzo_text = f"{m.group(1)} {m.group(2)}"
+    log.info(f"PREZZO cell: {prezzo_text!r}")
+
+    # Parse price value (Italian decimal comma)
+    price_raw = _parse_eur(prezzo_text)
+
+    # Determine unit: "%" → per 100 pcs, "N" → per 1 pc
+    if "%" in prezzo_text:
+        price_unit_qty = 100
+    elif "N" in prezzo_text:
+        price_unit_qty = 1
+    else:
+        # Fallback: use BOX column quantity
+        box_locator = row_locator.locator('td[data-cell="BOX"]')
+        box_text = await box_locator.inner_text() if await box_locator.count() else ""
+        box_text = box_text.strip().replace(".", "")
+        try:
+            price_unit_qty = int(box_text)
+        except ValueError:
+            price_unit_qty = 1
+    log.info(f"Price: {price_raw} EUR / {price_unit_qty} pcs")
+
+    # ── Extract stock ──────────────────────────────────────────
+    stock_value = 0
+    stock_cell = row_locator.locator('td[data-cell="STOCK"]')
+
+    if await stock_cell.count():
+        for cls in ["dispo-ok", "dispo-incoming"]:
+            locator = stock_cell.locator(f".{cls}")
+            if await locator.count():
+                div_text = (await locator.inner_text()).strip()
+                if div_text:
+                    stock_value = _parse_stock(div_text)
+                    log.info(f"Stock from .{cls}: {div_text!r} → {stock_value}")
+                    break
+    else:
+        row_text = (await row_locator.inner_text()).strip()
+        stock_match = re.search(r'(\d[\d.]*)\s+(?:STOCK|NOTA|VS CODICE|$)', row_text)
+        if stock_match:
+            stock_value = _parse_stock(stock_match.group(1))
+
+    log.info(f"Parsed — {price_raw} EUR / {price_unit_qty} pcs, stock: {stock_value}")
+
+    return {
+        "supplier_part_no": supplier_part_no,
+        "price_raw":        price_raw,
+        "price_unit_qty":   price_unit_qty,
+        "currency":         "EUR",
+        "unit":             "db",
+        "stock":            stock_value,
+        "queried_at":       datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+async def _search_and_parse(page, supplier_part_no: str, emit: Callable) -> dict:
+    """Log in (if needed), locate the part's row and parse it. Reusable per part
+    on an already-open portal page."""
+    row_locator = await _login_and_locate_row(page, supplier_part_no, emit)
+    return await _extract_row(page, row_locator, supplier_part_no, emit)
+
+
+# ── Single lookup (price agent) ──────────────────────────────────────────────
+
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
     async def emit(msg: str):
         log.info(msg)
         if on_progress:
             await on_progress({"step": "browser", "status": "running", "msg": msg})
 
-    session = load_session(SESSION_FILE)
-    # Reuse a saved session while it is fresh, so we do NOT log in on every query —
-    # kingb2b temporarily blocks repeated automated logins ("CREDENZIALI ERRATE").
-    # A login only happens when there is no valid session; _login_and_locate_row
-    # detects the logged-in state (DOCUMENTI button) and re-saves the session after
-    # a fresh login. The portal is reloaded cleanly each run, so search state is fine.
-    use_session = bool(session and session_is_fresh(session, SESSION_MAX_AGE_HOURS))
-
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
-        if use_session:
-            try:
-                ctx = await browser.new_context(storage_state=session["state"])
-                log.info("Restored saved session (age < 20 h)")
-            except Exception as exc:
-                log.warning(f"Could not restore saved session: {exc}")
-                invalidate_session(SESSION_FILE)
-                use_session = False
-                ctx = await browser.new_context()
-        else:
-            if session:
-                log.info("Session stale (> 20 h) — proactive re-login")
-                invalidate_session(SESSION_FILE)
-            ctx = await browser.new_context()
-        page = await ctx.new_page()
-
+        browser, ctx, page = await _open_portal(pw, emit)
         try:
-            await emit("Opening kingb2b.it…")
-            # networkidle is required when restoring a session so the SPA fully
-            # initialises its search API state before we type a query.
-            wait_until = "networkidle" if use_session else "domcontentloaded"
-            await page.goto(PORTAL_URL, wait_until=wait_until, timeout=30000)
-            # Wait for SPA to fully initialise
-            await page.wait_for_selector("#header-search", timeout=15000)
-            await page.wait_for_function(
-                "() => document.querySelector('#header-search')?.offsetParent !== null",
-                timeout=5000,
-            )
-            log.info("Portal loaded")
-
-            row_locator = await _login_and_locate_row(page, supplier_part_no, emit)
-
-            # ── Wait for price to be injected (requires login) ─────────
-            await emit("Reading price and stock from kingb2b.it…")
-            try:
-                await page.wait_for_function(
-                    f"""() => {{
-                        const row = document.querySelector('tr.articoli-row[id="{supplier_part_no}"]');
-                        if (row) return row.querySelector('td[data-cell="PREZZO"]')?.innerText.trim() !== '';
-                        const rows = [...document.querySelectorAll('table.tabella-articoli tr')];
-                        const generic = rows.find(r => (r.innerText || '').includes("{supplier_part_no}"));
-                        return !!generic && /\\d+[,.]?\\d*\\s*(%|N)/.test((generic.innerText || '').trim());
-                    }}""",
-                    timeout=8000,
-                )
-            except PlaywrightTimeout:
-                await _log_results_state(page, supplier_part_no, prefix="KingB2B price-timeout")
-                raise RuntimeError(MSG_NOT_PRICED)
-
-            # ── Extract price ──────────────────────────────────────────
-            if await row_locator.locator('td[data-cell="PREZZO"]').count():
-                prezzo_text = await row_locator.locator('td[data-cell="PREZZO"]').inner_text()
-                prezzo_text = prezzo_text.strip()
-            else:
-                row_text = (await row_locator.inner_text()).strip()
-                m = re.search(r'(\d+[,.]\d+)\s*(%|N)\b', row_text)
-                if not m:
-                    raise RuntimeError(MSG_NOT_PRICED)
-                prezzo_text = f"{m.group(1)} {m.group(2)}"
-            log.info(f"PREZZO cell: {prezzo_text!r}")
-
-            # Parse price value (Italian decimal comma)
-            price_raw = _parse_eur(prezzo_text)
-
-            # Determine unit: "%" → per 100 pcs, "N" → per 1 pc
-            if "%" in prezzo_text:
-                price_unit_qty = 100
-            elif "N" in prezzo_text:
-                price_unit_qty = 1
-            else:
-                # Fallback: use BOX column quantity
-                box_locator = row_locator.locator('td[data-cell="BOX"]')
-                box_text = await box_locator.inner_text() if await box_locator.count() else ""
-                box_text = box_text.strip().replace(".", "")
-                try:
-                    price_unit_qty = int(box_text)
-                except ValueError:
-                    price_unit_qty = 1
-            log.info(f"Price: {price_raw} EUR / {price_unit_qty} pcs")
-
-            # ── Extract stock ──────────────────────────────────────────
-            stock_value = 0
-            stock_cell = row_locator.locator('td[data-cell="STOCK"]')
-
-            if await stock_cell.count():
-                for cls in ["dispo-ok", "dispo-incoming"]:
-                    locator = stock_cell.locator(f".{cls}")
-                    if await locator.count():
-                        div_text = (await locator.inner_text()).strip()
-                        if div_text:
-                            stock_value = _parse_stock(div_text)
-                            log.info(f"Stock from .{cls}: {div_text!r} → {stock_value}")
-                            break
-            else:
-                row_text = (await row_locator.inner_text()).strip()
-                stock_match = re.search(r'(\d[\d.]*)\s+(?:STOCK|NOTA|VS CODICE|$)', row_text)
-                if stock_match:
-                    stock_value = _parse_stock(stock_match.group(1))
-
-            log.info(f"Parsed — {price_raw} EUR / {price_unit_qty} pcs, stock: {stock_value}")
-
-            return {
-                "supplier_part_no": supplier_part_no,
-                "price_raw":        price_raw,
-                "price_unit_qty":   price_unit_qty,
-                "currency":         "EUR",
-                "unit":             "db",
-                "stock":            stock_value,
-                "queried_at":       datetime.now().isoformat(timespec="seconds"),
-            }
-
+            return await _search_and_parse(page, supplier_part_no, emit)
         except RuntimeError:
             raise
         except Exception as exc:
@@ -431,3 +445,51 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         finally:
             await browser.close()
             log.info("Browser closed")
+
+
+# ── Batch lookup (batch agent) ───────────────────────────────────────────────
+
+async def fetch_prices(
+    part_nos: list[str],
+    on_progress: Callable | None = None,
+    on_item: Callable | None = None,
+) -> list[dict]:
+    """Look up several parts in ONE kingb2b session. The portal SPA stays loaded;
+    `_login_and_locate_row` logs in only on the first part (it detects the
+    logged-in state afterwards) and re-searches for each subsequent part."""
+    async def emit(msg: str):
+        log.info(msg)
+        if on_progress:
+            await on_progress({"step": "browser", "status": "running", "msg": msg})
+
+    results: list[dict] = []
+    if not part_nos:
+        return results
+
+    total = len(part_nos)
+
+    async with async_playwright() as pw:
+        browser, ctx, page = await _open_portal(pw, emit)
+        try:
+            for i, pn in enumerate(part_nos):
+                try:
+                    r = await _search_and_parse(page, pn, emit)
+                    results.append(r)
+                    if on_item:
+                        await on_item(i, total, pn, r, None)
+                except RuntimeError as exc:
+                    msg = str(exc)
+                    results.append({"supplier_part_no": pn, "error": msg})
+                    if on_item:
+                        await on_item(i, total, pn, None, msg)
+                except Exception as exc:
+                    log.exception(f"Unexpected error during kingb2b.it scrape ({pn}): {exc}")
+                    msg = f"kingb2b.it scrape failed: {exc}"
+                    results.append({"supplier_part_no": pn, "error": msg})
+                    if on_item:
+                        await on_item(i, total, pn, None, msg)
+        finally:
+            await browser.close()
+            log.info("Browser closed")
+
+    return results

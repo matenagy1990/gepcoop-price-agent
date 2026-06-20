@@ -24,6 +24,9 @@ services:
       BATCH_SUPPLIER_LIMIT: "4"
       SCRAPER_TIMEOUT_SECONDS: "60"
       SCRAPER_RETRY_COUNT: "2"
+      # Szerveren automatikus ütemezés (20:00-tól, 40 percenként). Lokálisan
+      # (közvetlen uvicorn) ez nincs beállítva → manuális sáv-választó.
+      SCHEDULE_MODE: auto
     volumes:
       # A price agent kódja csak olvasható — a batch nem módosíthatja.
       - .:/app/GepcoopPriceAgent:ro

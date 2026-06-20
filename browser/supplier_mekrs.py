@@ -352,7 +352,277 @@ async def _extract_detail_data(page, supplier_part_no: str, currency_code: str):
     )
 
 
-# ── Main scraper ───────────────────────────────────────────────────────────────
+# ── Session / login (shared) ─────────────────────────────────────────────────
+
+def _attach_dialog(page) -> None:
+    async def handle_dialog(dialog):
+        log.info(f"Dialog dismissed: '{dialog.message}'")
+        await dialog.accept()
+    page.on("dialog", handle_dialog)
+
+
+async def _login_or_restore(pw, emit: Callable):
+    """Launch a browser and return (browser, context, page) on a logged-in
+    eshop.mekrs.cz context with currency forced to EUR. Restores a fresh session
+    or performs the full login. Shared by both entrypoints."""
+    session = load_session(_SESSION_FILE)
+    use_session = bool(session and session_is_fresh(session, _SESSION_MAX_AGE_H))
+
+    browser = await pw.chromium.launch(headless=True)
+
+    if use_session:
+        log.info("Restoring saved session (age < 20 h)")
+        try:
+            context = await browser.new_context(storage_state=session["state"])
+        except Exception as exc:
+            log.warning(f"Could not restore session state: {exc}")
+            use_session = False
+            invalidate_session(_SESSION_FILE)
+            context = await browser.new_context()
+    else:
+        if session:
+            log.info("Session stale (> 20 h) — proactive re-login")
+            invalidate_session(_SESSION_FILE)
+        context = await browser.new_context()
+
+    page = await context.new_page()
+    _attach_dialog(page)
+
+    await emit("Opening eshop.mekrs.cz…")
+
+    # ── Step 1: try session restore ───────────────────────────────────
+    if use_session:
+        await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=20000)
+        state = await _wait_for_auth_state(page, timeout_ms=8000)
+        signals = await _capture_auth_signals(page)
+        log.info(f"After session restore, URL: {page.url}")
+
+        if state == "login" or signals["login_visible"] or signals["login_button_visible"]:
+            log.warning("Session invalid (login form visible) — falling back to full login")
+            use_session = False
+            invalidate_session(_SESSION_FILE)
+            await browser.close()
+            browser  = await pw.chromium.launch(headless=True)
+            context  = await browser.new_context()
+            page     = await context.new_page()
+            _attach_dialog(page)
+        elif state == "search":
+            log.info("Session valid — login skipped")
+        else:
+            log.warning("Session restore ended in unknown state — retrying home page before login fallback")
+            await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=20000)
+            state = await _wait_for_auth_state(page, timeout_ms=8000)
+            if state != "search":
+                use_session = False
+                invalidate_session(_SESSION_FILE)
+                await browser.close()
+                browser  = await pw.chromium.launch(headless=True)
+                context  = await browser.new_context()
+                page     = await context.new_page()
+                _attach_dialog(page)
+            else:
+                log.info("Session valid after retry — login skipped")
+
+        await _ensure_currency_eur(page, emit=emit)
+        await save_session(context, _SESSION_FILE)
+
+    # ── Step 2: full login (if needed) ───────────────────────────────
+    if not use_session:
+        await page.goto(HOME_URL, wait_until="domcontentloaded")
+        await page.wait_for_selector("input[name='username']", timeout=8000)
+        log.info(f"Loaded: {page.url}")
+
+        await emit("Logging in to eshop.mekrs.cz…")
+        username = os.getenv("SUPPLIER_D_USERNAME", "")
+        log.info(f"Logging in as: {username}")
+
+        user_input = page.locator("input[name='username']")
+        pass_input = page.locator("input[name='password']")
+        await user_input.click()
+        await user_input.fill("")
+        await user_input.type(username, delay=20)
+        await pass_input.click()
+        await pass_input.fill("")
+        await pass_input.type(os.getenv("SUPPLIER_D_PASSWORD", ""), delay=20)
+        log.info("Submitting Mekrs login with Enter on password field")
+        await pass_input.press("Enter")
+        await page.wait_for_timeout(3000)
+        state = await _wait_for_auth_state(page, timeout_ms=12000)
+        signals = await _capture_auth_signals(page)
+        if state == "unknown":
+            log.warning("Login did not resolve to search/login state — retrying homepage")
+            await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=20000)
+            state = await _wait_for_auth_state(page, timeout_ms=8000)
+            signals = await _capture_auth_signals(page)
+
+        if state == "login" or signals["login_visible"] or signals["login_button_visible"]:
+            raise RuntimeError(
+                "Login to eshop.mekrs.cz did not establish an authenticated session."
+            )
+        if state != "search":
+            raise RuntimeError(
+                "eshop.mekrs.cz login completed, but the search page did not become available."
+            )
+
+        log.info(f"Login successful — URL: {page.url}")
+        await _ensure_currency_eur(page, emit=emit)
+        await save_session(context, _SESSION_FILE)
+
+    return browser, context, page
+
+
+async def _search_and_parse(page, supplier_part_no: str, emit: Callable) -> dict:
+    """Search one part on a logged-in mekrs page and parse price + stock."""
+    # ── Step 3: search via autocomplete ──────────────────────────────
+    await emit(f"Searching for part {supplier_part_no} on eshop.mekrs.cz…")
+    search_inp = page.locator("input[placeholder='Search by name, code, DIN']").first
+    await search_inp.wait_for(state="visible", timeout=8000)
+    await search_inp.click()
+    await search_inp.fill("")
+    try:
+        await page.wait_for_function(
+            "() => { const el = document.querySelector(\"input[placeholder='Search by name, code, DIN']\"); return !!el && el.value === ''; }",
+            timeout=3000,
+        )
+    except PlaywrightTimeout:
+        log.warning("Mekrs search box did not clear via fill(''); trying select-all fallback")
+        await search_inp.press("Control+A")
+        await search_inp.press("Backspace")
+    await search_inp.type(supplier_part_no, delay=50)
+    log.info(f"Typed '{supplier_part_no}' into search box, waiting for Mekrs search suggestions…")
+    current_currency = await _current_mekrs_currency(page)
+    log.info("Mekrs active currency before search: %s", current_currency)
+
+    try:
+        await page.wait_for_function(
+            """(partNo) => {
+                const items = Array.from(document.querySelectorAll('li, [role="option"], a, button'));
+                return items.some(el => (el.textContent || '').includes(partNo)) ||
+                       items.some(el => (el.textContent || '').includes('Show all results'));
+            }""",
+            arg=supplier_part_no,
+            timeout=8000,
+        )
+    except PlaywrightTimeout:
+        raise RuntimeError(MSG_NOT_FOUND)
+
+    current_value = await search_inp.input_value()
+    if current_value != supplier_part_no:
+        log.warning(
+            "Mekrs search input drifted from %r to %r; correcting before submit",
+            supplier_part_no,
+            current_value,
+        )
+        await search_inp.fill(supplier_part_no)
+        await page.wait_for_function(
+            """(expected) => {
+                const el = document.querySelector("input[placeholder='Search by name, code, DIN']");
+                return !!el && el.value === expected;
+            }""",
+            arg=supplier_part_no,
+            timeout=3000,
+        )
+
+    log.info("Submitting Mekrs product search with Enter")
+    await search_inp.press("Enter")
+
+    try:
+        await page.wait_for_function(
+            "() => location.pathname.includes('/products')",
+            timeout=10000,
+        )
+    except PlaywrightTimeout:
+        raise RuntimeError(MSG_NOT_FOUND)
+    try:
+        await page.wait_for_function(
+            "() => document.body.innerText.includes('without VAT')",
+            timeout=8000,
+        )
+    except PlaywrightTimeout:
+        log.warning("Mekrs results page did not show 'without VAT' in time")
+
+    current_currency = await _current_mekrs_currency(page)
+    log.info("Mekrs active currency on results page: %s", current_currency)
+    currency_pattern = _price_currency_pattern(current_currency)
+    try:
+        await page.wait_for_function(
+            """(pattern) => {
+                const text = document.body.innerText || '';
+                return new RegExp(`[\\\\d][\\\\d.,]*\\\\s*${pattern}`, 'i').test(text);
+            }""",
+            arg=currency_pattern,
+            timeout=10000,
+        )
+        log.info("Mekrs %s price text detected in DOM", current_currency)
+    except PlaywrightTimeout:
+        log.warning("Mekrs %s price text not found in DOM after 10s — attempting extraction anyway", current_currency)
+    log.info(f"Results page loaded: {page.url}")
+    signals = await _capture_auth_signals(page)
+    if signals["body_has_login_prompt"] or (
+        signals["body_has_with_vat"] and not signals["body_has_without_vat"]
+    ):
+        raise RuntimeError(
+            "eshop.mekrs.cz is showing public prices only; authenticated B2B pricing is not active."
+        )
+
+    cards = page.locator("[data-testid='product-card']")
+    card_count = await cards.count()
+    log.info(f"Product cards on results page: {card_count}")
+
+    # ── Step 4: extract data ──────────────────────────────────────────
+    await emit("Reading price and stock from eshop.mekrs.cz…")
+    results_data = await _extract_results_page_data(page, current_currency)
+    if not results_data:
+        # A product card present without a usable price = found but not priced;
+        # no card at all = the product is not in the webshop.
+        if card_count > 0:
+            raise RuntimeError(MSG_NOT_PRICED)
+        raise RuntimeError(MSG_NOT_FOUND)
+    price_str = results_data["price_str"]
+    unit_str = results_data["unit_str"]
+    price_elem_html = results_data["price_html"]
+    stock_str = results_data["stock_str"] or ""
+    card_snippet = results_data["block_html"]
+    log.info(
+        "Mekrs results block: stock=%r, price=%r, unit=%r",
+        stock_str,
+        price_str,
+        unit_str,
+    )
+
+    log.info(f"Price element HTML: {price_elem_html}")
+    log.info(f"Raw — price: '{price_str}', unit: '{unit_str}', stock: '{stock_str}'")
+
+    if not price_str or not has_numeric_price(price_str):
+        log.error(f"Price not found in target card — card HTML snippet:\n{card_snippet}")
+        raise RuntimeError(MSG_NOT_PRICED)
+
+    price_raw = _parse_price_value(price_str)
+
+    qty_match = re.search(r"([\d,]+)\s*pcs", unit_str)
+    if qty_match:
+        price_unit_qty = int(qty_match.group(1).replace(",", ""))
+    else:
+        price_unit_qty = 1
+        log.warning(f"Could not parse unit qty from '{unit_str}', assuming 1")
+
+    stock = _parse_stock(stock_str)
+    log.info("Parsed: %s %s / %s pcs, stock: %s", price_raw, current_currency, price_unit_qty, stock)
+
+    result = {
+        "supplier_part_no": supplier_part_no,
+        "price_raw":        price_raw,
+        "price_unit_qty":   price_unit_qty,
+        "currency":         current_currency,
+        "unit":             "db",
+        "stock":            stock,
+        "queried_at":       datetime.now().isoformat(timespec="seconds"),
+    }
+    log.info(f"Final result: {result}")
+    return result
+
+
+# ── Single lookup (price agent) ──────────────────────────────────────────────
 
 async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None) -> dict:
     async def emit(msg: str):
@@ -360,264 +630,10 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         if on_progress:
             await on_progress({"step": "browser", "status": "running", "msg": msg})
 
-    session = load_session(_SESSION_FILE)
-    use_session = bool(session and session_is_fresh(session, _SESSION_MAX_AGE_H))
-
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
-
-        if use_session:
-            log.info("Restoring saved session (age < 20 h)")
-            try:
-                context = await browser.new_context(storage_state=session["state"])
-            except Exception as exc:
-                log.warning(f"Could not restore session state: {exc}")
-                use_session = False
-                invalidate_session(_SESSION_FILE)
-                context = await browser.new_context()
-        else:
-            if session:
-                log.info("Session stale (> 20 h) — proactive re-login")
-                invalidate_session(_SESSION_FILE)
-            context = await browser.new_context()
-
-        page = await context.new_page()
-
-        async def handle_dialog(dialog):
-            log.info(f"Dialog dismissed: '{dialog.message}'")
-            await dialog.accept()
-
-        page.on("dialog", handle_dialog)
-
+        browser, context, page = await _login_or_restore(pw, emit)
         try:
-            await emit("Opening eshop.mekrs.cz…")
-
-            # ── Step 1: try session restore ───────────────────────────────────
-            if use_session:
-                await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=20000)
-                state = await _wait_for_auth_state(page, timeout_ms=8000)
-                signals = await _capture_auth_signals(page)
-                log.info(f"After session restore, URL: {page.url}")
-
-                if state == "login" or signals["login_visible"] or signals["login_button_visible"]:
-                    log.warning("Session invalid (login form visible) — falling back to full login")
-                    use_session = False
-                    invalidate_session(_SESSION_FILE)
-                    await browser.close()
-                    browser  = await pw.chromium.launch(headless=True)
-                    context  = await browser.new_context()
-                    page     = await context.new_page()
-                    page.on("dialog", handle_dialog)
-                elif state == "search":
-                    log.info("Session valid — login skipped")
-                else:
-                    log.warning("Session restore ended in unknown state — retrying home page before login fallback")
-                    await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=20000)
-                    state = await _wait_for_auth_state(page, timeout_ms=8000)
-                    if state != "search":
-                        use_session = False
-                        invalidate_session(_SESSION_FILE)
-                        await browser.close()
-                        browser  = await pw.chromium.launch(headless=True)
-                        context  = await browser.new_context()
-                        page     = await context.new_page()
-                        page.on("dialog", handle_dialog)
-                    else:
-                        log.info("Session valid after retry — login skipped")
-
-                await _ensure_currency_eur(page, emit=emit)
-                await save_session(context, _SESSION_FILE)
-
-            # ── Step 2: full login (if needed) ───────────────────────────────
-            if not use_session:
-                await page.goto(HOME_URL, wait_until="domcontentloaded")
-                await page.wait_for_selector("input[name='username']", timeout=8000)
-                log.info(f"Loaded: {page.url}")
-
-                await emit("Logging in to eshop.mekrs.cz…")
-                username = os.getenv("SUPPLIER_D_USERNAME", "")
-                log.info(f"Logging in as: {username}")
-
-                user_input = page.locator("input[name='username']")
-                pass_input = page.locator("input[name='password']")
-                await user_input.click()
-                await user_input.fill("")
-                await user_input.type(username, delay=20)
-                await pass_input.click()
-                await pass_input.fill("")
-                await pass_input.type(os.getenv("SUPPLIER_D_PASSWORD", ""), delay=20)
-                log.info("Submitting Mekrs login with Enter on password field")
-                await pass_input.press("Enter")
-                await page.wait_for_timeout(3000)
-                state = await _wait_for_auth_state(page, timeout_ms=12000)
-                signals = await _capture_auth_signals(page)
-                if state == "unknown":
-                    log.warning("Login did not resolve to search/login state — retrying homepage")
-                    await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=20000)
-                    state = await _wait_for_auth_state(page, timeout_ms=8000)
-                    signals = await _capture_auth_signals(page)
-
-                if state == "login" or signals["login_visible"] or signals["login_button_visible"]:
-                    raise RuntimeError(
-                        "Login to eshop.mekrs.cz did not establish an authenticated session."
-                    )
-                if state != "search":
-                    raise RuntimeError(
-                        "eshop.mekrs.cz login completed, but the search page did not become available."
-                    )
-
-                log.info(f"Login successful — URL: {page.url}")
-                await _ensure_currency_eur(page, emit=emit)
-                await save_session(context, _SESSION_FILE)
-
-            # ── Step 3: search via autocomplete ──────────────────────────────
-            await emit(f"Searching for part {supplier_part_no} on eshop.mekrs.cz…")
-            search_inp = page.locator("input[placeholder='Search by name, code, DIN']").first
-            await search_inp.wait_for(state="visible", timeout=8000)
-            await search_inp.click()
-            await search_inp.fill("")
-            try:
-                await page.wait_for_function(
-                    "() => { const el = document.querySelector(\"input[placeholder='Search by name, code, DIN']\"); return !!el && el.value === ''; }",
-                    timeout=3000,
-                )
-            except PlaywrightTimeout:
-                log.warning("Mekrs search box did not clear via fill(''); trying select-all fallback")
-                await search_inp.press("Control+A")
-                await search_inp.press("Backspace")
-            await search_inp.type(supplier_part_no, delay=50)
-            log.info(f"Typed '{supplier_part_no}' into search box, waiting for Mekrs search suggestions…")
-            current_currency = await _current_mekrs_currency(page)
-            log.info("Mekrs active currency before search: %s", current_currency)
-
-            try:
-                await page.wait_for_function(
-                    """(partNo) => {
-                        const items = Array.from(document.querySelectorAll('li, [role="option"], a, button'));
-                        return items.some(el => (el.textContent || '').includes(partNo)) ||
-                               items.some(el => (el.textContent || '').includes('Show all results'));
-                    }""",
-                    arg=supplier_part_no,
-                    timeout=8000,
-                )
-            except PlaywrightTimeout:
-                raise RuntimeError(MSG_NOT_FOUND)
-
-            current_value = await search_inp.input_value()
-            if current_value != supplier_part_no:
-                log.warning(
-                    "Mekrs search input drifted from %r to %r; correcting before submit",
-                    supplier_part_no,
-                    current_value,
-                )
-                await search_inp.fill(supplier_part_no)
-                await page.wait_for_function(
-                    """(expected) => {
-                        const el = document.querySelector("input[placeholder='Search by name, code, DIN']");
-                        return !!el && el.value === expected;
-                    }""",
-                    arg=supplier_part_no,
-                    timeout=3000,
-                )
-
-            log.info("Submitting Mekrs product search with Enter")
-            await search_inp.press("Enter")
-
-            try:
-                await page.wait_for_function(
-                    "() => location.pathname.includes('/products')",
-                    timeout=10000,
-                )
-            except PlaywrightTimeout:
-                raise RuntimeError(MSG_NOT_FOUND)
-            try:
-                await page.wait_for_function(
-                    "() => document.body.innerText.includes('without VAT')",
-                    timeout=8000,
-                )
-            except PlaywrightTimeout:
-                log.warning("Mekrs results page did not show 'without VAT' in time")
-
-            current_currency = await _current_mekrs_currency(page)
-            log.info("Mekrs active currency on results page: %s", current_currency)
-            currency_pattern = _price_currency_pattern(current_currency)
-            try:
-                await page.wait_for_function(
-                    """(pattern) => {
-                        const text = document.body.innerText || '';
-                        return new RegExp(`[\\\\d][\\\\d.,]*\\\\s*${pattern}`, 'i').test(text);
-                    }""",
-                    arg=currency_pattern,
-                    timeout=10000,
-                )
-                log.info("Mekrs %s price text detected in DOM", current_currency)
-            except PlaywrightTimeout:
-                log.warning("Mekrs %s price text not found in DOM after 10s — attempting extraction anyway", current_currency)
-            log.info(f"Results page loaded: {page.url}")
-            signals = await _capture_auth_signals(page)
-            if signals["body_has_login_prompt"] or (
-                signals["body_has_with_vat"] and not signals["body_has_without_vat"]
-            ):
-                raise RuntimeError(
-                    "eshop.mekrs.cz is showing public prices only; authenticated B2B pricing is not active."
-                )
-
-            cards = page.locator("[data-testid='product-card']")
-            card_count = await cards.count()
-            log.info(f"Product cards on results page: {card_count}")
-
-            # ── Step 4: extract data ──────────────────────────────────────────
-            await emit("Reading price and stock from eshop.mekrs.cz…")
-            results_data = await _extract_results_page_data(page, current_currency)
-            if not results_data:
-                # A product card present without a usable price = found but not priced;
-                # no card at all = the product is not in the webshop.
-                if card_count > 0:
-                    raise RuntimeError(MSG_NOT_PRICED)
-                raise RuntimeError(MSG_NOT_FOUND)
-            price_str = results_data["price_str"]
-            unit_str = results_data["unit_str"]
-            price_elem_html = results_data["price_html"]
-            stock_str = results_data["stock_str"] or ""
-            card_snippet = results_data["block_html"]
-            log.info(
-                "Mekrs results block: stock=%r, price=%r, unit=%r",
-                stock_str,
-                price_str,
-                unit_str,
-            )
-
-            log.info(f"Price element HTML: {price_elem_html}")
-            log.info(f"Raw — price: '{price_str}', unit: '{unit_str}', stock: '{stock_str}'")
-
-            if not price_str or not has_numeric_price(price_str):
-                log.error(f"Price not found in target card — card HTML snippet:\n{card_snippet}")
-                raise RuntimeError(MSG_NOT_PRICED)
-
-            price_raw = _parse_price_value(price_str)
-
-            qty_match = re.search(r"([\d,]+)\s*pcs", unit_str)
-            if qty_match:
-                price_unit_qty = int(qty_match.group(1).replace(",", ""))
-            else:
-                price_unit_qty = 1
-                log.warning(f"Could not parse unit qty from '{unit_str}', assuming 1")
-
-            stock = _parse_stock(stock_str)
-            log.info("Parsed: %s %s / %s pcs, stock: %s", price_raw, current_currency, price_unit_qty, stock)
-
-            result = {
-                "supplier_part_no": supplier_part_no,
-                "price_raw":        price_raw,
-                "price_unit_qty":   price_unit_qty,
-                "currency":         current_currency,
-                "unit":             "db",
-                "stock":            stock,
-                "queried_at":       datetime.now().isoformat(timespec="seconds"),
-            }
-            log.info(f"Final result: {result}")
-            return result
-
+            return await _search_and_parse(page, supplier_part_no, emit)
         except RuntimeError:
             raise
         except Exception as exc:
@@ -626,3 +642,49 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         finally:
             await browser.close()
             log.info("Browser closed")
+
+
+# ── Batch lookup (batch agent) ───────────────────────────────────────────────
+
+async def fetch_prices(
+    part_nos: list[str],
+    on_progress: Callable | None = None,
+    on_item: Callable | None = None,
+) -> list[dict]:
+    """Look up several parts in ONE mekrs session (login + EUR switch once)."""
+    async def emit(msg: str):
+        log.info(msg)
+        if on_progress:
+            await on_progress({"step": "browser", "status": "running", "msg": msg})
+
+    results: list[dict] = []
+    if not part_nos:
+        return results
+
+    total = len(part_nos)
+
+    async with async_playwright() as pw:
+        browser, context, page = await _login_or_restore(pw, emit)
+        try:
+            for i, pn in enumerate(part_nos):
+                try:
+                    r = await _search_and_parse(page, pn, emit)
+                    results.append(r)
+                    if on_item:
+                        await on_item(i, total, pn, r, None)
+                except RuntimeError as exc:
+                    msg = str(exc)
+                    results.append({"supplier_part_no": pn, "error": msg})
+                    if on_item:
+                        await on_item(i, total, pn, None, msg)
+                except Exception as exc:
+                    log.exception(f"Unexpected error during eshop.mekrs.cz scrape ({pn}): {exc}")
+                    msg = f"eshop.mekrs.cz scrape failed: {exc}"
+                    results.append({"supplier_part_no": pn, "error": msg})
+                    if on_item:
+                        await on_item(i, total, pn, None, msg)
+        finally:
+            await browser.close()
+            log.info("Browser closed")
+
+    return results
