@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 This file is the working technical guide for agents modifying this repository.
-Last verified against the codebase: **2026-06-13**.
+Last verified against the codebase: **2026-06-21**.
 
 ## Project Purpose
 
@@ -16,7 +16,21 @@ A buyer enters an internal Gép-Coop part number. The application:
 6. Streams progress and results to the browser with Server-Sent Events.
 7. Ranks comparable prices and recommends the cheapest supplier.
 
-There are currently **13 implemented supplier integrations**.
+There are currently **14 implemented supplier integrations** (Vipa added 2026-06).
+
+## Two-App Platform
+
+This repository hosts **two separate applications**:
+
+| App | Port | Description |
+|---|---|---|
+| Price Agent | 8080 | Single part number lookup, real-time result cards |
+| Batch Price Agent | 8001 | Bulk lookup (up to 50 parts × 14 suppliers), matrix view + Excel export |
+
+Both apps are served from the same Docker Compose stack (`docker-compose.yml` in the root).
+The Batch Price Agent lives under `batch-price-agent/` and imports scrapers from this repo at runtime — see `batch-price-agent/README.md` for its full documentation.
+
+The Price Agent's UI (`ui/index.html`) includes an **app-selector page** that lets the buyer switch between the two apps. Clicking the Batch tile navigates to port 8001. The app-selector has the same full-screen background (screw photograph + mesh + vignette + spotlight effect) as the login page.
 
 ## Architecture
 
@@ -28,7 +42,7 @@ There are currently **13 implemented supplier integrations**.
 [FastAPI: main.py]
   |-- authentication and admin operations
   |-- mapping preview and query orchestration
-  |-- max 4 concurrent scraper executions
+  |-- max 4 concurrent scraper executions (SCRAPER_LIMIT = asyncio.Semaphore(4))
   |-- recommendation and run logging
   |-- supplier deep-links and shared login helper
   |
@@ -37,8 +51,11 @@ There are currently **13 implemented supplier integrations**.
   |     |-- supplier scraper dispatch
   |     `-- per-piece and EUR-to-HUF normalisation
   |
-  |-- browser/supplier_<id>.py
-  |     `-- Playwright login, search, price and stock extraction
+  |-- browser/supplier_<id>.py          (14 scrapers)
+  |     |-- fetch_price()               single-part lookup (price agent)
+  |     |-- fetch_prices()              batch lookup (batch agent, one browser session)
+  |     |-- _login_or_restore()         shared: browser launch + session restore/login
+  |     `-- _search_and_parse()         shared: search one part, return price+stock
   |
   `-- Supabase
         |-- article_mapping
@@ -57,8 +74,7 @@ Important runtime properties:
 - Authentication tokens are stored only in the in-memory `sessions` dictionary.
   All users must log in again after a server restart.
 - The UI is served with `Cache-Control: no-store`.
-- The application depends on Supabase for mappings and authentication. The old CSV
-  fallback is not active in the current lookup flow.
+- The application depends on Supabase for mappings and authentication.
 
 ## Project Structure
 
@@ -75,23 +91,32 @@ browser/
     Canonical buyer-facing not-found / not-priced messages.
   session_utils.py
     Playwright storage_state persistence and freshness checks.
+  vipa_otp.py
+    Vipa OTP (one-time token) login flow. Shared with batch agent.
   supplier_<id>.py
-    One scraper per implemented supplier.
+    One scraper per implemented supplier. Each exposes both fetch_price()
+    (single lookup) and fetch_prices() (batch lookup, one session).
 
 ui/index.html
-  Entire frontend: login, mapping preview, supplier selection, progress,
-  result cards, feedback, webshop login helper and admin panel.
+  Entire frontend: login page, app-selector, mapping preview, supplier
+  selection, progress, result cards, feedback, webshop login helper and
+  admin panel. Single-file, no build step.
 
 deploy/
   Supabase SQL migrations, systemd unit and Hetzner setup script.
 
 assets/
   logo.png
+  tile-single.jpg           App-selector tile image for Price Agent.
+  tile-batch.jpg            App-selector tile image for Batch Agent.
   sessions/                 Runtime Playwright sessions, gitignored.
   homepage_info.json        Runtime local mirror, gitignored.
 
 docs/webshop_utmutato.md
   Operational webshop notes.
+
+batch-price-agent/
+  Companion bulk-query application. See batch-price-agent/README.md.
 
 Dockerfile
 docker-compose.yml
@@ -123,9 +148,23 @@ Registration is split between `SUPPLIER_META` in `main.py` and
 | `wasishop` | wasishop.de | `SUPPLIER_K` | EUR | none |
 | `argip` | table-backed import | none | EUR | no browser login |
 | `inoxmare` | inoxmare.com | `SUPPLIER_L` | EUR | none |
+| `vipa` | vipafasteners.com | `SUPPLIER_VIPA` | EUR | OTP e-mail token |
 
 `ferdinand_part_no` is supported by mapping import/export, but Ferdinand is not
 in `_IMPLEMENTED_SUPPLIERS`, has no scraper, and is therefore not queried.
+
+### Vipa (14th supplier — OTP login)
+
+Vipa uses a one-time password delivered by e-mail (no static password).
+The login flow is in `browser/vipa_otp.py` and shared between both apps.
+The session is saved to `assets/sessions/vipa_session.json` with a 20-hour
+freshness window. If the price agent logs in, the batch agent reuses the same
+session and vice versa.
+
+In the price agent UI, a Vipa OTP panel appears in the result card when Vipa
+is the selected/running supplier and no live session exists.
+
+Relevant env vars: `SUPPLIER_VIPA_URL`, `SUPPLIER_VIPA_USERNAME` (no password).
 
 ## Configuration and Secrets
 
@@ -136,9 +175,9 @@ Required core variables:
 
 ```text
 SUPABASE_URL
-SUPABASE_KEY
-PRIMARY_ADMIN_USERNAME        Optional; defaults in main.py.
-EUR_TO_HUF_RATE               Optional; defaults to 400.
+SUPABASE_KEY             Must be supabase-py >= 2.15.0 compatible (sb_secret_* format).
+PRIMARY_ADMIN_USERNAME   Optional; defaults in main.py.
+EUR_TO_HUF_RATE          Optional; defaults to 400.
 ```
 
 Each supplier uses:
@@ -154,13 +193,15 @@ Additional fields:
 ```text
 SUPPLIER_F_CUSTOMER_CODE
 SUPPLIER_H_SHORTNAME
+SUPPLIER_VIPA_URL
+SUPPLIER_VIPA_USERNAME
 ```
 
 Homepage information storage can be overridden with:
 
 ```text
-SUPABASE_INFO_BUCKET          Default: internal-docs
-SUPABASE_INFO_PATH            Default: homepage/info.json
+SUPABASE_INFO_BUCKET     Default: internal-docs
+SUPABASE_INFO_PATH       Default: homepage/info.json
 ```
 
 ### Credential update behaviour
@@ -211,7 +252,6 @@ inoxmare_part_no
 The `inoxmare_part_no` column is queried by the implemented Inoxmare scraper.
 The `argip_part_no` column is queried through the separate `argip_price_list`
 table populated from the customer-uploaded Argip Excel.
-The `vipa_part_no` column is still stored for forward compatibility only.
 
 Admin mapping upload:
 
@@ -266,7 +306,7 @@ The admin can add, edit, delete and reorder rows in the Webshop login tab.
 Blank label/value pairs are ignored. The database trigger and backend both
 enforce the maximum of five active rows.
 
-Active rows are attached to lookup and query results as `info_items`. Result
+Active rows are attached to lookup and query results as `info_items`.
 
 ### `argip_price_list`
 
@@ -283,7 +323,7 @@ Created by `deploy/supabase_gepcoop_stock.sql`.
 
 Stores the separately uploaded own-stock table shown as the dedicated Gép-Coop
 result card. Uploads fully replace the table content.
-cards show the first two rows and put additional rows in a collapsible section.
+Cards show the first two rows and put additional rows in a collapsible section.
 No block is rendered when the list is empty.
 
 ### Homepage information
@@ -296,8 +336,7 @@ path:   homepage/info.json
 ```
 
 The application also writes `assets/homepage_info.json` as a local fallback and
-mirror. Empty text hides the block. This replaces the previous managed-guide-PDF
-workflow; there are no current `/guide/pdf` or `/admin/guide/upload` routes.
+mirror. Empty text hides the block.
 
 ## Authentication and Authorisation
 
@@ -395,12 +434,21 @@ Login-related scraper errors are detected with keyword matching and emitted as
 
 ## Scraper Contract
 
-Every `browser/supplier_<id>.py` exposes:
+Every `browser/supplier_<id>.py` exposes **two** entrypoints:
 
 ```python
+# Single lookup — used by price agent
 async def fetch_price(supplier_part_no: str, on_progress=None) -> dict:
     ...
+
+# Batch lookup — used by batch agent (one browser session, many searches)
+async def fetch_prices(part_nos: list[str], on_progress=None, on_item=None) -> list[dict]:
+    ...
 ```
+
+Both share two internal helpers that must never be duplicated:
+- `_login_or_restore(pw, emit)` — launches Chromium, restores session or logs in fresh.
+- `_search_and_parse(page, supplier_part_no, emit)` — searches one part, returns result dict.
 
 Standard successful raw response:
 
@@ -417,27 +465,10 @@ Standard successful raw response:
 }
 ```
 
-`product_url` is optional and currently captured by some scrapers when the exact
-detail page is known. The frontend prefers it over a generated search URL.
+`product_url` is optional and currently captured by most scrapers.
+The frontend prefers it over a generated search URL.
 
-Argip returns additional informational fields:
-
-```json
-{
-  "argip_base_price_eur": 2.24,
-  "argip_price_lvl_1_eur": 2.13,
-  "argip_moq_lvl_1_pcs": 5000,
-  "argip_price_lvl_2_eur": 2.01,
-  "argip_moq_lvl_2_pcs": 25000
-}
-```
-
-`stock` may be:
-
-- integer quantity;
-- location dictionary;
-- human-readable string such as `Raktáron`;
-- `None`.
+`stock` may be integer quantity, location dictionary, human-readable string, or `None`.
 
 Scraper responsibilities:
 
@@ -450,8 +481,17 @@ Scraper responsibilities:
 7. Return raw price and its quantity basis, never a pre-normalised guess.
 8. Close Chromium in a `finally` path.
 
-Most sessions use a 20-hour freshness window. Reyher uses 23 hours. Koelner has
-site-specific restore logic but still persists through `session_utils.py`.
+Most sessions use a 20-hour freshness window. Reyher uses 23 hours.
+
+### Login stability notes (batch context)
+
+Under high parallel load (`BATCH_SUPPLIER_LIMIT=8`) two suppliers showed false
+login failures. Fixes applied:
+
+- **Fabory**: login check changed from `wait_for_url("…/hu")` to
+  `wait_for_function("!pathname.includes('/login')")`, timeout 15 s → 30 s.
+- **Reyher**: `_is_logged_in` Quickinput selector timeout 4 000 ms → 10 000 ms.
+- `BATCH_SUPPLIER_LIMIT` reduced to **4** for stability.
 
 ## Canonical Buyer Feedback
 
@@ -466,12 +506,6 @@ Use `MSG_NOT_FOUND` only when the mapped supplier part cannot be found after
 login/search. Use `MSG_NOT_PRICED` when the exact product is present but no
 numeric price is available.
 
-`has_numeric_price()` treats placeholders such as POA, request-only text, dashes
-or empty values as not priced.
-
-Reyher normally falls back to a manual card for unexpected automation errors,
-but these two canonical outcomes are deliberately re-raised and shown directly.
-
 ## Price Normalisation and Recommendation
 
 Scrapers return the supplier's raw price and price basis:
@@ -484,7 +518,6 @@ For non-HUF currencies, only EUR is currently supported:
 
 ```python
 price_per_db_huf = price_per_db * EUR_TO_HUF_RATE
-fx_huf_rate = EUR_TO_HUF_RATE
 ```
 
 The default exchange rate is 400 HUF/EUR if the environment value is absent,
@@ -497,34 +530,43 @@ invalid or non-positive. Admin changes update `.env` and `os.environ` immediatel
 - returns the cheapest supplier;
 - reports the difference and saving percentage against second place;
 - adds a stock warning when the runner-up's numeric stock is more than double
-  the winner's stock;
-- does not incorporate ordering-information rows into ranking.
-
-## Product Links and Webshop Login Helper
-
-The result-card button uses this order:
-
-1. Open scraper-provided `product_url` when available.
-2. Otherwise call `POST /supplier/open` and use `_SUPPLIER_SEARCH_URLS`.
-3. For suppliers without a real part-specific URL, open the home/portal and copy
-   the supplier part number to the clipboard.
-
-Hopefix and KingB2B currently use home/portal fallback URLs. Argip deliberately
-has no webshop-open button because it is table-backed only. Other registered
-suppliers have search/deep-link templates.
-
-The Webshop login helper calls `GET /supplier/login-info`, opens supplier login
-pages in the buyer's browser and supports copying shared credentials. Clipboard
-copy first uses the secure-context Clipboard API and then falls back to a hidden
-textarea plus `document.execCommand('copy')`, so HTTP deployments on plain IP
-addresses still support click-to-copy in most browsers.
+  the winner's stock.
 
 ## Frontend Behaviour
 
-`ui/index.html` is intentionally a single-file application with embedded CSS and
-JavaScript. There is no frontend build step.
+`ui/index.html` is a single-file application with embedded CSS and JavaScript.
+There is no frontend build step.
 
-Main buyer workflow:
+### Pages / states
+
+| Page element | ID | Visible when |
+|---|---|---|
+| Login page | `#login-page` | No bearer token in `sessionStorage`. **Starts hidden** — boot JS shows it only if no token, preventing a login flash when switching apps. |
+| App selector | `#app-select-page` | After login, or when returning from batch agent with `?select=1`. Same background as login (photo + mesh + vignette + spotlight). |
+| Main app | `#app-page` | After entering the Price Agent from the selector. |
+
+### Boot logic
+
+```javascript
+// login-page starts with class="hidden" in HTML
+if (authToken) {
+  bootstrapSession();       // validate token, then show app or app-selector
+} else {
+  document.getElementById('login-page').classList.remove('hidden');
+}
+```
+
+### App selector
+
+- Two tiles: Price Agent and Batch Price Agent.
+- Clicking Price Agent tile → `showApp()`.
+- Clicking Batch tile → opens a password modal → on success redirects to port 8001.
+- Background: identical to login page (full-screen photograph, mesh grid, vignette,
+  mouse-following spotlight). Header is `position:absolute` so tiles are centered
+  in the full viewport on all screen sizes.
+- Spotlight effect generalised to work on both login and app-selector pages.
+
+### Main buyer workflow
 
 - session bootstrap from `sessionStorage`;
 - optional homepage announcement;
@@ -536,14 +578,11 @@ Main buyer workflow:
 - product/deep-link opening;
 - webshop login helper.
 
-Admin tabs:
+### Admin tabs
 
 - Admin account
 - Users
-- Webshop login
-  - homepage information
-  - supplier credentials
-  - supplier ordering information
+- Webshop login (homepage info, supplier credentials, supplier ordering info)
 - Part-number mapping
 - Argip price list
 - Gép-Coop stock
@@ -563,11 +602,7 @@ playwright install chromium
 uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Local URL:
-
-```text
-http://localhost:8000/
-```
+Local URL: `http://localhost:8000/`
 
 Docker:
 
@@ -575,21 +610,24 @@ Docker:
 docker compose up -d --build
 ```
 
-Docker URL:
-
-```text
-http://localhost:8080/
-```
+Docker URL: `http://localhost:8080/`
 
 The Docker image is based on the Playwright Python `v1.60.0-noble` image.
+`requirements.txt` must pin `playwright==1.60.0` to match — a mismatch causes
+`BrowserType.launch: Executable doesn't exist` at runtime.
+
 `docker-compose.yml` mounts both `assets/` and `.env`, allocates 256 MB shared
 memory and uses `restart: unless-stopped`.
 
 ## Deployment
 
 Hetzner deployment uses Docker Compose under `/opt/price_agent` and the
-`price-agent.service` systemd unit. A plain-IP deployment can additionally put
-Nginx in front of the container on port 80, proxying to `127.0.0.1:8080`.
+`price-agent.service` systemd unit.
+
+Server: Hetzner CX22 (2 vCPU, 4 GB RAM) — ~€4.51/month.
+IP: `178.104.208.200`
+Price agent: `http://178.104.208.200:8080`
+Batch agent: `http://178.104.208.200:8001`
 
 Useful server commands:
 
@@ -597,22 +635,29 @@ Useful server commands:
 systemctl status price-agent
 systemctl restart price-agent
 journalctl -u price-agent -f
-docker compose -f /opt/price_agent/docker-compose.yml logs -f
+docker compose logs price-agent --tail=50
+docker compose logs batch-price-agent --tail=50
 ```
 
-Code-only updates still require rebuilding/recreating the container because the
-repository source is copied into the Docker image:
+Update workflow:
 
 ```bash
 cd /opt/price_agent
-git pull origin main
+git pull
 docker compose up -d --build
 ```
 
-SSE reverse proxies must disable buffering.
+SSE reverse proxies must disable buffering (`proxy_buffering off`).
 
-Headed Playwright helpers open windows on the server, not on a remote buyer's
-computer. Headless scraping and returned browser deep-links work remotely.
+## Known Deployment Pitfalls
+
+| Problem | Cause | Fix |
+|---|---|---|
+| `BrowserType.launch: Executable doesn't exist` | `playwright==X` in `requirements.txt` doesn't match the Docker base image version | Pin `playwright` to match the base image (currently `v1.60.0`) |
+| `invalid api key` from Supabase | `supabase-py < 2.15.0` doesn't support the `sb_secret_*` key format | Use `supabase>=2.15.0` in `requirements.txt` |
+| Login page flashes on app switch | `#login-page` without `class="hidden"` in HTML | Always start login page hidden; boot JS removes `.hidden` only if no token |
+| Docker build uses cache, old packages installed | `docker compose build` reuses pip layer | Run `docker compose build --no-cache` when `requirements.txt` changes |
+| git pull fails with auth error on server | GitHub token expired or not set in remote URL | `git remote set-url origin https://<user>:<token>@github.com/...` |
 
 ## Database Migrations
 
@@ -628,22 +673,26 @@ deploy/supabase_argip_price_list.sql
 deploy/supabase_gepcoop_stock.sql
 ```
 
-The repository does not contain the original `article_mapping` or `query_runs`
-table creation migrations, so those base tables must already exist.
+Batch agent additional migration (run once):
+
+```sql
+alter table batch_runs add column if not exists scheduled_at timestamptz;
+```
 
 ## Adding a Supplier
 
 1. Add `{supplier_id}_part_no` to `article_mapping` and the mapping upload column list.
-2. Add supplier metadata and environment prefix to `SUPPLIER_META`.
+2. Add supplier metadata and environment prefix to `SUPPLIER_META` in `main.py`.
 3. Add its default URL to `_SUPPLIER_URLS` in `agent/tools.py`.
-4. Create `browser/supplier_<id>.py` with the standard async contract.
+4. Create `browser/supplier_<id>.py` with both `fetch_price()` and `fetch_prices()`.
+   Use the shared `_login_or_restore` + `_search_and_parse` pattern.
 5. Add the ID to `_IMPLEMENTED_SUPPLIERS`.
 6. Add dispatch logic in `fetch_supplier_price()`.
 7. Add search and login URLs in `main.py`.
-8. Add headed/session maps only if that local-only flow is required.
-9. Add the supplier to frontend filters/labels.
+8. Add the supplier to `batch-price-agent/shared/supplier_registry.py`.
+9. Add the supplier to frontend filters/labels in both UIs.
 10. Verify raw unit quantity, currency, stock parsing, canonical errors, session
-    reuse and product-link behaviour.
+    reuse, product-link behaviour, and batch performance.
 
 ## Validation Before Finishing Changes
 
@@ -661,9 +710,10 @@ For API/UI changes, start the local server and check:
 
 ```text
 GET /health
-login
-mapping preview
-selected-supplier query
+login → app-selector appears (no login flash)
+enter price agent → mapping preview works
+selected-supplier query streams correctly
+switch to batch agent (tile click)
 admin save/reload
 ```
 
