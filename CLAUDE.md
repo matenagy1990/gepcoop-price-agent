@@ -624,7 +624,7 @@ memory and uses `restart: unless-stopped`.
 Hetzner deployment uses Docker Compose under `/opt/price_agent` and the
 `price-agent.service` systemd unit.
 
-Server: Hetzner CX22 (2 vCPU, 4 GB RAM) — ~€4.51/month.
+Server: Hetzner CPX42 (8 vCPU AMD, 16 GB RAM, 320 GB SSD) — ~€22.59/month.
 IP: `178.104.208.200`
 Price agent: `http://178.104.208.200:8080`
 Batch agent: `http://178.104.208.200:8001`

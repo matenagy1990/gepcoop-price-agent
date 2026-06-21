@@ -291,7 +291,7 @@ ha Dockerben fut) a 8001-es portra irányít át a Batch tile kattintásakor.
 
 ## 15. Szerver / deploy
 
-- Hetzner CX22 szerver: `178.104.208.200`
+- Hetzner CPX42 szerver (8 vCPU AMD, 16 GB RAM, 320 GB SSD): `178.104.208.200`
 - Batch agent URL: `http://178.104.208.200:8001`
 - A gyökér `docker-compose.yml` mindkét szolgáltatást indítja.
 - A batch konténer a price agent kódját **csak olvashatóan** (`ro`) csatolja,

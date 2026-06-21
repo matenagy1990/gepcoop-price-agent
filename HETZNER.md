@@ -1,7 +1,7 @@
 # Deploy Price Agent to Hetzner Cloud
 
 Colleagues can access the app from any device at a stable internet URL.
-Budget: ~€4.51/month (Hetzner CX22).
+Budget: ~€22.59/month (Hetzner CPX42).
 
 ---
 
@@ -9,7 +9,7 @@ Budget: ~€4.51/month (Hetzner CX22).
 
 | Component | Details |
 |---|---|
-| Server | Hetzner CX22 — 2 vCPU, 4 GB RAM, 40 GB SSD |
+| Server | Hetzner CPX42 — 8 vCPU (AMD), 16 GB RAM, 320 GB SSD |
 | OS | Ubuntu 24.04+ / current Hetzner Ubuntu image |
 | App | FastAPI + Playwright/Chromium, running in Docker |
 | URL | `http://<server-ip>:8080` or with Nginx `http://<server-ip>` |
@@ -25,7 +25,7 @@ No code changes are needed.
 1. Register at **hetzner.com/cloud**
 2. Create a new **Project**, then click **+ Add Server**
   - **Image:** current Ubuntu image offered by Hetzner
-   - **Type:** CX22 (€4.51/month)
+   - **Type:** CPX42 (€22.59/month)
    - **SSH keys:** paste your public key (`~/.ssh/id_rsa.pub` or `~/.ssh/id_ed25519.pub`).
      If you don't have one, generate it on your Mac:
      ```bash
