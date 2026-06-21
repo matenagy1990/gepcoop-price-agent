@@ -584,13 +584,13 @@
   }
 
   /* ── App Selector ── */
-  #app-select-page{min-height:100vh;display:flex;flex-direction:column;background:linear-gradient(135deg,#0d1437 0%,#121b4e 42%,#173f66 100%)}
-  .app-select-hdr{display:flex;justify-content:space-between;align-items:center;padding:16px 32px;border-bottom:1px solid rgba(255,255,255,.1)}
+  #app-select-page{position:relative;isolation:isolate;min-height:100vh;display:flex;flex-direction:column;overflow:hidden;background:linear-gradient(135deg,#0d1437 0%,#121b4e 42%,#173f66 100%)}
+  .app-select-hdr{position:absolute;top:0;left:0;right:0;z-index:10;display:flex;justify-content:space-between;align-items:center;padding:16px 32px;border-bottom:1px solid rgba(255,255,255,.1)}
   .app-select-hdr-brand{display:flex;align-items:center;gap:12px;color:#fff;font-size:16px;font-weight:600;opacity:.9}
   .app-select-hdr-right{display:flex;align-items:center;gap:14px;color:rgba(255,255,255,.65);font-size:13px}
   .app-select-logout{background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.22);color:#fff;padding:5px 14px;border-radius:20px;cursor:pointer;font-size:12px;transition:background .2s}
   .app-select-logout:hover{background:rgba(255,255,255,.2)}
-  .app-select-body{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 24px}
+  .app-select-body{position:relative;z-index:1;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:88px 24px 32px}
   .app-select-heading{color:rgba(255,255,255,.85);font-size:18px;font-weight:500;margin-bottom:36px;letter-spacing:.3px}
   .app-tiles{display:flex;gap:28px;flex-wrap:wrap;justify-content:center}
   .app-tile{width:675px;height:450px;border-radius:16px;overflow:hidden;cursor:pointer;position:relative;box-shadow:0 8px 32px rgba(0,0,0,.45);transition:transform .22s,box-shadow .22s,border-color .22s;border:2px solid rgba(255,255,255,.1)}
@@ -642,6 +642,10 @@
 
 <!-- APP SELECTOR -->
 <div id="app-select-page" class="hidden">
+  <div class="login-bg-photo" aria-hidden="true"></div>
+  <div class="login-bg-mesh" aria-hidden="true"></div>
+  <div class="login-bg-vignette" aria-hidden="true"></div>
+  <div class="login-spotlight" id="select-spotlight" aria-hidden="true"></div>
   <div class="app-select-hdr">
     <div class="app-select-hdr-brand">
       <img src="/logo.png" alt="Gép-Coop" style="height:30px;width:auto;filter:brightness(0) invert(1)">
@@ -1248,28 +1252,32 @@ document.getElementById('btn-eye').addEventListener('click', () => {
 });
 
 const loginPage = document.getElementById('login-page');
+const selectPage = document.getElementById('app-select-page');
 const loginSpotlight = document.getElementById('login-spotlight');
-let loginMoveTimer = null;
+const selectSpotlight = document.getElementById('select-spotlight');
+let spotMoveTimer = null;
 
-function setLoginSpotlight(x, y, moving) {
-  if (!loginSpotlight) return;
-  loginSpotlight.style.setProperty('--spot-x', `${x}px`);
-  loginSpotlight.style.setProperty('--spot-y', `${y}px`);
-  loginSpotlight.style.setProperty('--spot-size', moving ? '220px' : '300px');
+function setSpotlight(el, x, y, moving) {
+  if (!el) return;
+  el.style.setProperty('--spot-x', `${x}px`);
+  el.style.setProperty('--spot-y', `${y}px`);
+  el.style.setProperty('--spot-size', moving ? '220px' : '300px');
 }
 
-if (loginPage && loginSpotlight) {
-  const seedX = Math.round(window.innerWidth * 0.72);
-  const seedY = Math.round(window.innerHeight * 0.42);
-  setLoginSpotlight(seedX, seedY, false);
+const seedX = Math.round(window.innerWidth * 0.72);
+const seedY = Math.round(window.innerHeight * 0.42);
+setSpotlight(loginSpotlight, seedX, seedY, false);
+setSpotlight(selectSpotlight, seedX, seedY, false);
 
-  window.addEventListener('mousemove', (e) => {
-    if (loginPage.classList.contains('hidden')) return;
-    setLoginSpotlight(e.clientX, e.clientY, true);
-    if (loginMoveTimer) clearTimeout(loginMoveTimer);
-    loginMoveTimer = setTimeout(() => setLoginSpotlight(e.clientX, e.clientY, false), 160);
-  });
-}
+window.addEventListener('mousemove', (e) => {
+  const activeSpot = !loginPage.classList.contains('hidden') ? loginSpotlight
+                   : !selectPage.classList.contains('hidden') ? selectSpotlight
+                   : null;
+  if (!activeSpot) return;
+  setSpotlight(activeSpot, e.clientX, e.clientY, true);
+  if (spotMoveTimer) clearTimeout(spotMoveTimer);
+  spotMoveTimer = setTimeout(() => setSpotlight(activeSpot, e.clientX, e.clientY, false), 160);
+});
 
 async function doLogin() {
   const user = document.getElementById('login-user').value.trim();
