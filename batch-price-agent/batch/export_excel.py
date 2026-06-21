@@ -175,7 +175,7 @@ def _build_matrix_sheet(wb: Workbook, run_meta: dict, matrix: dict):
             link_cell.alignment = _CENTER
 
             if not mapping_ok or status in ("skipped", "pending", "no_mapping", ""):
-                price_cell.value     = "—"
+                price_cell.value     = "Hiányzó mapping"
                 price_cell.font      = _SMALL
                 price_cell.alignment = _CENTER
                 price_cell.fill      = _NOMAP_FILL
@@ -188,17 +188,19 @@ def _build_matrix_sheet(wb: Workbook, run_meta: dict, matrix: dict):
 
             elif status != "ok":
                 err_map = {
-                    "not_found":    "∅ nem található",
-                    "not_priced":   "⚠ nincs ár",
-                    "timeout":      "⏱ időtúllépés",
-                    "login_failed": "× belépési hiba",
+                    "not_found":    "Termék nincs a webshopban",
+                    "not_priced":   "Termék nincs beárazva",
+                    "timeout":      "Technikai hiba",
+                    "login_failed": "Technikai hiba",
                 }
-                err_text = err_map.get(status, f"× {status}")
+                err_text = err_map.get(status, "Technikai hiba")
                 price_cell.value     = err_text
                 price_cell.font      = Font(size=9, color="C00000")
                 price_cell.alignment = _CENTER
                 price_cell.fill      = _RED_FILL
-                stock_cell.value     = ""
+                stock_cell.value     = "—"
+                stock_cell.font      = Font(size=9, color="C00000")
+                stock_cell.alignment = _CENTER
                 stock_cell.fill      = _RED_FILL
                 link_cell.value      = ""
                 link_cell.fill       = _RED_FILL
@@ -259,6 +261,18 @@ def _build_matrix_sheet(wb: Workbook, run_meta: dict, matrix: dict):
 # Lap 2: Lapos részletes adatok (gépi feldolgozásra)
 # ──────────────────────────────────────────────────────────────────────────────
 
+_STATUS_LABEL = {
+    "ok":           "OK",
+    "not_found":    "Termék nincs a webshopban",
+    "not_priced":   "Termék nincs beárazva",
+    "timeout":      "Technikai hiba",
+    "login_failed": "Technikai hiba",
+    "no_mapping":   "Hiányzó mapping",
+    "skipped":      "Hiányzó mapping",
+    "pending":      "Hiányzó mapping",
+}
+
+
 def _build_detail_sheet(wb: Workbook, run_meta: dict, matrix: dict):
     ws = wb.create_sheet("Részletes adatok")
     ws.freeze_panes = "A2"
@@ -308,7 +322,7 @@ def _build_detail_sheet(wb: Workbook, run_meta: dict, matrix: dict):
                 cell_data.get("unit") or "",
                 price_huf if price_huf is not None else "",
                 cell_data.get("stock_quantity") if cell_data.get("stock_quantity") is not None else "",
-                cell_data.get("scrape_status") or "",
+                _STATUS_LABEL.get(cell_data.get("scrape_status") or "", cell_data.get("scrape_status") or "Hiányzó mapping"),
                 rank,
                 cell_data.get("error_message") or "",
             ]

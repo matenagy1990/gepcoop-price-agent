@@ -958,7 +958,7 @@ function renderPreview(data) {
       } else if (s.status === 'not_in_db') {
         tbody += `<td><span class="tag tag-red">✗ nem ismert</span></td>`;
       } else {
-        tbody += `<td><span class="tag tag-gray">— nincs mapping</span></td>`;
+        tbody += `<td><span class="tag tag-gray">Hiányzó mapping</span></td>`;
       }
     });
     tbody += '</tr>';
@@ -1368,20 +1368,20 @@ function _renderFilteredMatrix(items, sups) {
 
 function _renderMatrixCells(cell, rank) {
   if (!cell || cell.mapping_status !== 'mapped') {
-    return '<td colspan="3" class="cell-nomap" style="text-align:center;border-left:2px solid #dde3f0">— nincs mapping</td>';
+    return '<td colspan="3" class="cell-nomap" style="text-align:center;border-left:2px solid #dde3f0">Hiányzó mapping</td>';
   }
   const status = cell.scrape_status;
   if (status === 'skipped') {
-    return '<td colspan="3" class="cell-nomap" style="text-align:center;border-left:2px solid #dde3f0">—</td>';
+    return '<td colspan="3" class="cell-nomap" style="text-align:center;border-left:2px solid #dde3f0">Hiányzó mapping</td>';
   }
   if (status !== 'ok') {
     const errMsg = {
-      not_found: '∅ nem található',
-      not_priced: '⚠ nincs ár',
-      timeout: '⏱ időtúllépés',
-      login_failed: '🔒 belépési hiba',
-      error: '✗ hiba',
-    }[status] || ('✗ ' + (status || 'hiba'));
+      not_found: 'Termék nincs a webshopban',
+      not_priced: 'Termék nincs beárazva',
+      timeout: 'Technikai hiba',
+      login_failed: 'Technikai hiba',
+      error: 'Technikai hiba',
+    }[status] || 'Technikai hiba';
     return `<td colspan="3" class="cell-error" style="text-align:center;font-size:12px;border-left:2px solid #dde3f0">
       <span style="color:var(--red)">${errMsg}</span>
     </td>`;
