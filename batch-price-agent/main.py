@@ -645,7 +645,7 @@ async def export_excel(run_id: str):
 
         xlsx_bytes = generate_excel(run_meta, matrix)
 
-        safe_name = "".join(c if c.isalnum() or c in "- _" else "_" for c in run.get("project_name", "batch"))
+        safe_name = "".join(c if (c.isascii() and (c.isalnum() or c in "- _")) else "_" for c in run.get("project_name", "batch"))
         filename = f"batch_{safe_name}_{run_id[:8]}.xlsx"
 
         return Response(
