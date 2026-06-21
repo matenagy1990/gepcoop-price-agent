@@ -66,7 +66,6 @@ def generate_excel(run_meta: dict, matrix: dict) -> bytes:
     wb = Workbook()
     wb.remove(wb.active)
     _build_matrix_sheet(wb, run_meta, matrix)
-    _build_detail_sheet(wb, run_meta, matrix)
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
