@@ -606,7 +606,7 @@
 <body>
 
 <!-- LOGIN -->
-<div id="login-page">
+<div id="login-page" class="hidden">
   <div class="login-bg-photo" aria-hidden="true"></div>
   <div class="login-bg-mesh" aria-hidden="true"></div>
   <div class="login-bg-vignette" aria-hidden="true"></div>
@@ -1229,8 +1229,9 @@ syncResponsiveLayout();
 
 /* ══ BOOT ═══════════════════════════════════════════════════════ */
 if (authToken) {
-  document.getElementById('login-page').classList.add('hidden');
   bootstrapSession();
+} else {
+  document.getElementById('login-page').classList.remove('hidden');
 }
 
 /* ══ LOGIN ══════════════════════════════════════════════════════ */
