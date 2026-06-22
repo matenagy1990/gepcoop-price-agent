@@ -249,11 +249,25 @@ async def _search_and_parse(page, supplier_part_no: str, emit: Callable, navigat
     log.info(f"Product page URL: {page.url}")
 
     try:
-        await page.wait_for_selector("text=Nettó ár:", timeout=8000)
-        log.info("Product page loaded — 'Nettó ár:' label found")
+        # Wait until the price *value* (sibling of "Nettó ár:") contains a digit.
+        # The label appears immediately in static HTML; the value is populated later
+        # by Livewire/AJAX — so waiting only for the label caused intermittent
+        # not_priced errors when the value hadn't loaded yet.
+        await page.wait_for_function(
+            """() => {
+                for (const el of document.querySelectorAll('*')) {
+                    if (el.childElementCount === 0 && el.textContent.trim() === 'Nettó ár:') {
+                        const val = el.nextElementSibling?.textContent?.trim() ?? '';
+                        return /\\d/.test(val);
+                    }
+                }
+                return false;
+            }""",
+            timeout=10000,
+        )
+        log.info("Product page loaded — price value confirmed numeric")
     except PlaywrightTimeout:
-        log.error(f"Price label not found on product page: {page.url}")
-        # Product page opened but no price line is shown.
+        log.error(f"Price value not available on product page: {page.url}")
         raise RuntimeError(MSG_NOT_PRICED)
 
     # ── Step 6: extract price and stock ──────────────────────────────
