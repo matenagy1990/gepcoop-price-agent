@@ -23,9 +23,11 @@ Search flow:
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
+from urllib.parse import quote
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
@@ -39,6 +41,8 @@ LOGIN_URL    = "https://irontrade.hu/bejelentkezes"
 SEARCH_URL   = "https://irontrade.hu/kereso?name={part_no}"
 _SESSION_FILE = Path(__file__).parent.parent / "assets" / "sessions" / "irontrade_session.json"
 _SESSION_MAX_AGE_H = 20
+_SEARCH_READY_TIMEOUT = 12000
+_PRICE_READY_TIMEOUT = 15000
 
 _JS_NEXT_SIBLING = """
 (labelText) => {
@@ -50,28 +54,179 @@ _JS_NEXT_SIBLING = """
 }
 """
 
+_JS_LABEL_VALUE_CANDIDATES = """
+(labelText) => {
+    const candidates = [];
+    const add = (value) => {
+        const text = (value || '').replace(/\\s+/g, ' ').trim();
+        if (text && !candidates.includes(text)) candidates.push(text);
+    };
+
+    for (const el of document.querySelectorAll('*')) {
+        if (el.childElementCount !== 0 || el.textContent.trim() !== labelText) continue;
+
+        add(el.nextElementSibling?.textContent);
+
+        let sibling = el.nextElementSibling;
+        for (let i = 0; sibling && i < 5; i += 1, sibling = sibling.nextElementSibling) {
+            add(sibling.textContent);
+        }
+
+        let parent = el.parentElement;
+        for (let depth = 0; parent && depth < 3; depth += 1, parent = parent.parentElement) {
+            const text = (parent.innerText || '').replace(/\\s+/g, ' ').trim();
+            if (!text.includes(labelText)) continue;
+            add(text.replace(labelText, ' ').trim());
+        }
+    }
+    return candidates;
+}
+"""
+
+
+def _looks_like_price(text: str | None) -> bool:
+    return bool(text and has_numeric_price(text) and re.search(r"\b(?:Ft|HUF)\b", text, re.I))
+
+
+def _search_url(supplier_part_no: str) -> str:
+    return SEARCH_URL.format(part_no=quote(str(supplier_part_no), safe=""))
+
+
+def _norm_part(value: str | None) -> str:
+    """Loose part-number normalisation for exact-ish comparisons."""
+    return re.sub(r"[\s._/-]+", "", str(value or "")).upper()
+
+
+async def _extract_labeled_value(page, label: str) -> str | None:
+    candidates = await page.evaluate(_JS_LABEL_VALUE_CANDIDATES, label)
+    if not isinstance(candidates, list):
+        candidates = []
+
+    # Prefer concise values. Parent-block fallbacks are useful but often contain
+    # extra labels, so they are only used if no direct sibling-style value exists.
+    direct = await page.evaluate(_JS_NEXT_SIBLING, label)
+    if direct:
+        candidates.insert(0, direct)
+
+    for candidate in candidates:
+        text = re.sub(r"\s+", " ", str(candidate or "")).strip()
+        if text and label not in text:
+            return text
+
+    for candidate in candidates:
+        text = re.sub(r"\s+", " ", str(candidate or "").replace(label, " ")).strip()
+        if text:
+            return text
+    return None
+
+
+async def _extract_price_value(page) -> str | None:
+    from agent.tools import parse_price_string
+
+    candidates = await page.evaluate(_JS_LABEL_VALUE_CANDIDATES, "Nettó ár:")
+    if not isinstance(candidates, list):
+        candidates = []
+
+    direct = await page.evaluate(_JS_NEXT_SIBLING, "Nettó ár:")
+    if direct:
+        candidates.insert(0, direct)
+
+    price_patterns = [
+        r"\d[\d\s.]*,\d+\s*(?:Ft|HUF)\s*/\s*(?:\d[\d\s.,]*\s*)?\w+",
+        r"\d[\d\s.]*\s*(?:Ft|HUF)\s*/\s*(?:\d[\d\s.,]*\s*)?\w+",
+    ]
+
+    for raw in candidates:
+        text = re.sub(r"\s+", " ", str(raw or "").replace("Nettó ár:", " ")).strip()
+        if not _looks_like_price(text):
+            continue
+        try:
+            parse_price_string(text)
+            return text
+        except Exception:
+            pass
+        for pattern in price_patterns:
+            match = re.search(pattern, text, re.I)
+            if not match:
+                continue
+            candidate = match.group(0).strip()
+            try:
+                parse_price_string(candidate)
+                return candidate
+            except Exception:
+                continue
+    return None
+
 
 async def _find_exact_result_row(page, supplier_part_no: str):
+    wanted = _norm_part(supplier_part_no)
     rows = page.locator("table tbody tr")
     count = await rows.count()
     for idx in range(count):
         row = rows.nth(idx)
         try:
+            sku_links = row.locator(f"a[data-sku='{supplier_part_no}']")
+            if await sku_links.count():
+                return row
+
+            cells = row.locator("td")
+            for cell_idx in range(await cells.count()):
+                cell_text = (await cells.nth(cell_idx).inner_text()).strip()
+                if _norm_part(cell_text) == wanted:
+                    return row
+
             text = await row.inner_text()
         except Exception:
             continue
-        if supplier_part_no in text:
+        if wanted and wanted in _norm_part(text):
             return row
     return None
 
 
 async def _is_logged_in(page) -> bool:
     """
-    Session check: if the restored session is valid, irontrade.hu serves the search
-    page directly. If invalid, it redirects to /bejelentkezes (login page).
-    URL check is instant and more reliable than waiting for a DOM element.
+    Session check with negative and positive signals. URL redirect to the login
+    page is the strongest negative signal; a visible login form is the fallback.
     """
-    return "/bejelentkezes" not in page.url
+    if "/bejelentkezes" in page.url:
+        return False
+    try:
+        if await page.locator("#LoginEmail, #LoginPassword").first.is_visible(timeout=1000):
+            return False
+    except Exception:
+        pass
+    try:
+        if await page.get_by_text("Kijelentkezés", exact=False).first.is_visible(timeout=1000):
+            return True
+    except Exception:
+        pass
+    try:
+        body_text = await page.locator("body").inner_text(timeout=3000)
+        body_lower = body_text.lower()
+        if "üdvözöllek" in body_lower or "profilom" in body_lower:
+            return True
+        if "bejelentkezés" in body_lower or "regisztráció" in body_lower:
+            return False
+    except Exception:
+        pass
+    return False
+
+
+async def _wait_for_login_success(page, timeout: int) -> None:
+    """Wait for any reliable post-login signal instead of one exact landing URL."""
+    await page.wait_for_function(
+        """() => {
+            const url = window.location.href;
+            const body = document.body?.innerText || '';
+            return !url.includes('/bejelentkezes')
+                || body.includes('Kijelentkezés')
+                || body.includes('Üdvözöllek')
+                || body.includes('Profilom');
+        }""",
+        timeout=timeout,
+    )
+    if not await _is_logged_in(page):
+        raise PlaywrightTimeout("Still on login page after submit")
 
 
 def _attach_dialog(page) -> None:
@@ -156,7 +311,7 @@ async def _login_or_restore(pw, emit: Callable, verify_url: str):
         await fill_login_form()
 
         try:
-            await page.wait_for_url("https://irontrade.hu/", timeout=8000)
+            await _wait_for_login_success(page, timeout=8000)
             log.info(f"Login successful on first attempt: {page.url}")
 
         except PlaywrightTimeout:
@@ -164,23 +319,28 @@ async def _login_or_restore(pw, emit: Callable, verify_url: str):
             await page.wait_for_timeout(2500)
             log.info(f"URL after waiting for dialog reload: {page.url}")
 
-            if "/bejelentkezes" not in page.url:
-                log.info("Not on login page — assuming login succeeded late")
+            if await _is_logged_in(page):
+                log.info("Login succeeded late after timeout")
             else:
                 log.info("Retrying login with fresh CSRF token…")
-                await fill_login_form()
-                try:
-                    await page.wait_for_url("https://irontrade.hu/", timeout=12000)
-                    log.info(f"Login successful on retry: {page.url}")
-                except PlaywrightTimeout:
-                    current_url = page.url
-                    log.error(f"Login still failed after retry — URL: {current_url}")
-                    body_text = await page.locator("body").inner_text(timeout=5000)
-                    for line in body_text.splitlines():
-                        line = line.strip()
-                        if line and any(w in line.lower() for w in ["hiba", "error", "sikertelen", "érvénytelen"]):
-                            log.error(f"Page error text: {line}")
-                    raise RuntimeError("Login to irontrade.hu failed. Please check credentials.")
+                if "/bejelentkezes" not in page.url:
+                    await page.goto(LOGIN_URL, wait_until="load", timeout=20000)
+                if await _is_logged_in(page):
+                    log.info("Login already active after reopening login page")
+                else:
+                    await fill_login_form()
+                    try:
+                        await _wait_for_login_success(page, timeout=12000)
+                        log.info(f"Login successful on retry: {page.url}")
+                    except PlaywrightTimeout:
+                        current_url = page.url
+                        log.error(f"Login still failed after retry — URL: {current_url}")
+                        body_text = await page.locator("body").inner_text(timeout=5000)
+                        for line in body_text.splitlines():
+                            line = line.strip()
+                            if line and any(w in line.lower() for w in ["hiba", "error", "sikertelen", "érvénytelen"]):
+                                log.error(f"Page error text: {line}")
+                        raise RuntimeError("Login to irontrade.hu failed. Please check credentials.")
 
         try:
             await save_session(context, _SESSION_FILE)
@@ -200,14 +360,14 @@ async def _search_and_parse(page, supplier_part_no: str, emit: Callable, navigat
     assumes the page is already on that search result page."""
     await emit(f"Searching for part {supplier_part_no} on irontrade.hu…")
     if navigate:
-        await page.goto(SEARCH_URL.format(part_no=supplier_part_no), wait_until="domcontentloaded", timeout=20000)
+        await page.goto(_search_url(supplier_part_no), wait_until="domcontentloaded", timeout=20000)
 
     log.info(f"Search page loaded: {page.url}")
     try:
         done, pending = await asyncio.wait(
             [
-                asyncio.ensure_future(page.wait_for_selector("table tbody tr", timeout=8000)),
-                asyncio.ensure_future(page.wait_for_selector("text=Találat: 0", timeout=8000)),
+                asyncio.ensure_future(page.wait_for_selector("table tbody tr", timeout=_SEARCH_READY_TIMEOUT)),
+                asyncio.ensure_future(page.wait_for_selector("text=Találat: 0", timeout=_SEARCH_READY_TIMEOUT)),
             ],
             return_when=asyncio.FIRST_COMPLETED,
         )
@@ -240,13 +400,37 @@ async def _search_and_parse(page, supplier_part_no: str, emit: Callable, navigat
     if not await product_link.count():
         product_link = exact_row.locator("a").filter(has_text=supplier_part_no).first
     if not await product_link.count():
-        product_link = exact_row.locator("a").nth(1)
+        product_link = exact_row.locator("a[href*='/termek'], a[href*='/product']").first
+    if not await product_link.count():
+        links = exact_row.locator("a")
+        if await links.count() >= 2:
+            product_link = links.nth(1)
+        elif await links.count() == 1:
+            product_link = links.first
+    if not await product_link.count():
+        raise RuntimeError(MSG_NOT_FOUND)
 
     link_text = (await product_link.inner_text()).strip() if await product_link.count() else ""
-    log.info("Clicking exact Irontrade result row for %s (link text=%r)", supplier_part_no, link_text)
-    await product_link.click()
-    await page.wait_for_load_state("domcontentloaded")
+    href = await product_link.get_attribute("href")
+    log.info(
+        "Opening exact Irontrade result for %s (link text=%r, href=%r)",
+        supplier_part_no,
+        link_text,
+        href,
+    )
+    if href:
+        await page.goto(href, wait_until="domcontentloaded", timeout=20000)
+    else:
+        await product_link.click()
+        await page.wait_for_load_state("domcontentloaded")
     log.info(f"Product page URL: {page.url}")
+
+    try:
+        product_body = await page.locator("body").inner_text(timeout=5000)
+        if _norm_part(supplier_part_no) not in _norm_part(product_body):
+            log.warning("Product page does not visibly contain requested part number: %s", supplier_part_no)
+    except Exception:
+        pass
 
     try:
         # Wait until the price *value* (sibling of "Nettó ár:") contains a digit.
@@ -255,15 +439,21 @@ async def _search_and_parse(page, supplier_part_no: str, emit: Callable, navigat
         # not_priced errors when the value hadn't loaded yet.
         await page.wait_for_function(
             """() => {
-                for (const el of document.querySelectorAll('*')) {
-                    if (el.childElementCount === 0 && el.textContent.trim() === 'Nettó ár:') {
-                        const val = el.nextElementSibling?.textContent?.trim() ?? '';
-                        return /\\d/.test(val);
+                const addCandidates = (labelText) => {
+                    const candidates = [];
+                    for (const el of document.querySelectorAll('*')) {
+                        if (el.childElementCount !== 0 || el.textContent.trim() !== labelText) continue;
+                        if (el.nextElementSibling?.textContent) candidates.push(el.nextElementSibling.textContent);
+                        let parent = el.parentElement;
+                        for (let depth = 0; parent && depth < 3; depth += 1, parent = parent.parentElement) {
+                            if ((parent.innerText || '').includes(labelText)) candidates.push(parent.innerText);
+                        }
                     }
-                }
-                return false;
+                    return candidates;
+                };
+                return addCandidates('Nettó ár:').some(text => /\\d/.test(text || ''));
             }""",
-            timeout=10000,
+            timeout=_PRICE_READY_TIMEOUT,
         )
         log.info("Product page loaded — price value confirmed numeric")
     except PlaywrightTimeout:
@@ -272,8 +462,8 @@ async def _search_and_parse(page, supplier_part_no: str, emit: Callable, navigat
 
     # ── Step 6: extract price and stock ──────────────────────────────
     await emit("Reading price and stock from irontrade.hu…")
-    price_str = await page.evaluate(_JS_NEXT_SIBLING, "Nettó ár:")
-    stock_str = await page.evaluate(_JS_NEXT_SIBLING, "Készlet:")
+    price_str = await _extract_price_value(page)
+    stock_str = await _extract_labeled_value(page, "Készlet:")
 
     log.info(f"Raw extracted values — price: '{price_str}', stock: '{stock_str}'")
 
@@ -306,7 +496,7 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         if on_progress:
             await on_progress({"step": "browser", "status": "running", "msg": msg})
 
-    search_url = SEARCH_URL.format(part_no=supplier_part_no)
+    search_url = _search_url(supplier_part_no)
     async with async_playwright() as pw:
         browser, context, page = await _login_or_restore(pw, emit, search_url)
         try:
@@ -340,7 +530,7 @@ async def fetch_prices(
         return results
 
     total = len(part_nos)
-    first_url = SEARCH_URL.format(part_no=part_nos[0])
+    first_url = _search_url(part_nos[0])
 
     async with async_playwright() as pw:
         browser, context, page = await _login_or_restore(pw, emit, first_url)
