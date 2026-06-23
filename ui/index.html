@@ -425,6 +425,28 @@
   .adm-tab{display:block}
   .adm-tab.hidden{display:none}
   .adm-nav-backdrop{display:none}
+  .copilot-launch{position:fixed;right:22px;bottom:22px;z-index:420;border:none;border-radius:999px;background:linear-gradient(135deg,var(--navy),var(--blue));color:#fff;padding:13px 18px;font-family:'Inter',sans-serif;font-size:14px;font-weight:800;box-shadow:0 10px 28px rgba(22,27,99,.25);cursor:pointer;display:flex;align-items:center;gap:8px}
+  .copilot-launch.hidden{display:none}
+  .copilot-panel{position:fixed;right:22px;bottom:78px;z-index:421;width:min(410px,calc(100vw - 28px));height:min(590px,calc(100dvh - 110px));background:#fff;border:1px solid var(--border);border-radius:16px;box-shadow:0 18px 60px rgba(22,27,99,.28);display:flex;flex-direction:column;overflow:hidden}
+  .copilot-panel.hidden{display:none}
+  .copilot-head{background:linear-gradient(135deg,var(--navy),var(--navy2));color:#fff;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .copilot-title{font-family:'Oswald',sans-serif;font-size:15px;font-weight:700;letter-spacing:1px}
+  .copilot-close{width:30px;height:30px;border:none;border-radius:8px;background:rgba(255,255,255,.12);color:#fff;cursor:pointer}
+  .copilot-msgs{flex:1;padding:14px;overflow-y:auto;background:#f6f9fc;display:flex;flex-direction:column;gap:10px}
+  .copilot-msg{max-width:86%;padding:10px 12px;border-radius:12px;font-size:13px;line-height:1.45;white-space:pre-wrap}
+  .copilot-msg.assistant{align-self:flex-start;background:#fff;border:1px solid var(--border);color:var(--navy2)}
+  .copilot-msg.user{align-self:flex-end;background:var(--navy);color:#fff}
+  .copilot-summary{margin:0 14px 10px;padding:12px;border:1px solid rgba(0,159,230,.28);border-radius:12px;background:rgba(0,159,230,.06);font-size:13px;color:var(--navy2);white-space:pre-wrap}
+  .copilot-actions{display:flex;gap:8px;padding:0 14px 12px}
+  .copilot-actions.hidden{display:none}
+  .copilot-foot{border-top:1px solid var(--border);padding:12px;background:#fff;display:flex;gap:8px}
+  .copilot-input{flex:1;border:1.5px solid var(--border);border-radius:10px;padding:10px 11px;font-family:'Inter',sans-serif;font-size:13px;resize:none;min-height:42px;max-height:90px}
+  .copilot-input:focus{outline:none;border-color:var(--blue)}
+  .copilot-send{border:none;border-radius:10px;background:var(--blue);color:#fff;padding:0 14px;font-weight:800;cursor:pointer}
+  .copilot-task-row{cursor:pointer}
+  .copilot-detail{margin-top:14px;border:1px solid var(--border);border-radius:12px;padding:14px;background:#fff}
+  .copilot-detail.hidden{display:none}
+  .copilot-status-select{border:1.5px solid var(--border);border-radius:8px;padding:7px 9px;background:#fff;color:var(--navy2);font-size:13px}
 
   /* ── DELETE MAPPING BUTTON ── */
   .btn-delete-map{padding:5px 14px;background:none;border:1.5px solid rgba(254,26,0,.35);border-radius:8px;font-family:'Inter',sans-serif;font-size:12px;font-weight:600;color:var(--red);cursor:pointer;transition:all .2s;display:flex;align-items:center;gap:5px}
@@ -581,6 +603,8 @@
     .adm-table{min-width:640px}
     .adm-user-head,
     .adm-user-actions{flex-direction:column;align-items:stretch}
+    .copilot-launch{right:14px;bottom:14px}
+    .copilot-panel{right:14px;bottom:68px;height:min(560px,calc(100dvh - 92px))}
   }
 
   /* ── App Selector ── */
@@ -814,6 +838,25 @@
   </main>
 </div>
 
+<!-- ══ GÉP-COOPILOT CHAT WIDGET ═════════════════════════════════ -->
+<button id="copilot-launch" class="copilot-launch hidden" type="button">💬 Gép-Coopilot</button>
+<div id="copilot-panel" class="copilot-panel hidden" aria-live="polite">
+  <div class="copilot-head">
+    <div class="copilot-title">💬 Gép-Coopilot</div>
+    <button id="copilot-close" class="copilot-close" type="button" title="Bezárás">✕</button>
+  </div>
+  <div id="copilot-msgs" class="copilot-msgs"></div>
+  <div id="copilot-summary" class="copilot-summary hidden"></div>
+  <div id="copilot-actions" class="copilot-actions hidden">
+    <button id="copilot-submit" class="btn-upload" type="button">Beküldés</button>
+    <button id="copilot-edit" class="btn-secondary" type="button">Módosítás</button>
+  </div>
+  <div class="copilot-foot">
+    <textarea id="copilot-input" class="copilot-input" rows="1" placeholder="Írd le röviden a problémát…"></textarea>
+    <button id="copilot-send" class="copilot-send" type="button">Küldés</button>
+  </div>
+</div>
+
 <!-- ══ SUPPLIER PASSWORD MODAL ══════════════════════════════════ -->
 <div id="pw-modal" class="hidden" onclick="if(event.target===this)closePwModal()">
   <div class="pw-card">
@@ -916,6 +959,9 @@
           </button>
           <button class="adm-nav-item" data-tab="runs">
             <span class="adm-nav-icon">📊</span>Futásnapló
+          </button>
+          <button class="adm-nav-item hidden" id="adm-nav-copilot" data-tab="copilot">
+            <span class="adm-nav-icon">💬</span>Gép-Coopilot Hibapult
           </button>
           <button class="adm-nav-item" data-tab="fx">
             <span class="adm-nav-icon">💱</span>Árfolyam
@@ -1155,6 +1201,33 @@
             </div>
           </div>
 
+          <div class="adm-tab hidden" id="adm-tab-copilot">
+            <div class="adm-section">
+              <div class="adm-section-title" style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+                <span>Gép-Coopilot Hibapult</span>
+                <button class="btn-upload" id="adm-btn-refresh-copilot" style="font-size:13px;padding:6px 16px">↻ Frissítés</button>
+              </div>
+              <p class="adm-hint">A felhasználók által beküldött Gép-Coopilot hibajegyek. Státusz: Nyitott / Folyamatban / Megoldva.</p>
+              <div class="adm-table-wrap">
+                <table class="adm-table">
+                  <thead>
+                    <tr>
+                      <th>ID</th>
+                      <th>User</th>
+                      <th>Probléma</th>
+                      <th>Webshop</th>
+                      <th>Cikkszám</th>
+                      <th>Státusz</th>
+                      <th>Létrehozva</th>
+                    </tr>
+                  </thead>
+                  <tbody id="adm-copilot-tbody"></tbody>
+                </table>
+              </div>
+              <div id="adm-copilot-detail" class="copilot-detail hidden"></div>
+            </div>
+          </div>
+
         </div><!-- /.adm-content -->
       </div><!-- /.adm-layout -->
     </div>
@@ -1172,6 +1245,13 @@ let _searchStartTs     = null;  // timestamp when scraping started
 let _currentFilterSids = '';    // active supplier filter for the running search
 let _currentPartNo     = '';    // part number of the running/last search (for the Gép-Coop card)
 let _skippedSuppliers  = new Set();
+let copilotState = {};
+let copilotMessages = [];
+let copilotReadyPayload = null;
+let copilotOpenedOnce = false;
+let copilotEnabled = false;
+let admCopilotTasks = [];
+const COPILOT_ERROR_FALLBACK = 'Még egy chatbot is megérdemel egy kis pihenést. Viccet félre téve, jelenleg a Gép-Coopilot nem elérhető, dolgozunk a problémán.';
 
 // pipeline state per supplier: {csavarda: [s0,s1,s2,s3], irontrade: [...]}
 const BROWSER_STEPS = [
@@ -1434,6 +1514,7 @@ function showApp(){
   document.getElementById('user-display').textContent = username || 'User';
   document.getElementById('btn-admin').classList.toggle('hidden', !isAdminUser);
   document.getElementById('btn-webshop-login').classList.remove('hidden');
+  loadCopilotConfig();
   adminToken = isAdminUser ? authToken : null;
   loadHomepageInfo();
   syncResponsiveLayout();
@@ -1451,6 +1532,9 @@ function doLogout(clearLoginFields = true) {
   authToken=null; username=null; isAdminUser=false; isPrimaryAdminUser=false; adminToken=null;
   document.getElementById('btn-admin').classList.add('hidden');
   document.getElementById('btn-webshop-login').classList.add('hidden');
+  document.getElementById('copilot-launch').classList.add('hidden');
+  document.getElementById('copilot-panel').classList.add('hidden');
+  document.getElementById('adm-nav-copilot').classList.add('hidden');
   document.getElementById('info-card').classList.add('hidden');
   document.getElementById('app-page').classList.add('hidden');
   document.getElementById('app-select-page').classList.add('hidden');
@@ -2732,6 +2816,9 @@ function admSwitchTab(tab) {
     admLoadRuns();
     admLoadRunsChart(admRunsRange);
   }
+  if (tab === 'copilot') {
+    admLoadCopilotTasks();
+  }
   if (tab === 'fx') {
     admLoadFxSettings();
   }
@@ -2797,6 +2884,265 @@ async function admLoadRuns() {
 document.getElementById('adm-btn-refresh-runs').addEventListener('click', admLoadRuns);
 document.getElementById('adm-btn-refresh-runs').addEventListener('click', () => admLoadRunsChart(admRunsRange));
 document.getElementById('adm-btn-export-runs').addEventListener('click', admExportRuns);
+
+/* ══ GÉP-COOPILOT CHAT ═════════════════════════════════════════════ */
+async function loadCopilotConfig() {
+  copilotEnabled = false;
+  document.getElementById('copilot-launch').classList.add('hidden');
+  document.getElementById('copilot-panel').classList.add('hidden');
+  document.getElementById('adm-nav-copilot').classList.add('hidden');
+  try {
+    const res = await fetch('/copilot/config', {
+      headers: { 'Authorization': `Bearer ${authToken}` },
+    });
+    const data = await res.json();
+    copilotEnabled = !!(res.ok && data.enabled);
+  } catch (err) {
+    copilotEnabled = false;
+  }
+  document.getElementById('copilot-launch').classList.toggle('hidden', !copilotEnabled);
+  document.getElementById('adm-nav-copilot').classList.toggle('hidden', !copilotEnabled || !isAdminUser);
+}
+
+function copilotAddMessage(sender, message) {
+  const wrap = document.getElementById('copilot-msgs');
+  const div = document.createElement('div');
+  div.className = `copilot-msg ${sender}`;
+  div.textContent = message;
+  wrap.appendChild(div);
+  wrap.scrollTop = wrap.scrollHeight;
+  copilotMessages.push({ sender, message });
+}
+
+function copilotOpen() {
+  if (!copilotEnabled) return;
+  document.getElementById('copilot-panel').classList.remove('hidden');
+  if (!copilotOpenedOnce) {
+    copilotOpenedOnce = true;
+    copilotAddMessage('assistant', 'Szia! Van valami probléma? Segítek röviden rögzíteni.');
+  }
+  setTimeout(() => document.getElementById('copilot-input').focus(), 60);
+}
+
+function copilotClose() {
+  document.getElementById('copilot-panel').classList.add('hidden');
+}
+
+function copilotSetReady(data) {
+  copilotReadyPayload = data && data.ready_to_submit ? data : null;
+  const summary = document.getElementById('copilot-summary');
+  const actions = document.getElementById('copilot-actions');
+  if (copilotReadyPayload) {
+    summary.textContent = data.summary || data.assistant_message || '';
+    summary.classList.remove('hidden');
+    actions.classList.remove('hidden');
+  } else {
+    summary.classList.add('hidden');
+    actions.classList.add('hidden');
+  }
+}
+
+async function copilotSend() {
+  const input = document.getElementById('copilot-input');
+  const btn = document.getElementById('copilot-send');
+  const message = input.value.trim();
+  if (!message) return;
+  input.value = '';
+  copilotSetReady(null);
+  copilotAddMessage('user', message);
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const res = await fetch('/copilot/chat', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${authToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, history: copilotMessages.slice(-10), state: copilotState }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'A Gép-Coopilot válasza sikertelen.');
+    copilotState = {
+      problem_type: data.problem_type || copilotState.problem_type,
+      webshop: data.webshop || copilotState.webshop,
+      product_number: data.product_number || copilotState.product_number,
+      description: data.description || copilotState.description,
+      expected_result: data.expected_result || copilotState.expected_result,
+    };
+    copilotAddMessage('assistant', data.assistant_message || 'Rendben.');
+    copilotSetReady(data);
+  } catch (err) {
+    copilotAddMessage('assistant', COPILOT_ERROR_FALLBACK);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Küldés';
+  }
+}
+
+async function copilotSubmit() {
+  if (!copilotReadyPayload) return;
+  const btn = document.getElementById('copilot-submit');
+  btn.disabled = true;
+  btn.textContent = 'Beküldés…';
+  const payload = {
+    problem_type: copilotReadyPayload.problem_type,
+    webshop: copilotReadyPayload.webshop,
+    product_number: copilotReadyPayload.product_number,
+    description: copilotReadyPayload.description,
+    expected_result: copilotReadyPayload.expected_result || '',
+    summary: copilotReadyPayload.summary || document.getElementById('copilot-summary').textContent,
+    messages: copilotMessages,
+  };
+  try {
+    const res = await fetch('/copilot/tasks', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${authToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'A hibajegy mentése sikertelen.');
+    copilotAddMessage('assistant', `Köszönöm, rögzítettem a hibát.\n\nAzonosító: ${data.display_id}`);
+    copilotState = {};
+    copilotReadyPayload = null;
+    copilotSetReady(null);
+  } catch (err) {
+    copilotAddMessage('assistant', `⚠ ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Beküldés';
+  }
+}
+
+document.getElementById('copilot-launch').addEventListener('click', copilotOpen);
+document.getElementById('copilot-close').addEventListener('click', copilotClose);
+document.getElementById('copilot-send').addEventListener('click', copilotSend);
+document.getElementById('copilot-submit').addEventListener('click', copilotSubmit);
+document.getElementById('copilot-edit').addEventListener('click', () => {
+  copilotSetReady(null);
+  document.getElementById('copilot-input').focus();
+});
+document.getElementById('copilot-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    copilotSend();
+  }
+});
+
+/* ══ ADMIN: GÉP-COOPILOT HIBAPULT ════════════════════════════════ */
+function copilotStatusLabel(status) {
+  return ({ open: 'Nyitott', in_progress: 'Folyamatban', resolved: 'Megoldva' })[status] || status || '—';
+}
+
+function copilotProblemLabel(problem) {
+  return ({
+    missing_price: 'Nem talál árat',
+    wrong_price: 'Rossz árat mutat',
+    missing_stock: 'Nem talál készletet',
+    error_message: 'Hibaüzenet jelent meg',
+    slow_search: 'Lassú volt a keresés',
+    other: 'Más probléma',
+  })[problem] || problem || '—';
+}
+
+async function admLoadCopilotTasks() {
+  const tbody = document.getElementById('adm-copilot-tbody');
+  tbody.innerHTML = '<tr><td colspan="7" class="adm-empty">Betöltés…</td></tr>';
+  document.getElementById('adm-copilot-detail').classList.add('hidden');
+  try {
+    const res = await fetch('/copilot/admin/tasks', { headers: admHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Nem sikerült betölteni a hibajegyeket.');
+    admCopilotTasks = data.tasks || [];
+    if (!admCopilotTasks.length) {
+      tbody.innerHTML = '<tr><td colspan="7" class="adm-empty">Nincs Gép-Coopilot hibajegy.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = admCopilotTasks.map(t => `
+      <tr class="copilot-task-row" onclick="admOpenCopilotTask('${escAttr(t.id)}')">
+        <td><code>#${escHtml(String(t.id).slice(0, 6).toUpperCase())}</code></td>
+        <td>${escHtml(t.user_id || '—')}</td>
+        <td>${escHtml(copilotProblemLabel(t.problem_type))}</td>
+        <td>${escHtml(t.webshop || '—')}</td>
+        <td>${escHtml(t.product_number || '—')}</td>
+        <td>${escHtml(copilotStatusLabel(t.status))}</td>
+        <td>${t.created_at ? fmtTs(t.created_at) : '—'}</td>
+      </tr>
+    `).join('');
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="7" class="adm-empty">⚠ ${escHtml(err.message)}</td></tr>`;
+  }
+}
+
+async function admOpenCopilotTask(taskId) {
+  const box = document.getElementById('adm-copilot-detail');
+  box.classList.remove('hidden');
+  box.innerHTML = 'Betöltés…';
+  try {
+    const res = await fetch(`/copilot/admin/tasks/${encodeURIComponent(taskId)}`, { headers: admHeaders() });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Nem sikerült betölteni a részleteket.');
+    const t = data.task;
+    const messages = data.messages || [];
+    box.innerHTML = `
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div>
+          <div class="adm-section-title" style="margin-bottom:8px">Hibajegy #${escHtml(String(t.id).slice(0, 6).toUpperCase())}</div>
+          <div class="adm-hint" style="margin-bottom:0">${escHtml(t.summary || '')}</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <select class="copilot-status-select" id="copilot-status-${escAttr(t.id)}">
+            <option value="open" ${t.status === 'open' ? 'selected' : ''}>Nyitott</option>
+            <option value="in_progress" ${t.status === 'in_progress' ? 'selected' : ''}>Folyamatban</option>
+            <option value="resolved" ${t.status === 'resolved' ? 'selected' : ''}>Megoldva</option>
+          </select>
+          <button class="btn-upload" onclick="admSaveCopilotStatus('${escAttr(t.id)}')">Státusz mentése</button>
+        </div>
+      </div>
+      <div style="margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;font-size:13px">
+        <div><b>User:</b><br>${escHtml(t.user_id || '—')}</div>
+        <div><b>Probléma:</b><br>${escHtml(copilotProblemLabel(t.problem_type))}</div>
+        <div><b>Webshop:</b><br>${escHtml(t.webshop || '—')}</div>
+        <div><b>Cikkszám:</b><br>${escHtml(t.product_number || '—')}</div>
+        <div><b>Státusz:</b><br>${escHtml(copilotStatusLabel(t.status))}</div>
+        <div><b>Létrehozva:</b><br>${t.created_at ? fmtTs(t.created_at) : '—'}</div>
+      </div>
+      <div style="margin-top:14px">
+        <b>Leírás</b>
+        <div class="adm-hint" style="margin-top:6px">${escHtml(t.description || '')}</div>
+      </div>
+      <div style="margin-top:14px">
+        <b>Belső megjegyzés</b>
+        <textarea id="copilot-note-${escAttr(t.id)}" class="adm-info-text" style="margin-top:8px;min-height:70px">${escHtml(t.admin_note || '')}</textarea>
+      </div>
+      <div style="margin-top:14px">
+        <b>Eredeti beszélgetés</b>
+        <div style="margin-top:8px;display:flex;flex-direction:column;gap:6px">
+          ${messages.length ? messages.map(m => `<div class="adm-hint" style="margin:0"><b>${escHtml(m.sender)}:</b> ${escHtml(m.message || '')}</div>`).join('') : '<div class="adm-hint">Nincs mentett beszélgetés.</div>'}
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    box.innerHTML = `⚠ ${escHtml(err.message)}`;
+  }
+}
+
+async function admSaveCopilotStatus(taskId) {
+  const status = document.getElementById(`copilot-status-${taskId}`).value;
+  const note = document.getElementById(`copilot-note-${taskId}`).value;
+  try {
+    const res = await fetch(`/copilot/admin/tasks/${encodeURIComponent(taskId)}/status`, {
+      method: 'POST',
+      headers: admHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ status, admin_note: note }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Mentés sikertelen.');
+    await admLoadCopilotTasks();
+    await admOpenCopilotTask(taskId);
+  } catch (err) {
+    alert(`⚠ ${err.message}`);
+  }
+}
+
+document.getElementById('adm-btn-refresh-copilot').addEventListener('click', admLoadCopilotTasks);
 
 async function admLoadFxSettings() {
   const input = document.getElementById('adm-eur-rate');

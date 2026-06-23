@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import secrets
+import importlib.util
 from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, File, HTTPException, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,7 +17,10 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from pathlib import Path
 import pandas as pd
+from dotenv import load_dotenv
 from agent.tools import lookup_mapping_all, fetch_supplier_price, get_all_part_numbers, search_part_numbers
+
+load_dotenv(Path(__file__).parent / ".env")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1096,6 +1100,27 @@ def _get_supabase_main():
         log.warning(f"Supabase (main) init failed: {exc}")
         _sb_main = None
     return _sb_main
+
+
+def _install_copilot_router() -> None:
+    """Load the Gép-Coopilot module from its dedicated folder."""
+    module_path = Path(__file__).parent / "Gép-Coopilot" / "copilot_module.py"
+    if not module_path.exists():
+        log.warning("Gép-Coopilot modul nem található: %s", module_path)
+        return
+    try:
+        spec = importlib.util.spec_from_file_location("gep_coopilot_module", module_path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError("spec betöltése sikertelen")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        app.include_router(mod.create_copilot_router(_get_supabase_main, _get_username, _get_admin))
+        log.info("Gép-Coopilot router betöltve")
+    except Exception as exc:
+        log.warning("Gép-Coopilot router betöltése sikertelen: %s", exc)
+
+
+_install_copilot_router()
 
 
 def _supplier_info_items_for(supplier_ids: list[str]) -> dict[str, list[dict]]:

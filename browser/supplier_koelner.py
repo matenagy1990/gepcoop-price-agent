@@ -32,6 +32,7 @@ load_dotenv()
 log = logging.getLogger("koelner")
 
 LOGIN_URL    = "https://webshop.koelner.hu/belepes/"
+HOME_URL     = "https://webshop.koelner.hu/"
 SEARCH_URL   = "https://webshop.koelner.hu/termekek/?keres={part_no}"
 _SESSION_FILE = Path(__file__).parent.parent / "assets" / "sessions" / "koelner_session.json"
 
@@ -189,70 +190,68 @@ async def _login_or_restore(pw, emit: Callable):
 
 async def _search_and_parse(page, supplier_part_no: str, emit: Callable) -> dict:
     """Search one part on a logged-in koelner page and parse price + stock."""
-    # ── Step 3: search ────────────────────────────────────────────────
-    search_url = SEARCH_URL.format(part_no=supplier_part_no)
-    await emit(f"Searching for part {supplier_part_no} on webshop.koelner.hu…")
-    log.info(f"Navigating to search URL: {search_url}")
-
-    await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
-    # Wait for search results container or empty-state indicator
-    await page.wait_for_selector(".products, .item, [class*='no-result'], h1, .alert-message", state="attached", timeout=8000)
-    log.info(f"Search page loaded: {page.url}")
-
-    body_text = await page.locator("body").inner_text(timeout=10000)
-
-    if "Keresés a termékek között (0)" in body_text:
-        log.warning(f"Zero results for part {supplier_part_no}")
-        raise RuntimeError(MSG_NOT_FOUND)
-
-    # ── Step 4: collect product-group links ───────────────────────────
-    item_links = await page.locator(".item a.products__link").all()
-    seen_hrefs: set = set()
-    item_hrefs = []
-    for link in item_links:
-        href = await link.get_attribute("href")
-        if href and href not in seen_hrefs:
-            seen_hrefs.add(href)
-            item_hrefs.append(href)
-
-    log.info(f"Product groups found (unique): {len(item_hrefs)}")
-    if not item_hrefs:
-        raise RuntimeError(MSG_NOT_FOUND)
-
-    # ── Step 5: find the item-selected row ────────────────────────────
+    # ── Step 3: use the same fast-search flow as a user ───────────────
     await emit("Reading price and stock from webshop.koelner.hu…")
-    target_row = None
+    target_row = await _open_fast_search_exact_result(page, supplier_part_no, emit)
 
-    for idx, href in enumerate(item_hrefs):
-        if "cikkszam=" in href:
-            modified = re.sub(r"cikkszam=[^&]+", f"cikkszam={supplier_part_no}", href)
-        else:
-            sep = "&" if "?" in href else "?"
-            modified = href + f"{sep}cikkszam={supplier_part_no}"
-        product_url = (
-            f"https://webshop.koelner.hu{modified}"
-            if modified.startswith("/") else modified
-        )
-        log.info(f"Checking group {idx+1}/{len(item_hrefs)}: {product_url}")
-        await page.goto(product_url, wait_until="domcontentloaded", timeout=20000)
-        # Wait for the lazy-loaded product table to appear
-        try:
-            await page.wait_for_selector("table tbody tr.gy_item", state="attached", timeout=8000)
-        except PlaywrightTimeout:
-            pass  # no matching rows → selected check below returns empty
+    # ── Fallback: old product-group search flow ───────────────────────
+    if target_row is None:
+        search_url = SEARCH_URL.format(part_no=supplier_part_no)
+        await emit(f"Searching for part {supplier_part_no} on webshop.koelner.hu…")
+        log.info(f"Navigating to search URL: {search_url}")
 
-        selected = await page.locator("table tbody tr.gy_item.item-selected").all()
-        if selected:
-            target_row = selected[0]
-            cikkszam_text = ""
+        await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
+        await page.wait_for_selector(".products, .item, [class*='no-result'], h1, .alert-message", state="attached", timeout=8000)
+        log.info(f"Search page loaded: {page.url}")
+
+        body_text = await page.locator("body").inner_text(timeout=10000)
+
+        if "Keresés a termékek között (0)" in body_text:
+            log.warning(f"Zero product-group results for part {supplier_part_no}")
+            raise RuntimeError(MSG_NOT_FOUND)
+
+        item_links = await page.locator(".item a.products__link").all()
+        seen_hrefs: set = set()
+        item_hrefs = []
+        for link in item_links:
+            href = await link.get_attribute("href")
+            if href and href not in seen_hrefs:
+                seen_hrefs.add(href)
+                item_hrefs.append(href)
+
+        log.info(f"Product groups found (unique): {len(item_hrefs)}")
+        if not item_hrefs:
+            raise RuntimeError(MSG_NOT_FOUND)
+
+        for idx, href in enumerate(item_hrefs):
+            if "cikkszam=" in href:
+                modified = re.sub(r"cikkszam=[^&]+", f"cikkszam={supplier_part_no}", href)
+            else:
+                sep = "&" if "?" in href else "?"
+                modified = href + f"{sep}cikkszam={supplier_part_no}"
+            product_url = (
+                f"https://webshop.koelner.hu{modified}"
+                if modified.startswith("/") else modified
+            )
+            log.info(f"Checking group {idx+1}/{len(item_hrefs)}: {product_url}")
+            await page.goto(product_url, wait_until="domcontentloaded", timeout=20000)
             try:
-                cikkszam_text = await target_row.locator("td.CIKKSZAM").inner_text(timeout=1500)
+                await page.wait_for_selector("table tbody tr.gy_item", state="attached", timeout=8000)
             except PlaywrightTimeout:
                 pass
-            log.info(f"  ✓ item-selected found (CIKKSZAM='{cikkszam_text.strip()}') on {page.url}")
-            break
 
-        log.info("  No item-selected row on this group page")
+            selected = await page.locator("table tbody tr.gy_item.item-selected").all()
+            if selected:
+                target_row = selected[0]
+                cikkszam_text = ""
+                try:
+                    cikkszam_text = await target_row.locator("td.CIKKSZAM").inner_text(timeout=1500)
+                except PlaywrightTimeout:
+                    pass
+                log.info(f"  ✓ item-selected found (CIKKSZAM='{cikkszam_text.strip()}') on {page.url}")
+                break
+
+            log.info("  No item-selected row on this group page")
 
     if target_row is None:
         raise RuntimeError(MSG_NOT_FOUND)
@@ -300,6 +299,85 @@ async def _search_and_parse(page, supplier_part_no: str, emit: Callable) -> dict
     }
     log.info(f"Final result: {result}")
     return result
+
+
+async def _open_fast_search_exact_result(page, supplier_part_no: str, emit: Callable):
+    """Open Koelner's AJAX fast-search result that exactly matches CIKKSZAM."""
+    await emit(f"Fast-searching exact part {supplier_part_no} on webshop.koelner.hu…")
+    log.info(f"Opening Koelner fast search for exact part: {supplier_part_no}")
+
+    await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=20000)
+    await page.wait_for_selector("#search_products", state="attached", timeout=8000)
+    await page.evaluate(
+        """partNo => {
+            const input = document.querySelector("#search_products");
+            input.focus();
+            input.value = partNo;
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+            input.dispatchEvent(new KeyboardEvent("keyup", {
+                key: partNo[partNo.length - 1],
+                bubbles: true
+            }));
+            input.dispatchEvent(new Event("change", { bubbles: true }));
+        }""",
+        supplier_part_no,
+    )
+
+    try:
+        await page.wait_for_selector(".search_products_list li.search-row", state="attached", timeout=10000)
+    except PlaywrightTimeout:
+        log.info("Koelner fast-search returned no visible rows")
+        return None
+
+    rows = await page.locator(".search_products_list li.search-row").all()
+    log.info(f"Koelner fast-search rows: {len(rows)}")
+    exact_href = None
+    for idx, row in enumerate(rows):
+        try:
+            row_text = (await row.inner_text(timeout=1000)).strip()
+            first_token = row_text.split()[0] if row_text.split() else ""
+            href = await row.locator("a").first.get_attribute("href")
+        except Exception:
+            continue
+        if first_token == supplier_part_no and href:
+            exact_href = href
+            log.info(f"Fast-search exact row found at index {idx}: {row_text[:140]}")
+            break
+
+    if not exact_href:
+        log.info(f"No exact fast-search row for part {supplier_part_no}")
+        return None
+
+    product_url = f"https://webshop.koelner.hu{exact_href}" if exact_href.startswith("/") else exact_href
+    await page.goto(product_url, wait_until="domcontentloaded", timeout=20000)
+    try:
+        await page.wait_for_selector("table tbody tr.gy_item", state="attached", timeout=10000)
+    except PlaywrightTimeout:
+        log.info("Exact fast-search page opened, but product table did not appear")
+        return None
+
+    selected = await page.locator("table tbody tr.gy_item.item-selected").all()
+    if selected:
+        cikkszam_text = ""
+        try:
+            cikkszam_text = await selected[0].locator("td.CIKKSZAM").inner_text(timeout=1500)
+        except PlaywrightTimeout:
+            pass
+        if cikkszam_text.strip() == supplier_part_no:
+            log.info(f"Fast-search selected exact row on {page.url}")
+            return selected[0]
+
+    for row in await page.locator("table tbody tr.gy_item").all():
+        try:
+            cikkszam_text = (await row.locator("td.CIKKSZAM").inner_text(timeout=1000)).strip()
+        except PlaywrightTimeout:
+            continue
+        if cikkszam_text == supplier_part_no:
+            log.info(f"Fast-search opened page and exact visible row found on {page.url}")
+            return row
+
+    log.info("Fast-search page opened, but exact table row was not found")
+    return None
 
 
 # ── Single lookup (price agent) ──────────────────────────────────────────────
