@@ -11,15 +11,11 @@ from shared.supplier_registry import get_supplier_name
 # --- Stílusok ---
 _HEADER_FILL    = PatternFill("solid", fgColor="2F5496")
 _SUBHDR_FILL    = PatternFill("solid", fgColor="4472C4")
-_RANK1_FILL     = PatternFill("solid", fgColor="1E7145")   # sötét zöld – legjobb ár
-_RANK2_FILL     = PatternFill("solid", fgColor="A9D18E")   # világosabb zöld – második legjobb
-_RED_FILL       = PatternFill("solid", fgColor="FFC7CE")
-_NOMAP_FILL     = PatternFill("solid", fgColor="F2F2F2")
+_BEST_FILL      = PatternFill("solid", fgColor="A9D18E")
 
 _HEADER_FONT    = Font(bold=True, color="FFFFFF", size=10)
 _SUBHDR_FONT    = Font(bold=True, color="FFFFFF", size=9)
-_RANK1_FONT     = Font(bold=True, color="FFFFFF", size=10)  # fehér szöveg sötét zöldön
-_RANK2_FONT     = Font(bold=True, color="1A3D1F", size=10)  # sötét szöveg világos zöldön
+_BEST_FONT      = Font(bold=True, color="1A3D1F", size=10)
 _BOLD           = Font(bold=True, size=10)
 _NORMAL         = Font(size=10)
 _SMALL          = Font(size=9, color="888888")
@@ -55,6 +51,18 @@ def _compute_ranks(item: dict, sups: list[str]) -> dict[str, int]:
     return {sid: i + 1 for i, (sid, _) in enumerate(priced[:3])}
 
 
+def _best_offer(item: dict, sups: list[str]) -> tuple[str | None, dict]:
+    priced = [
+        (sid, item["suppliers"][sid])
+        for sid in sups
+        if item["suppliers"].get(sid, {}).get("scrape_status") == "ok"
+        and item["suppliers"][sid].get("normalized_price_huf") is not None
+    ]
+    if not priced:
+        return None, {}
+    return min(priced, key=lambda entry: entry[1]["normalized_price_huf"])
+
+
 def _autofit(ws, min_w: int = 8, max_w: int = 40):
     for col in ws.columns:
         col_letter = get_column_letter(col[0].column)
@@ -81,9 +89,9 @@ def _build_matrix_sheet(wb: Workbook, run_meta: dict, matrix: dict):
     sups = matrix["selected_suppliers"]
     sup_names = matrix.get("supplier_names", {})
 
-    # Első két rögzített oszlop, majd shopOnként 3 oszlop
+    # Két termékoszlop + három összesítő oszlop, majd webshoponként 3 oszlop
     # Oszlopszélességek
-    FIXED_COLS = 2          # Gép-Coop cikkszám + Terméknév
+    FIXED_COLS = 5          # Cikkszám + Terméknév + legjobb ajánlat összesítő
     COLS_PER_SUP = 3        # Egységár + Készlet + Link
 
     total_cols = FIXED_COLS + len(sups) * COLS_PER_SUP
@@ -100,6 +108,21 @@ def _build_matrix_sheet(wb: Workbook, run_meta: dict, matrix: dict):
             start_row=1, start_column=col_idx,
             end_row=2,   end_column=col_idx
         )
+
+    # Legjobb ajánlat összesítője
+    summary_header = ws.cell(row=1, column=3, value="Összesítő")
+    summary_header.fill = _HEADER_FILL
+    summary_header.font = _HEADER_FONT
+    summary_header.alignment = _CENTER
+    summary_header.border = _BORDER_L
+    ws.merge_cells(start_row=1, start_column=3, end_row=1, end_column=5)
+
+    for col, label in enumerate(["Egységár (HUF/db.)", "Készlet (db.)", "Webshop"], 3):
+        c = ws.cell(row=2, column=col, value=label)
+        c.fill = _SUBHDR_FILL
+        c.font = _SUBHDR_FONT
+        c.alignment = _CENTER
+        c.border = _BORDER_L if col == 3 else _BORDER
 
     for s_idx, sid in enumerate(sups):
         sup_name = sup_names.get(sid) or get_supplier_name(sid) or sid
@@ -133,10 +156,9 @@ def _build_matrix_sheet(wb: Workbook, run_meta: dict, matrix: dict):
     ws.row_dimensions[2].height = 20
 
     # ── Adatsorok ─────────────────────────────────────────────────────────────
-    RANK_PREFIX = {}  # csak színezés, nincs szöveges prefix
-
     for r_idx, item in enumerate(matrix["items"], 3):
         ranks = _compute_ranks(item, sups)
+        best_sid, best_data = _best_offer(item, sups)
 
         # Gép-Coop cikkszám
         c = ws.cell(row=r_idx, column=1, value=item["gepcoop_part_no"])
@@ -149,6 +171,33 @@ def _build_matrix_sheet(wb: Workbook, run_meta: dict, matrix: dict):
         c.font = _NORMAL
         c.alignment = _LEFT
         c.border = _BORDER
+
+        # Legjobb ajánlat összesítő
+        summary_price = ws.cell(row=r_idx, column=3)
+        summary_stock = ws.cell(row=r_idx, column=4)
+        summary_shop = ws.cell(row=r_idx, column=5)
+        summary_price.border = _BORDER_L
+        summary_stock.border = _BORDER
+        summary_shop.border = _BORDER
+
+        if best_sid:
+            summary_price.value = float(best_data["normalized_price_huf"])
+            summary_price.number_format = '#,##0.00'
+            summary_price.alignment = _RIGHT
+
+            stock_qty = best_data.get("stock_quantity")
+            summary_stock.value = stock_qty if stock_qty is not None else "—"
+            summary_stock.alignment = _RIGHT if stock_qty is not None else _CENTER
+            if stock_qty is not None:
+                summary_stock.number_format = "#,##0"
+
+            summary_shop.value = sup_names.get(best_sid) or get_supplier_name(best_sid) or best_sid
+            summary_shop.alignment = _LEFT
+        else:
+            for summary_cell in (summary_price, summary_stock, summary_shop):
+                summary_cell.value = "—"
+                summary_cell.font = _NORMAL
+                summary_cell.alignment = _CENTER
 
         for s_idx, sid in enumerate(sups):
             cell_data = item["suppliers"].get(sid, {})
@@ -175,15 +224,12 @@ def _build_matrix_sheet(wb: Workbook, run_meta: dict, matrix: dict):
 
             if not mapping_ok or status in ("skipped", "pending", "no_mapping", ""):
                 price_cell.value     = "Hiányzó mapping"
-                price_cell.font      = _SMALL
+                price_cell.font      = _NORMAL
                 price_cell.alignment = _CENTER
-                price_cell.fill      = _NOMAP_FILL
                 stock_cell.value     = "—"
-                stock_cell.font      = _SMALL
+                stock_cell.font      = _NORMAL
                 stock_cell.alignment = _CENTER
-                stock_cell.fill      = _NOMAP_FILL
                 link_cell.value      = ""
-                link_cell.fill       = _NOMAP_FILL
 
             elif status != "ok":
                 err_map = {
@@ -194,30 +240,25 @@ def _build_matrix_sheet(wb: Workbook, run_meta: dict, matrix: dict):
                 }
                 err_text = err_map.get(status, "Technikai hiba")
                 price_cell.value     = err_text
-                price_cell.font      = Font(size=9, color="C00000")
+                price_cell.font      = _NORMAL
                 price_cell.alignment = _CENTER
-                price_cell.fill      = _RED_FILL
                 stock_cell.value     = "—"
-                stock_cell.font      = Font(size=9, color="C00000")
+                stock_cell.font      = _NORMAL
                 stock_cell.alignment = _CENTER
-                stock_cell.fill      = _RED_FILL
                 link_cell.value      = ""
-                link_cell.fill       = _RED_FILL
 
             else:
                 price_huf = cell_data.get("normalized_price_huf")
                 stock_qty = cell_data.get("stock_quantity")
                 product_url = cell_data.get("product_url")
 
-                # Cellában csak szám (mértékegység a fejlécben), rang prefix marad
-                prefix = RANK_PREFIX.get(rank, "")
-                price_cell.value     = f"{prefix}{_fmt_num(price_huf)}" if price_huf else "—"
+                price_cell.value     = _fmt_num(price_huf) if price_huf is not None else "—"
                 price_cell.alignment = _RIGHT
 
-                # Csak a legjobb ár cellája kap halvány zöld kiemelést
+                # Kizárólag a legjobb webshop egységár-cellája kap zöld kiemelést.
                 if rank == 1:
-                    price_cell.fill = _RANK2_FILL
-                    price_cell.font = _RANK2_FONT
+                    price_cell.fill = _BEST_FILL
+                    price_cell.font = _BEST_FONT
                 else:
                     price_cell.font = _NORMAL
 
@@ -242,6 +283,9 @@ def _build_matrix_sheet(wb: Workbook, run_meta: dict, matrix: dict):
     # ── Oszlopszélességek ─────────────────────────────────────────────────────
     ws.column_dimensions["A"].width = 20
     ws.column_dimensions["B"].width = 28
+    ws.column_dimensions["C"].width = 20
+    ws.column_dimensions["D"].width = 15
+    ws.column_dimensions["E"].width = 20
 
     for s_idx in range(len(sups)):
         price_col = FIXED_COLS + s_idx * COLS_PER_SUP + 1
@@ -331,10 +375,6 @@ def _build_detail_sheet(wb: Workbook, run_meta: dict, matrix: dict):
                 cell.font      = _NORMAL
                 cell.alignment = _LEFT
                 cell.border    = _BORDER
-
-            if cell_data.get("scrape_status") not in ("ok", "skipped", "pending", "no_mapping", ""):
-                for c_idx in range(1, len(row_data) + 1):
-                    ws.cell(row=r, column=c_idx).fill = _RED_FILL
 
             r += 1
 

@@ -52,28 +52,30 @@ CHAT_ERROR_FALLBACK = (
 LOCAL_STORE = Path(__file__).with_name("copilot_local_store.json")
 
 SYSTEM_PROMPT = """Te vagy a Gép-Coopilot, a Price Agent rendszer hibafelvételi asszisztense.
-Magyarul beszélj, röviden válaszolj, és egyszerre csak egy rövid kérdést tegyél fel.
-Csak a Price Agent / Gép-Coop árlekérdező rendszer működésével kapcsolatos hibák felvételében segíts.
-Ne beszélgess általános témákról, ne adj technikai tanácsot, ne próbáld megoldani a hibát.
-Gyűjtsd össze: problem_type, webshop, product_number, description, expected_result.
-Maximum néhány kérdés után foglald össze röviden, és kérj jóváhagyást.
-Ha a felhasználó üzenetében már felismerhető a probléma, webshop és cikkszám, töltsd ki ezeket, ne kérdezd meg újra.
+Az elsődleges feladatod eldönteni, hogy a felhasználó valódi, értelmezhető Price Agent / Gép-Coop rendszerhibát ír-e le.
+Köszönés, ismételt szó, általános beszélgetés vagy konkrét hiba nélküli szöveg NEM hibabejelentés.
+Például "szia", "szia szia szia", "segíts", "nem működik" önmagában nem elég: valid_issue legyen false.
+Valid hibabejelentéshez legyen legalább egy konkrét hibajelenség, például nincs ár, rossz ár, nincs készlet, hibaüzenet vagy lassú keresés.
+Magyarul beszélj, röviden válaszolj. Ne adj technikai tanácsot, és ne próbáld megoldani a hibát.
+Ha a felhasználó üzenetében felismerhető a hiba, webshop és cikkszám, töltsd ki ezeket.
+Több webshop esetén a webshops listába mindegyiket tedd bele, a webshop mezőbe pedig vesszővel elválasztva.
 Probléma felismerés:
 - "nem talál árat", "nincs ár", "üres ár" => missing_price
 - "rossz ár", "hibás ár" => wrong_price
 - "nem talál készletet", "nincs készlet" => missing_stock
 - "hibaüzenet", "error" => error_message
 - "lassú", "sokáig tart" => slow_search
-Ha problem_type, webshop, product_number és description megvan, ready_to_submit legyen true, és az assistant_message rövid összefoglaló legyen "Rögzítem így?" kezdéssel.
 Válaszolj csak JSON objektummal:
 {
   "assistant_message": "rövid magyar válasz",
+  "valid_issue": true|false,
   "problem_type": "missing_price|wrong_price|missing_stock|error_message|slow_search|other|null",
   "webshop": "string|null",
+  "webshops": ["string"],
   "product_number": "string|null",
   "description": "string|null",
   "expected_result": "string|null",
-  "ready_to_submit": true|false,
+  "ready_to_submit": false,
   "out_of_scope": true|false
 }"""
 
@@ -127,6 +129,25 @@ def _is_out_of_scope(text: str) -> bool:
         "gepcoop", "gép-coop", "lekérdez", "hiba", "lassú", "találat",
     ]
     return any(w in lower for w in off_topic) and not any(w in lower for w in app_terms)
+
+
+def _is_meaningful_issue(text: str) -> bool:
+    lower = " ".join(text.lower().split())
+    if len(lower) < 8:
+        return False
+    words = re.findall(r"[a-záéíóöőúüű0-9]+", lower)
+    if len(set(words)) <= 2 and len(words) >= 2:
+        return False
+    concrete_patterns = [
+        r"(nem talál|nincs|üres).{0,20}ár",
+        r"(rossz|hibás).{0,20}ár",
+        r"(nem talál|nincs|rossz|hibás).{0,20}készlet",
+        r"hibaüzenet",
+        r"\berror\b",
+        r"(lassú|sokáig|percekig).{0,30}(keres|lekérdez|fut)",
+        r"(üres|nincs).{0,20}találat",
+    ]
+    return any(re.search(pattern, lower) for pattern in concrete_patterns)
 
 
 def _infer_problem_type(text: str) -> str | None:
@@ -187,12 +208,22 @@ def _fallback_chat(message: str, state: dict) -> dict:
             **{k: state.get(k) for k in ("problem_type", "webshop", "product_number", "description", "expected_result")},
         }
 
+    if not _is_meaningful_issue(message):
+        return {
+            "assistant_message": "Kérlek, írd le röviden, milyen konkrét hibát tapasztaltál a rendszer használata közben.",
+            "valid_issue": False,
+            "out_of_scope": False,
+            "ready_to_submit": False,
+            **{k: state.get(k) for k in ("problem_type", "webshop", "product_number", "description", "expected_result")},
+        }
+
     inferred = {
         "problem_type": _infer_problem_type(message),
         "webshop": _infer_webshop(message),
         "product_number": _infer_product_number(message),
     }
     current = _merge_state(state, inferred)
+    current["valid_issue"] = True
 
     if not current.get("description") and len(message.strip()) > 8:
         current["description"] = message.strip()
@@ -424,6 +455,12 @@ def create_copilot_router(
         try:
             model_result = await _openai_chat(message, req.history, req.state)
             data = model_result or _fallback_chat(message, req.state)
+            data["valid_issue"] = bool(data.get("valid_issue", False))
+            if not data["valid_issue"]:
+                data["ready_to_submit"] = False
+                data["summary"] = ""
+                data["model"] = MODEL if model_result else "fallback"
+                return data
             merged = _merge_state(req.state, data)
             for key, value in merged.items():
                 data.setdefault(key, value)

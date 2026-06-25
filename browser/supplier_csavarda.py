@@ -240,18 +240,19 @@ async def _search_and_parse(page, supplier_part_no: str, emit: Callable, navigat
         await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
 
     # ── Step 3: wait for results ──────────────────────────────────────
+    wait_tasks = [
+        asyncio.create_task(page.wait_for_selector("a[href*='/pest/termek/']", timeout=15000)),
+        asyncio.create_task(page.wait_for_selector("text=0 találat", timeout=15000)),
+    ]
     try:
-        done, pending = await asyncio.wait(
-            [
-                asyncio.ensure_future(page.wait_for_selector("a[href*='/pest/termek/']", timeout=15000)),
-                asyncio.ensure_future(page.wait_for_selector("text=0 találat", timeout=15000)),
-            ],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for task in pending:
-            task.cancel()
+        await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
     except Exception:
         pass
+    finally:
+        for task in wait_tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*wait_tasks, return_exceptions=True)
 
     log.info(f"Search page loaded: {page.url}")
 

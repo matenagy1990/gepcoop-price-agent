@@ -363,20 +363,21 @@ async def _search_and_parse(page, supplier_part_no: str, emit: Callable, navigat
         await page.goto(_search_url(supplier_part_no), wait_until="domcontentloaded", timeout=20000)
 
     log.info(f"Search page loaded: {page.url}")
+    wait_tasks = [
+        asyncio.create_task(page.wait_for_selector("table tbody tr", timeout=_SEARCH_READY_TIMEOUT)),
+        asyncio.create_task(page.wait_for_selector("text=Találat: 0", timeout=_SEARCH_READY_TIMEOUT)),
+    ]
     try:
-        done, pending = await asyncio.wait(
-            [
-                asyncio.ensure_future(page.wait_for_selector("table tbody tr", timeout=_SEARCH_READY_TIMEOUT)),
-                asyncio.ensure_future(page.wait_for_selector("text=Találat: 0", timeout=_SEARCH_READY_TIMEOUT)),
-            ],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for task in pending:
-            task.cancel()
+        done, _ = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
             task.result()
     except Exception:
         log.warning("No explicit search result marker appeared after 8s — continuing with body inspection")
+    finally:
+        for task in wait_tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*wait_tasks, return_exceptions=True)
 
     body_text = await page.locator("body").inner_text(timeout=10000)
     log.info(f"Search page body (first 300): {body_text[:300]}")

@@ -11,13 +11,13 @@ Utoljára ellenőrizve a kódbázishoz: **2026-06-21**.
 
 ## 1. Mi ez és mire való?
 
-A beszerző **sok** Gép-Coop cikkszámot ad meg egyszerre (max. 50), kiválasztja a
+A beszerző **sok** Gép-Coop cikkszámot ad meg egyszerre (max. 400), kiválasztja a
 webshopokat, és az alkalmazás mindet lekérdezi, majd egy összehasonlító mátrixban
 + Excel exportban adja vissza az árakat és készleteket.
 
 | | Price Agent (egyedi) | Batch Agent (tömeges) |
 |---|---|---|
-| Cikkszám / futás | 1 | max. 50 |
+| Cikkszám / futás | 1 | max. 400 |
 | Webshop / futás | 1+ (párhuzamos) | 1–14 (párhuzamos) |
 | Böngésző / webshop | 1 (nyit–zár) | 1 (nyit–sok cikk–zár) |
 | Eredmény | valós idejű cards | mátrix + Excel |
@@ -196,7 +196,26 @@ Egyetlen igazságforrás = az adatbázis.
 alter table batch_runs add column if not exists scheduled_at timestamptz;
 ```
 
-`status` mező lehetséges értékei: `scheduled`, `running`, `completed`, `partial`, `failed`.
+A futtató nevének mentéséhez és a projekt/futtató szerinti gyors szűréshez
+futtasd a Supabase SQL Editorban:
+
+```sql
+alter table public.batch_runs
+    add column if not exists runner_name text;
+
+create extension if not exists pg_trgm;
+
+create index if not exists batch_runs_project_name_trgm_idx
+    on public.batch_runs using gin (project_name gin_trgm_ops);
+
+create index if not exists batch_runs_runner_name_trgm_idx
+    on public.batch_runs using gin (runner_name gin_trgm_ops);
+```
+
+A teljes migráció külön fájlban is megtalálható:
+`deploy/supabase_batch_runner_migration.sql`.
+
+`status` mező lehetséges értékei: `scheduled`, `running`, `completed`, `partial`, `failed`, `cancelled`.
 
 ---
 
@@ -219,6 +238,11 @@ Minden felületen (UI mátrix, Excel mátrix) azonos magyar szövegek:
 ## 11. Excel export
 
 Az export egyetlen **Mátrix** munkalapot tartalmaz (a részletes lap el lett távolítva).
+
+A terméknév után egy háromoszlopos **Összesítő** mutatja a legjobb ajánlat
+egységárát, készletét és webshopját. Az adattáblában kizárólag a legjobb
+webshop egységár-cellája kap zöld kiemelést; hibás vagy mapping nélküli
+eredményhez nem tartozik piros vagy szürke háttérszín.
 
 - Fájlnév: `batch_<projektnév>_<run_id[:8]>.xlsx` — a projektnévből csak ASCII
   karakterek kerülnek be (ékezetes betűk `_`-ra cserélve, hogy HTTP fejlécben
@@ -245,6 +269,7 @@ Az export egyetlen **Mátrix** munkalapot tartalmaz (a részletes lap el lett t�
 | `GET` | `/batch/run/{id}/progress` | SSE stream a futás haladásáról |
 | `GET` | `/batch/run/{id}` | Egy futás eredménye (mátrix) |
 | `GET` | `/batch/runs` | Korábbi + ütemezett futások listája |
+| `POST` | `/batch/run/{run_id}/cancel` | Aktív futás megszakítása |
 | `DELETE` | `/batch/run/{id}` | Futás törlése (ütemezett/lefutott; futó nem) |
 | `GET` | `/batch/run/{id}/export.xlsx` | Excel letöltés |
 
@@ -261,7 +286,8 @@ A szerveren a gyökér `.env`-ből táplálkozik mindkét alkalmazás
 | `SUPABASE_URL` | Supabase projekt URL |
 | `SUPABASE_KEY` | Supabase API kulcs (`sb_secret_*` formátum, **supabase-py ≥ 2.15.0 kell**) |
 | `EUR_TO_HUF_RATE` | EUR→HUF árfolyam (pl. `350`) |
-| `BATCH_MAX_ITEMS` | Max. cikkszám / futás (alapértelmezés: `50`) |
+| `BATCH_MAX_ITEMS` | Max. cikkszám / futás (alapértelmezés: `400`) |
+| `BATCH_IMMEDIATE_MAX_ITEMS` | Azonnali futás felső határa (alapértelmezés: `50`); efelett csak ütemezés engedélyezett |
 | `BATCH_SUPPLIER_LIMIT` | Párhuzamos webshopok száma. **Ajánlott: 4** — magasabb értéknél (8+) terhelés alatt hamis login-failed léphet fel |
 | `SCRAPER_TIMEOUT_SECONDS` | Egy lekérdezés időkorlátja másodpercben |
 | `SCRAPER_RETRY_COUNT` | Újrapróbálkozások száma hiba esetén (csak a fallback per-cikk úton) |

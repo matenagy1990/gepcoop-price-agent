@@ -306,6 +306,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
   <button onclick="newRun()" id="nav-new-run">+ Új lekérdezés</button>
   <button onclick="showScreen('past-runs')" id="nav-past-runs">Korábbi futások</button>
   <button onclick="window.location.href=window.location.protocol+'//'+window.location.hostname+':8080?select=1'" style="margin-left:auto;opacity:.85">⊞ Alkalmazások</button>
+  <button onclick="logoutBatchAgent()" style="opacity:.85">Kijelentkezés</button>
 </nav>
 
 <main>
@@ -324,8 +325,8 @@ hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
         <div class="text-muted mt8">Ha üresen hagyod, automatikusan generáljuk.</div>
       </div>
       <div>
-        <label>Gép-Coop cikkszámok <span class="text-muted">(max. 50, soronként egy)</span></label>
-        <div class="text-muted mt8" id="part-count-info">0 / 50 cikkszám</div>
+        <label>Gép-Coop cikkszámok <span class="text-muted">(max. 400, soronként egy)</span></label>
+        <div class="text-muted mt8" id="part-count-info">0 / 400 cikkszám</div>
       </div>
     </div>
 
@@ -349,7 +350,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
           <li>Illeszd be az Excelből a cikkszámokat</li>
           <li>Soronként egy cikkszám</li>
           <li>Az üres sorokat és duplikátumokat automatikusan kiszűrjük</li>
-          <li>Maximum 50 cikkszám / futás</li>
+          <li>Maximum 400 cikkszám / futás</li>
           <li>Az előellenőrzés megmutatja, mely webshopokban kereshető az adott cikk</li>
         </ul>
       </div>
@@ -408,6 +409,11 @@ hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
       <div style="font-family:'Oswald',sans-serif;font-size:20px;font-weight:600;letter-spacing:.5px;color:var(--navy)">Batch futás folyamatban…</div>
       <div class="text-muted" id="progress-run-id"></div>
     </div>
+    <button class="btn btn-ghost hidden" id="cancel-run-btn"
+            style="color:var(--red);border-color:#f1c7c7"
+            onclick="cancelCurrentRun()">
+      ■ Futás megszakítása
+    </button>
   </div>
 
   <div class="card">
@@ -498,10 +504,21 @@ hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
   </div>
 
   <div class="card">
+    <div class="form-grid" style="margin-bottom:18px">
+      <div>
+        <label for="past-runs-project-filter">Szűrés projekt nevére</label>
+        <input type="text" id="past-runs-project-filter" placeholder="Projekt neve" oninput="schedulePastRunsFilter()"/>
+      </div>
+      <div>
+        <label for="past-runs-runner-filter">Szűrés futtató nevére</label>
+        <input type="text" id="past-runs-runner-filter" placeholder="Futtató neve" oninput="schedulePastRunsFilter()"/>
+      </div>
+    </div>
     <div class="table-wrap">
       <table>
         <thead><tr>
           <th>Projekt neve</th>
+          <th>Futtató</th>
           <th>Dátum</th>
           <th>Cikkszámok</th>
           <th>Webshopok</th>
@@ -511,7 +528,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
           <th>Műveletek</th>
         </tr></thead>
         <tbody id="past-runs-tbody">
-          <tr><td colspan="8" style="text-align:center;padding:30px;color:var(--gray)">
+          <tr><td colspan="9" style="text-align:center;padding:30px;color:var(--gray)">
             <span class="spinner"></span> Betöltés…
           </td></tr>
         </tbody>
@@ -583,6 +600,13 @@ hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
 // ══════════════════════════════════════════════════════
 // State
 // ══════════════════════════════════════════════════════
+const _runnerHash = new URLSearchParams(window.location.hash.slice(1)).get('runner_name');
+if (_runnerHash) {
+  sessionStorage.setItem('batch_runner_name', _runnerHash);
+  history.replaceState(null, '', window.location.pathname + window.location.search);
+}
+const batchRunnerName = (sessionStorage.getItem('batch_runner_name') || '').trim() || 'Ismeretlen';
+
 let state = {
   suppliers: [],           // [{id, name, url}]
   selectedSuppliers: [],
@@ -591,6 +615,8 @@ let state = {
   currentMatrix: null,
   currentRunMeta: null,
   activeFilter: 'all',
+  currentEventSource: null,
+  cancellingRun: false,
 };
 
 // ══════════════════════════════════════════════════════
@@ -614,7 +640,7 @@ function resetNewRunForm() {
   document.getElementById('part-numbers').value = '';
   const info = document.getElementById('part-count-info');
   if (info) {
-    info.textContent = '0 / 50 cikkszám';
+    info.textContent = `0 / ${_appConfig.batch_max_items} cikkszám`;
     info.style.color = 'var(--gray)';
   }
   clearSuppliers();   // kipipálja a webshop-chipeket és üríti a kiválasztást
@@ -623,6 +649,12 @@ function resetNewRunForm() {
 function newRun() {
   resetNewRunForm();
   showScreen('new-run');
+}
+
+function logoutBatchAgent() {
+  sessionStorage.removeItem('batch_runner_name');
+  window.location.href =
+    `${window.location.protocol}//${window.location.hostname}:8080?logout=1`;
 }
 
 // ══════════════════════════════════════════════════════
@@ -657,12 +689,19 @@ function fmtDate(iso) {
   } catch { return iso; }
 }
 
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, char => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;',
+  })[char]);
+}
+
 function statusTag(status) {
   const map = {
     completed: ['tag-green', '✓ kész'],
     running:   ['tag-blue', '⏳ fut'],
     partial:   ['tag-yellow', '⚠ részleges'],
     failed:    ['tag-red', '✗ sikertelen'],
+    cancelled: ['tag-gray', '■ megszakítva'],
     scheduled: ['tag-blue', '⏰ ütemezve'],
   };
   const [cls, label] = map[status] || ['tag-gray', status];
@@ -844,9 +883,10 @@ function _vipaCloseModal(result) {
 document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('part-numbers').addEventListener('input', () => {
     const lines = getPartNumbers();
+    const uniqueCount = countUniquePartNumbers(lines);
     const el = document.getElementById('part-count-info');
-    el.textContent = `${lines.length} / 50 cikkszám`;
-    el.style.color = lines.length > 50 ? 'var(--red)' : 'var(--gray)';
+    el.textContent = `${uniqueCount} / ${_appConfig.batch_max_items} cikkszám`;
+    el.style.color = uniqueCount > _appConfig.batch_max_items ? 'var(--red)' : 'var(--gray)';
   });
   loadSuppliers();
   loadConfig();
@@ -857,6 +897,10 @@ function getPartNumbers() {
     .split('\n')
     .map(l => l.trim())
     .filter(l => l.length > 0);
+}
+
+function countUniquePartNumbers(parts) {
+  return new Set(parts.map(part => part.toUpperCase())).size;
 }
 
 function getProjectName() {
@@ -871,11 +915,15 @@ function getProjectName() {
 // ══════════════════════════════════════════════════════
 async function startPreview() {
   const parts = getPartNumbers();
+  const uniquePartCount = countUniquePartNumbers(parts);
   const suppliers = state.selectedSuppliers;
 
   if (!suppliers.length) { toast('Válassz legalább egy webshopot!'); return; }
   if (!parts.length) { toast('Adj meg legalább egy cikkszámot!'); return; }
-  if (parts.length > 50) { toast('Maximum 50 cikkszám adható meg!'); return; }
+  if (uniquePartCount > _appConfig.batch_max_items) {
+    toast(`Maximum ${_appConfig.batch_max_items} cikkszám adható meg!`);
+    return;
+  }
 
   const projectName = getProjectName();
 
@@ -984,15 +1032,28 @@ function renderPreview(data) {
     </table>
   `;
 
+  const startBtn = document.getElementById('start-run-btn');
   const schedBtn = document.getElementById('schedule-run-btn');
+  const immediateMode = data.total_items <= _appConfig.immediate_max_items;
+  startBtn.classList.toggle('hidden', !immediateMode);
+  schedBtn.classList.toggle('hidden', immediateMode);
+
   if (data.searchable_count === 0) {
-    document.getElementById('start-run-btn').disabled = true;
-    document.getElementById('start-run-btn').textContent = 'Nincs kereshető elem';
-    if (schedBtn) schedBtn.disabled = true;
+    if (immediateMode) {
+      startBtn.disabled = true;
+      startBtn.textContent = 'Nincs kereshető elem';
+    } else {
+      schedBtn.disabled = true;
+      schedBtn.textContent = 'Nincs kereshető elem';
+    }
   } else {
-    document.getElementById('start-run-btn').disabled = false;
-    document.getElementById('start-run-btn').innerHTML = `▶ Azonnali futás (${data.searchable_count} keresés)`;
-    if (schedBtn) schedBtn.disabled = false;
+    if (immediateMode) {
+      startBtn.disabled = false;
+      startBtn.innerHTML = `▶ Azonnali futás (${data.searchable_count} keresés)`;
+    } else {
+      schedBtn.disabled = false;
+      schedBtn.innerHTML = '⏰ Ütemezett futás';
+    }
   }
 }
 
@@ -1004,6 +1065,10 @@ let _supplierProgress = {};   // sid → {total, done, ok, errors, status}
 async function startBatchRun() {
   const data = state.previewData;
   if (!data) return;
+  if (data.total_items > _appConfig.immediate_max_items) {
+    toast(`${_appConfig.immediate_max_items} cikkszám felett csak ütemezett futás indítható.`);
+    return;
+  }
 
   // Csak azokkal a webshopokkal foglalkozunk, amelyekben a mapping után
   // legalább EGY kereshető cikkszám van. Ha egy kiválasztott webshopban egy
@@ -1043,7 +1108,13 @@ async function startBatchRun() {
   document.getElementById('progress-summary').textContent = 'Kapcsolódás…';
   document.getElementById('supplier-progress-tbody').innerHTML = '';
   document.getElementById('global-progress-bar').style.width = '0%';
+  document.getElementById('global-progress-bar').classList.remove('done', 'error');
   document.getElementById('latest-event').textContent = 'Várakozás…';
+  const cancelBtn = document.getElementById('cancel-run-btn');
+  cancelBtn.classList.add('hidden');
+  cancelBtn.disabled = false;
+  cancelBtn.textContent = '■ Futás megszakítása';
+  state.cancellingRun = false;
 
   _supplierProgress = {};
 
@@ -1071,6 +1142,7 @@ async function startBatchRun() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         project_name: data.project_name,
+        runner_name: batchRunnerName,
         selected_suppliers: runSuppliers,
         gepcoop_part_numbers: data.items.map(i => i.gepcoop_part_no),
       }),
@@ -1082,9 +1154,11 @@ async function startBatchRun() {
     const { batch_run_id } = await res.json();
     state.currentRunId = batch_run_id;
     document.getElementById('progress-run-id').textContent = `Futás azonosító: ${batch_run_id}`;
+    cancelBtn.classList.remove('hidden');
 
     // SSE stream
     const es = new EventSource(`/batch/run/${batch_run_id}/progress`);
+    state.currentEventSource = es;
     let totalSearches = data.searchable_count || 1;
     let globalDone = 0;
 
@@ -1095,11 +1169,23 @@ async function startBatchRun() {
       if (evt.event === 'batch_started') {
         totalSearches = evt.total_searches || totalSearches;
       }
-      if (evt.event === 'done' || evt.event === 'error') {
+      if (evt.event === 'done' || evt.event === 'error' || evt.event === 'cancelled') {
         es.close();
+        state.currentEventSource = null;
+        state.cancellingRun = false;
+        cancelBtn.classList.add('hidden');
         if (evt.event === 'done') {
           toast('✓ Batch futás kész! Eredmények betöltése…');
           setTimeout(() => loadRunResults(batch_run_id), 1000);
+        } else if (evt.event === 'cancelled') {
+          document.getElementById('progress-summary').innerHTML =
+            '<strong style="color:var(--gray)">■ A futás megszakítva.</strong>';
+          document.getElementById('latest-event').textContent = evt.message || 'A futást megszakították.';
+          toast('A futás megszakítva.');
+          state.currentRunId = null;
+          state.previewData = null;
+          resetNewRunForm();
+          showScreen('new-run');
         } else {
           document.getElementById('progress-summary').innerHTML =
             `<span style="color:var(--red)">✗ Hiba: ${evt.message}</span>`;
@@ -1108,12 +1194,47 @@ async function startBatchRun() {
     };
     es.onerror = () => {
       es.close();
-      document.getElementById('progress-summary').textContent = 'Kapcsolat megszakadt.';
+      state.currentEventSource = null;
+      if (!state.cancellingRun) {
+        document.getElementById('progress-summary').textContent = 'Kapcsolat megszakadt.';
+      }
     };
 
   } catch (e) {
     document.getElementById('progress-summary').innerHTML =
       `<div class="alert alert-error">${e.message}</div>`;
+  }
+}
+
+async function cancelCurrentRun(runId = state.currentRunId) {
+  if (!runId || state.cancellingRun) return;
+  if (!confirm('Biztosan megszakítod ezt a futást? A még folyamatban lévő lekérdezések leállnak.')) return;
+
+  state.cancellingRun = true;
+  const btn = document.getElementById('cancel-run-btn');
+  if (runId === state.currentRunId) {
+    btn.classList.remove('hidden');
+    btn.disabled = true;
+    btn.textContent = 'Megszakítás…';
+    document.getElementById('progress-summary').textContent = 'A futás leállítása folyamatban…';
+  }
+
+  try {
+    const res = await fetch(`/batch/run/${runId}/cancel`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'A futás nem szakítható meg.');
+    if (runId !== state.currentRunId) {
+      toast('A futás megszakítása elindult.');
+      setTimeout(loadPastRuns, 800);
+      state.cancellingRun = false;
+    }
+  } catch (e) {
+    state.cancellingRun = false;
+    if (runId === state.currentRunId) {
+      btn.disabled = false;
+      btn.textContent = '■ Futás megszakítása';
+    }
+    toast(e.message);
   }
 }
 
@@ -1414,20 +1535,27 @@ function downloadExcel() {
 // ══════════════════════════════════════════════════════
 async function loadPastRuns() {
   const tbody = document.getElementById('past-runs-tbody');
-  tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px"><span class="spinner"></span></td></tr>';
+  tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:30px"><span class="spinner"></span></td></tr>';
 
   try {
-    const res = await fetch('/batch/runs');
+    const params = new URLSearchParams({ limit: '500' });
+    const projectFilter = document.getElementById('past-runs-project-filter').value.trim();
+    const runnerFilter = document.getElementById('past-runs-runner-filter').value.trim();
+    if (projectFilter) params.set('project_name', projectFilter);
+    if (runnerFilter) params.set('runner_name', runnerFilter);
+    const res = await fetch(`/batch/runs?${params}`);
     const runs = await res.json();
+    if (!res.ok) throw new Error(runs.detail || 'A futások betöltése sikertelen.');
 
     if (!runs.length) {
-      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--gray)">Még nincs korábbi futás.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:30px;color:var(--gray)">Nincs a szűrésnek megfelelő futás.</td></tr>';
       return;
     }
 
     const readSet = _readRunSet();
     tbody.innerHTML = runs.map(run => {
       const isScheduled = run.status === 'scheduled';
+      const isRunning = run.status === 'running';
       const isDone = run.status === 'completed' || run.status === 'partial' || run.status === 'failed';
       const unread = isDone && !readSet.has(run.id);
       const newBadge = unread ? '<span class="tag tag-yellow" style="margin-left:6px">Új</span>' : '';
@@ -1438,13 +1566,19 @@ async function loadPastRuns() {
              onclick="deleteRun('${run.id}', ${isScheduled})">🗑 Törlés</button>`;
       const actions = isScheduled
         ? `<span style="color:var(--gray);font-size:12px">Indításra vár…</span>${delBtn}`
+        : isRunning
+          ? `<button class="btn btn-ghost" style="padding:4px 10px;font-size:12px;color:var(--red);border-color:#f1c7c7"
+               onclick="cancelCurrentRun('${run.id}')">■ Megszakítás</button>`
+        : run.status === 'cancelled'
+          ? `<span style="color:var(--gray);font-size:12px">Megszakítva</span>${delBtn}`
         : `<button class="btn btn-ghost" style="padding:4px 10px;font-size:12px"
              onclick="loadRunResults('${run.id}')">Megnyitás</button>
            <a href="/batch/run/${run.id}/export.xlsx" class="btn btn-ghost"
              style="padding:4px 10px;font-size:12px;text-decoration:none;margin-left:4px">📥 Excel</a>${delBtn}`;
       return `
       <tr ${unread ? 'style="background:#FFFDF0"' : ''}>
-        <td style="font-weight:600;max-width:240px">${run.project_name}${newBadge}</td>
+        <td style="font-weight:600;max-width:240px">${escapeHtml(run.project_name)}${newBadge}</td>
+        <td>${run.runner_name ? escapeHtml(run.runner_name) : '<span style="color:var(--gray)">Nincs adat</span>'}</td>
         <td>${whenCol}</td>
         <td style="text-align:center">${run.unique_part_count || 0}</td>
         <td style="text-align:center">${(run.selected_suppliers || []).length}</td>
@@ -1455,21 +1589,48 @@ async function loadPastRuns() {
       </tr>`;
     }).join('');
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="8"><div class="alert alert-error">${e.message}</div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9"><div class="alert alert-error">${escapeHtml(e.message)}</div></td></tr>`;
   }
+}
+
+let _pastRunsFilterTimer;
+function schedulePastRunsFilter() {
+  clearTimeout(_pastRunsFilterTimer);
+  _pastRunsFilterTimer = setTimeout(loadPastRuns, 300);
 }
 
 // ══════════════════════════════════════════════════════
 // Ütemezett futás — slot-választó (19:00–05:00, 30 perces sávok, 7 éjszaka)
 // ══════════════════════════════════════════════════════
 // Ütemezési mód: 'manual' (lokál → dátum+idő választó) vagy 'auto' (szerver → 20:00-tól)
-let _appConfig = { schedule_mode: 'manual', auto_spacing_min: 40, auto_start_hour: 20 };
+let _appConfig = {
+  schedule_mode: 'manual',
+  auto_spacing_min: 40,
+  auto_start_hour: 20,
+  batch_max_items: 400,
+  immediate_max_items: 50,
+};
 async function loadConfig() {
-  try { const r = await fetch('/config'); _appConfig = await r.json(); } catch (e) { /* marad a manual alapérték */ }
+  try {
+    const r = await fetch('/config');
+    _appConfig = { ..._appConfig, ...(await r.json()) };
+    const info = document.getElementById('part-count-info');
+    if (info) {
+      const count = countUniquePartNumbers(getPartNumbers());
+      info.textContent = `${count} / ${_appConfig.batch_max_items} cikkszám`;
+      info.style.color = count > _appConfig.batch_max_items ? 'var(--red)' : 'var(--gray)';
+    }
+  } catch (e) { /* maradnak az alapértékek */ }
 }
 
 // Az "Ütemezett futás" gomb két viselkedése a környezet szerint
 function onScheduleClick() {
+  const data = state.previewData;
+  if (!data) return;
+  if (data.total_items <= _appConfig.immediate_max_items) {
+    toast(`${_appConfig.immediate_max_items} vagy kevesebb cikkszámnál csak azonnali futás indítható.`);
+    return;
+  }
   if (_appConfig.schedule_mode === 'auto') scheduleAuto();
   else openScheduleModal();
 }
@@ -1478,6 +1639,10 @@ function onScheduleClick() {
 async function scheduleAuto() {
   const data = state.previewData;
   if (!data) return;
+  if (data.total_items <= _appConfig.immediate_max_items) {
+    toast(`${_appConfig.immediate_max_items} vagy kevesebb cikkszámnál csak azonnali futás indítható.`);
+    return;
+  }
   const runSuppliers = data.selected_suppliers.filter(sid =>
     data.items.some(it => it.suppliers[sid] && it.suppliers[sid].status === 'mapped'));
   if (runSuppliers.length === 0) { toast('Egyik kiválasztott webshopban sincs kereshető cikkszám.'); return; }
@@ -1491,6 +1656,7 @@ async function scheduleAuto() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         project_name: data.project_name,
+        runner_name: batchRunnerName,
         selected_suppliers: runSuppliers,
         gepcoop_part_numbers: data.items.map(i => i.gepcoop_part_no),
         // szerver módban nincs időpont — a backend osztja ki a következő szabad sávot
@@ -1564,6 +1730,10 @@ function closeScheduleModal() {
 async function confirmSchedule() {
   const data = state.previewData;
   if (!data) return;
+  if (data.total_items <= _appConfig.immediate_max_items) {
+    scheduleMsg('error', `⚠ ${_appConfig.immediate_max_items} vagy kevesebb cikkszámnál csak azonnali futás indítható.`);
+    return;
+  }
 
   const val = document.getElementById('schedule-datetime').value;
   if (!val) { scheduleMsg('error', '⚠ Adj meg egy időpontot.'); return; }
@@ -1588,6 +1758,7 @@ async function confirmSchedule() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         project_name: data.project_name,
+        runner_name: batchRunnerName,
         selected_suppliers: runSuppliers,
         gepcoop_part_numbers: data.items.map(i => i.gepcoop_part_no),
         scheduled_at: when.toISOString(),   // UTC ISO

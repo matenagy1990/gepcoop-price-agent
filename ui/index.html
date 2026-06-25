@@ -439,6 +439,16 @@
   .copilot-summary{margin:0 14px 10px;padding:12px;border:1px solid rgba(0,159,230,.28);border-radius:12px;background:rgba(0,159,230,.06);font-size:13px;color:var(--navy2);white-space:pre-wrap}
   .copilot-actions{display:flex;gap:8px;padding:0 14px 12px}
   .copilot-actions.hidden{display:none}
+  .copilot-webshops{margin:0 14px 12px;padding:10px;border:1px solid var(--border);border-radius:10px;background:#fff}
+  .copilot-webshops.hidden{display:none}
+  .copilot-webshop-title{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;font-size:12px;font-weight:700;color:var(--navy2)}
+  .copilot-webshop-count{font-weight:600;color:var(--gray)}
+  .copilot-webshop-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;max-height:190px;overflow-y:auto;padding-right:3px;margin-bottom:9px}
+  .copilot-webshop-option{display:flex;align-items:center;gap:6px;min-width:0;padding:6px 7px;border:1px solid var(--border);border-radius:6px;font-size:11px;color:var(--navy2);cursor:pointer}
+  .copilot-webshop-option:has(input:checked){border-color:var(--blue);background:#eaf7fd}
+  .copilot-webshop-option input{width:15px;height:15px;flex:0 0 auto;accent-color:var(--blue)}
+  .copilot-webshop-option span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .copilot-webshop-confirm{width:100%;padding:8px 12px;font-size:12px}
   .copilot-foot{border-top:1px solid var(--border);padding:12px;background:#fff;display:flex;gap:8px}
   .copilot-input{flex:1;border:1.5px solid var(--border);border-radius:10px;padding:10px 11px;font-family:'Inter',sans-serif;font-size:13px;resize:none;min-height:42px;max-height:90px}
   .copilot-input:focus{outline:none;border-color:var(--blue)}
@@ -694,7 +704,7 @@
         <img class="app-tile-img" src="/tile-batch.jpg" alt="Tömeges árlekérdezés">
         <div class="app-tile-overlay">
           <div class="app-tile-name">Tömeges árlekérdezés</div>
-          <div class="app-tile-desc">Akár 50 cikkszám egyszerre, összehasonlító mátrix és Excel export</div>
+          <div class="app-tile-desc">Akár 400 cikkszám egyszerre, összehasonlító mátrix és Excel export</div>
         </div>
       </div>
     </div>
@@ -846,9 +856,17 @@
     <button id="copilot-close" class="copilot-close" type="button" title="Bezárás">✕</button>
   </div>
   <div id="copilot-msgs" class="copilot-msgs"></div>
+  <div id="copilot-webshops" class="copilot-webshops hidden">
+    <div class="copilot-webshop-title">
+      <span>Érintett webshopok</span>
+      <span id="copilot-webshop-count" class="copilot-webshop-count">0 kiválasztva</span>
+    </div>
+    <div id="copilot-webshop-grid" class="copilot-webshop-grid"></div>
+    <button id="copilot-webshop-confirm" class="btn-upload copilot-webshop-confirm" type="button" disabled>Kiválasztás kész</button>
+  </div>
   <div id="copilot-summary" class="copilot-summary hidden"></div>
   <div id="copilot-actions" class="copilot-actions hidden">
-    <button id="copilot-submit" class="btn-upload" type="button">Beküldés</button>
+    <button id="copilot-submit" class="btn-upload" type="button">Véglegesítés</button>
     <button id="copilot-edit" class="btn-secondary" type="button">Módosítás</button>
   </div>
   <div class="copilot-foot">
@@ -1208,6 +1226,16 @@
                 <button class="btn-upload" id="adm-btn-refresh-copilot" style="font-size:13px;padding:6px 16px">↻ Frissítés</button>
               </div>
               <p class="adm-hint">A felhasználók által beküldött Gép-Coopilot hibajegyek. Státusz: Nyitott / Folyamatban / Megoldva.</p>
+              <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+                <label for="adm-copilot-status-filter" style="font-size:12px;font-weight:700;color:var(--muted)">Státuszszűrő</label>
+                <select id="adm-copilot-status-filter" class="copilot-status-select">
+                  <option value="all">Összes státusz</option>
+                  <option value="open">Nyitott</option>
+                  <option value="in_progress">Folyamatban</option>
+                  <option value="resolved">Megoldva</option>
+                </select>
+                <span id="adm-copilot-filter-count" class="adm-hint" style="margin:0"></span>
+              </div>
               <div class="adm-table-wrap">
                 <table class="adm-table">
                   <thead>
@@ -1250,8 +1278,28 @@ let copilotMessages = [];
 let copilotReadyPayload = null;
 let copilotOpenedOnce = false;
 let copilotEnabled = false;
+let copilotStep = 'description';
+let copilotEditUsed = false;
+let copilotAwaitingEdit = false;
 let admCopilotTasks = [];
 const COPILOT_ERROR_FALLBACK = 'Még egy chatbot is megérdemel egy kis pihenést. Viccet félre téve, jelenleg a Gép-Coopilot nem elérhető, dolgozunk a problémán.';
+const COPILOT_WEBSHOPS = [
+  ['gepcoop', 'Gép-Coop'],
+  ['csavarda', 'Csavarda'],
+  ['irontrade', 'Iron Trade'],
+  ['koelner', 'Koelner'],
+  ['mekrs', 'Mekrs'],
+  ['fabory', 'Fabory'],
+  ['reyher', 'Reyher'],
+  ['hopefix', 'Hopefix'],
+  ['fastbolt', 'Fastbolt'],
+  ['schaefer', 'Schäfer'],
+  ['kingb2b', 'King B2B'],
+  ['wasishop', 'Wasishop'],
+  ['argip', 'Argip'],
+  ['inoxmare', 'Inoxmare'],
+  ['vipa', 'Vipa'],
+];
 
 // pipeline state per supplier: {csavarda: [s0,s1,s2,s3], irontrade: [...]}
 const BROWSER_STEPS = [
@@ -1458,7 +1506,14 @@ async function bootstrapSession() {
     sessionStorage.setItem('gc_user', username);
     sessionStorage.setItem('gc_is_admin', isAdminUser ? '1' : '0');
     sessionStorage.setItem('gc_is_primary_admin', isPrimaryAdminUser ? '1' : '0');
-    const goSelect = new URLSearchParams(window.location.search).get('select') === '1';
+    const params = new URLSearchParams(window.location.search);
+    const logoutRequested = params.get('logout') === '1';
+    if (logoutRequested) {
+      window.history.replaceState({}, '', window.location.pathname);
+      doLogout(true);
+      return;
+    }
+    const goSelect = params.get('select') === '1';
     if (goSelect) { window.history.replaceState({}, '', window.location.pathname); showAppSelect(); }
     else showApp();
   } catch (_) {
@@ -1479,7 +1534,8 @@ function enterPriceAgent(){
 }
 
 function openBatchAgent(){
-  window.location.href = `${window.location.protocol}//${window.location.hostname}:8001`;
+  const runner = encodeURIComponent(username || '');
+  window.location.href = `${window.location.protocol}//${window.location.hostname}:8001/#runner_name=${runner}`;
 }
 
 function showBatchPwModal(){
@@ -2919,7 +2975,7 @@ function copilotOpen() {
   document.getElementById('copilot-panel').classList.remove('hidden');
   if (!copilotOpenedOnce) {
     copilotOpenedOnce = true;
-    copilotAddMessage('assistant', 'Szia! Van valami probléma? Segítek röviden rögzíteni.');
+    copilotAddMessage('assistant', 'Milyen jellegű hibát tapasztaltál? Írd le röviden.');
   }
   setTimeout(() => document.getElementById('copilot-input').focus(), 60);
 }
@@ -2928,60 +2984,264 @@ function copilotClose() {
   document.getElementById('copilot-panel').classList.add('hidden');
 }
 
+function copilotToggle() {
+  if (!copilotEnabled) return;
+  const panel = document.getElementById('copilot-panel');
+  if (panel.classList.contains('hidden')) copilotOpen();
+  else copilotClose();
+}
+
 function copilotSetReady(data) {
   copilotReadyPayload = data && data.ready_to_submit ? data : null;
   const summary = document.getElementById('copilot-summary');
   const actions = document.getElementById('copilot-actions');
+  const editBtn = document.getElementById('copilot-edit');
   if (copilotReadyPayload) {
     summary.textContent = data.summary || data.assistant_message || '';
     summary.classList.remove('hidden');
     actions.classList.remove('hidden');
+    editBtn.classList.toggle('hidden', copilotEditUsed);
   } else {
     summary.classList.add('hidden');
     actions.classList.add('hidden');
   }
 }
 
+function copilotInferProblemType(description) {
+  const text = description.toLowerCase();
+  if ((text.includes('nem talál') || text.includes('nincs') || text.includes('üres')) && text.includes('ár')) return 'missing_price';
+  if (text.includes('rossz ár') || text.includes('hibás ár')) return 'wrong_price';
+  if (text.includes('készlet') && (text.includes('nem') || text.includes('nincs') || text.includes('rossz'))) return 'missing_stock';
+  if (text.includes('hibaüzenet') || text.includes('error')) return 'error_message';
+  if (text.includes('lassú') || text.includes('sokáig')) return 'slow_search';
+  return 'other';
+}
+
+function copilotInferProductNumber(text) {
+  const matches = text.toUpperCase().match(/\b[A-Z0-9][A-Z0-9._/-]{4,}\b/g) || [];
+  return matches
+    .filter(value => /\d/.test(value))
+    .sort((a, b) => b.length - a.length)[0] || '';
+}
+
+function copilotInferWebshops(text) {
+  const normalized = text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  const aliases = {
+    gepcoop: ['gep-coop', 'gepcoop', 'gep coop'],
+    csavarda: ['csavarda'],
+    irontrade: ['iron trade', 'irontrade'],
+    koelner: ['koelner'],
+    mekrs: ['mekrs'],
+    fabory: ['fabory'],
+    reyher: ['reyher'],
+    hopefix: ['hopefix'],
+    fastbolt: ['fastbolt'],
+    schaefer: ['schafer', 'schaefer'],
+    kingb2b: ['king b2b', 'kingb2b'],
+    wasishop: ['wasishop', 'wasi shop'],
+    argip: ['argip'],
+    inoxmare: ['inoxmare'],
+    vipa: ['vipa'],
+  };
+  return COPILOT_WEBSHOPS
+    .filter(([id]) => (aliases[id] || []).some(alias => normalized.includes(alias)))
+    .map(([id]) => id);
+}
+
+function copilotWebshopLabels(ids) {
+  return ids.map(id => COPILOT_WEBSHOPS.find(item => item[0] === id)?.[1] || id);
+}
+
+function copilotResolveWebshopIds(values) {
+  const text = (Array.isArray(values) ? values : [values])
+    .filter(Boolean)
+    .join(' ');
+  return copilotInferWebshops(text);
+}
+
+function copilotBuildSummary() {
+  return [
+    `Hiba leírása: ${copilotState.description || ''}`,
+    `Cikkszám: ${copilotState.product_number || ''}`,
+    `Webshop: ${copilotState.webshop || ''}`,
+  ].join('\n');
+}
+
+function copilotShowWebshops() {
+  const box = document.getElementById('copilot-webshops');
+  const grid = document.getElementById('copilot-webshop-grid');
+  const selected = new Set(copilotState.webshops || []);
+  grid.innerHTML = COPILOT_WEBSHOPS.map(([id, label]) => `
+    <label class="copilot-webshop-option">
+      <input type="checkbox" value="${id}" ${selected.has(id) ? 'checked' : ''}>
+      <span>${label}</span>
+    </label>
+  `).join('');
+  grid.querySelectorAll('input').forEach(input => {
+    input.addEventListener('change', copilotUpdateWebshopSelection);
+  });
+  copilotUpdateWebshopSelection();
+  box.classList.remove('hidden');
+  document.querySelector('.copilot-foot').classList.add('hidden');
+}
+
+function copilotHideWebshops() {
+  document.getElementById('copilot-webshops').classList.add('hidden');
+  document.querySelector('.copilot-foot').classList.remove('hidden');
+}
+
+function copilotUpdateWebshopSelection() {
+  const count = document.querySelectorAll('#copilot-webshop-grid input:checked').length;
+  document.getElementById('copilot-webshop-count').textContent = `${count} kiválasztva`;
+  document.getElementById('copilot-webshop-confirm').disabled = count === 0;
+}
+
+function copilotOfferSummary() {
+  const summary = copilotBuildSummary();
+  const data = {
+    ...copilotState,
+    summary,
+    ready_to_submit: true,
+  };
+  copilotAddMessage('assistant', 'Kérlek, ellenőrizd az összefoglalót.');
+  copilotSetReady(data);
+}
+
+function copilotResetFlow() {
+  copilotState = {};
+  copilotReadyPayload = null;
+  copilotStep = 'description';
+  copilotEditUsed = false;
+  copilotAwaitingEdit = false;
+  copilotSetReady(null);
+  copilotHideWebshops();
+}
+
+function copilotClearConversation() {
+  document.getElementById('copilot-msgs').innerHTML = '';
+  copilotMessages = [];
+  copilotResetFlow();
+  copilotAddMessage('assistant', 'Milyen jellegű hibát tapasztaltál? Írd le röviden.');
+}
+
 async function copilotSend() {
   const input = document.getElementById('copilot-input');
-  const btn = document.getElementById('copilot-send');
+  const sendBtn = document.getElementById('copilot-send');
   const message = input.value.trim();
-  if (!message) return;
+  if (!message || copilotStep === 'webshops') return;
   input.value = '';
-  copilotSetReady(null);
   copilotAddMessage('user', message);
-  btn.disabled = true;
-  btn.textContent = '…';
-  try {
-    const res = await fetch('/copilot/chat', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${authToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message, history: copilotMessages.slice(-10), state: copilotState }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || 'A Gép-Coopilot válasza sikertelen.');
-    copilotState = {
-      problem_type: data.problem_type || copilotState.problem_type,
-      webshop: data.webshop || copilotState.webshop,
-      product_number: data.product_number || copilotState.product_number,
-      description: data.description || copilotState.description,
-      expected_result: data.expected_result || copilotState.expected_result,
-    };
-    copilotAddMessage('assistant', data.assistant_message || 'Rendben.');
-    copilotSetReady(data);
-  } catch (err) {
-    copilotAddMessage('assistant', COPILOT_ERROR_FALLBACK);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Küldés';
+
+  if (copilotAwaitingEdit) {
+    copilotState.description = `${copilotState.description}\nKiegészítés: ${message}`;
+    copilotAwaitingEdit = false;
+    copilotStep = 'summary';
+    copilotOfferSummary();
+    return;
   }
+
+  if (copilotStep === 'description') {
+    sendBtn.disabled = true;
+    sendBtn.textContent = '…';
+    let data;
+    try {
+      const res = await fetch('/copilot/chat', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${authToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message,
+          history: copilotMessages.slice(-6),
+          state: { phase: 'initial_issue_validation' },
+        }),
+      });
+      data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'A Gép-Coopilot válasza sikertelen.');
+    } catch (err) {
+      copilotAddMessage('assistant', COPILOT_ERROR_FALLBACK);
+      return;
+    } finally {
+      sendBtn.disabled = false;
+      sendBtn.textContent = 'Küldés';
+    }
+
+    if (!data.valid_issue) {
+      copilotAddMessage(
+        'assistant',
+        data.assistant_message || 'Kérlek, írd le röviden, milyen konkrét hibát tapasztaltál.'
+      );
+      return;
+    }
+
+    copilotState.description = data.description || message;
+    copilotState.problem_type = data.problem_type || copilotInferProblemType(message);
+    const inferredProductNumber = data.product_number || copilotInferProductNumber(message);
+    const inferredWebshops = copilotResolveWebshopIds([
+      ...(data.webshops || []),
+      data.webshop || '',
+      message,
+    ]);
+
+    if (inferredProductNumber) {
+      copilotState.product_number = inferredProductNumber;
+    }
+    if (inferredWebshops.length) {
+      copilotState.webshops = inferredWebshops;
+      copilotState.webshop = copilotWebshopLabels(inferredWebshops).join(', ');
+    }
+
+    if (copilotState.product_number && copilotState.webshop) {
+      copilotStep = 'summary';
+      copilotOfferSummary();
+      return;
+    }
+    if (copilotState.product_number) {
+      copilotStep = 'webshops';
+      copilotAddMessage('assistant', 'Melyik webshopban történt a hiba? Egyet vagy többet is megjelölhetsz.');
+      copilotShowWebshops();
+      return;
+    }
+    if (copilotState.webshop) {
+      copilotStep = 'product_number';
+      copilotAddMessage('assistant', 'Melyik cikkszámnál tapasztaltad a hibát?');
+      return;
+    }
+    copilotStep = 'product_number';
+    copilotAddMessage('assistant', 'Melyik cikkszámnál tapasztaltad a hibát?');
+    return;
+  }
+
+  if (copilotStep === 'product_number') {
+    copilotState.product_number = message;
+    copilotStep = 'webshops';
+    copilotAddMessage('assistant', 'Melyik webshopban történt a hiba? Egyet vagy többet is megjelölhetsz.');
+    copilotShowWebshops();
+  }
+}
+
+function copilotConfirmWebshops() {
+  const checked = [...document.querySelectorAll('#copilot-webshop-grid input:checked')];
+  if (!checked.length) {
+    toast('Jelölj meg legalább egy webshopot.');
+    return;
+  }
+  const ids = checked.map(input => input.value);
+  const labels = copilotWebshopLabels(ids);
+  copilotState.webshops = ids;
+  copilotState.webshop = labels.join(', ');
+  copilotHideWebshops();
+  copilotAddMessage('user', labels.join(', '));
+  copilotStep = 'summary';
+  copilotOfferSummary();
 }
 
 async function copilotSubmit() {
   if (!copilotReadyPayload) return;
   const btn = document.getElementById('copilot-submit');
   btn.disabled = true;
-  btn.textContent = 'Beküldés…';
+  btn.textContent = 'Véglegesítés…';
   const payload = {
     problem_type: copilotReadyPayload.problem_type,
     webshop: copilotReadyPayload.webshop,
@@ -2999,24 +3259,33 @@ async function copilotSubmit() {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || 'A hibajegy mentése sikertelen.');
-    copilotAddMessage('assistant', `Köszönöm, rögzítettem a hibát.\n\nAzonosító: ${data.display_id}`);
-    copilotState = {};
-    copilotReadyPayload = null;
     copilotSetReady(null);
+    copilotAddMessage(
+      'assistant',
+      `Rögzítettük a hibát (${data.display_id}), és mihamarabb intézkedünk, hogy megoldódjon.`
+    );
+    document.querySelector('.copilot-foot').classList.add('hidden');
+    setTimeout(copilotClearConversation, 2200);
   } catch (err) {
     copilotAddMessage('assistant', `⚠ ${err.message}`);
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Beküldés';
+    btn.textContent = 'Véglegesítés';
   }
 }
 
-document.getElementById('copilot-launch').addEventListener('click', copilotOpen);
+document.getElementById('copilot-launch').addEventListener('click', copilotToggle);
 document.getElementById('copilot-close').addEventListener('click', copilotClose);
 document.getElementById('copilot-send').addEventListener('click', copilotSend);
 document.getElementById('copilot-submit').addEventListener('click', copilotSubmit);
+document.getElementById('copilot-webshop-confirm').addEventListener('click', copilotConfirmWebshops);
 document.getElementById('copilot-edit').addEventListener('click', () => {
+  if (copilotEditUsed || !copilotReadyPayload) return;
+  copilotEditUsed = true;
+  copilotAwaitingEdit = true;
+  copilotStep = 'edit';
   copilotSetReady(null);
+  copilotAddMessage('assistant', 'Mivel egészítenéd még ki a leírást?');
   document.getElementById('copilot-input').focus();
 });
 document.getElementById('copilot-input').addEventListener('keydown', (e) => {
@@ -3051,11 +3320,31 @@ async function admLoadCopilotTasks() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || 'Nem sikerült betölteni a hibajegyeket.');
     admCopilotTasks = data.tasks || [];
-    if (!admCopilotTasks.length) {
-      tbody.innerHTML = '<tr><td colspan="7" class="adm-empty">Nincs Gép-Coopilot hibajegy.</td></tr>';
-      return;
-    }
-    tbody.innerHTML = admCopilotTasks.map(t => `
+    admRenderCopilotTasks();
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="7" class="adm-empty">⚠ ${escHtml(err.message)}</td></tr>`;
+  }
+}
+
+function admRenderCopilotTasks() {
+  const tbody = document.getElementById('adm-copilot-tbody');
+  const status = document.getElementById('adm-copilot-status-filter').value;
+  const tasks = status === 'all'
+    ? admCopilotTasks
+    : admCopilotTasks.filter(task => task.status === status);
+  document.getElementById('adm-copilot-filter-count').textContent =
+    `${tasks.length} / ${admCopilotTasks.length} hibajegy`;
+
+  if (!tasks.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="adm-empty">${
+      admCopilotTasks.length
+        ? 'Nincs a szűrésnek megfelelő hibajegy.'
+        : 'Nincs Gép-Coopilot hibajegy.'
+    }</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = tasks.map(t => `
       <tr class="copilot-task-row" onclick="admOpenCopilotTask('${escAttr(t.id)}')">
         <td><code>#${escHtml(String(t.id).slice(0, 6).toUpperCase())}</code></td>
         <td>${escHtml(t.user_id || '—')}</td>
@@ -3066,9 +3355,6 @@ async function admLoadCopilotTasks() {
         <td>${t.created_at ? fmtTs(t.created_at) : '—'}</td>
       </tr>
     `).join('');
-  } catch (err) {
-    tbody.innerHTML = `<tr><td colspan="7" class="adm-empty">⚠ ${escHtml(err.message)}</td></tr>`;
-  }
 }
 
 async function admOpenCopilotTask(taskId) {
@@ -3136,13 +3422,20 @@ async function admSaveCopilotStatus(taskId) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || 'Mentés sikertelen.');
     await admLoadCopilotTasks();
-    await admOpenCopilotTask(taskId);
+    const activeFilter = document.getElementById('adm-copilot-status-filter').value;
+    if (activeFilter === 'all' || activeFilter === status) {
+      await admOpenCopilotTask(taskId);
+    }
   } catch (err) {
     alert(`⚠ ${err.message}`);
   }
 }
 
 document.getElementById('adm-btn-refresh-copilot').addEventListener('click', admLoadCopilotTasks);
+document.getElementById('adm-copilot-status-filter').addEventListener('change', () => {
+  document.getElementById('adm-copilot-detail').classList.add('hidden');
+  admRenderCopilotTasks();
+});
 
 async function admLoadFxSettings() {
   const input = document.getElementById('adm-eur-rate');

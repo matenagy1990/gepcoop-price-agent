@@ -20,7 +20,8 @@ services:
     environment:
       PRICE_AGENT_PATH: /app/GepcoopPriceAgent
       EUR_TO_HUF_RATE: "400"
-      BATCH_MAX_ITEMS: "50"
+      BATCH_MAX_ITEMS: "400"
+      BATCH_IMMEDIATE_MAX_ITEMS: "50"
       BATCH_SUPPLIER_LIMIT: "4"
       SCRAPER_TIMEOUT_SECONDS: "60"
       SCRAPER_RETRY_COUNT: "2"

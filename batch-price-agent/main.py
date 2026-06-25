@@ -17,7 +17,7 @@ except Exception:  # pragma: no cover — tzdata hiányában esik vissza UTC-re
     _BUDAPEST = timezone.utc
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -44,12 +44,14 @@ from batch.export_excel import generate_excel
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger(__name__)
 
-BATCH_MAX_ITEMS = int(os.environ.get("BATCH_MAX_ITEMS", "50"))
+BATCH_MAX_ITEMS = int(os.environ.get("BATCH_MAX_ITEMS", "400"))
+IMMEDIATE_MAX_ITEMS = int(os.environ.get("BATCH_IMMEDIATE_MAX_ITEMS", "50"))
 
 app = FastAPI(title="Batch Price Agent", version="1.0.0")
 
 # SSE futások: batch_run_id → asyncio.Queue
 _active_runs: dict[str, asyncio.Queue] = {}
+_active_run_tasks: dict[str, asyncio.Task] = {}
 
 # In-memory eredmény cache – Supabase mentési hiba esetén is visszaadható
 _completed_matrices: dict[str, dict] = {}   # run_id → {run_meta, matrix}
@@ -66,12 +68,14 @@ class PreviewRequest(BaseModel):
 
 class RunRequest(BaseModel):
     project_name: str
+    runner_name: str | None = None
     selected_suppliers: list[str]
     gepcoop_part_numbers: list[str]
 
 
 class ScheduleRequest(BaseModel):
     project_name: str
+    runner_name: str | None = None
     selected_suppliers: list[str]
     gepcoop_part_numbers: list[str]
     # Manuális (lokál) módban kötelező; szerver (auto) módban figyelmen kívül
@@ -87,12 +91,17 @@ class VipaCompleteLoginRequest(BaseModel):
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _unique_part_count(req_parts: list[str]) -> int:
+    return len({part.strip().upper() for part in req_parts if part and part.strip()})
+
+
 def _validate_request(req_suppliers: list[str], req_parts: list[str]):
     if not req_suppliers:
         raise HTTPException(400, "Legalább egy webshopot ki kell választani.")
-    if not req_parts:
+    part_count = _unique_part_count(req_parts)
+    if part_count == 0:
         raise HTTPException(400, "Legalább egy cikkszámot meg kell adni.")
-    if len(req_parts) > BATCH_MAX_ITEMS:
+    if part_count > BATCH_MAX_ITEMS:
         raise HTTPException(400, f"Maximum {BATCH_MAX_ITEMS} cikkszám adható meg egyszerre.")
     unknown = [s for s in req_suppliers if s not in SUPPLIERS]
     if unknown:
@@ -103,9 +112,34 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _normalize_runner_name(runner_name: str | None) -> str:
+    return (runner_name or "").strip()[:160] or "Ismeretlen"
+
+
+def _register_run_task(run_id: str, task: asyncio.Task) -> None:
+    _active_run_tasks[run_id] = task
+
+    def cleanup(done_task: asyncio.Task) -> None:
+        if _active_run_tasks.get(run_id) is done_task:
+            _active_run_tasks.pop(run_id, None)
+
+    task.add_done_callback(cleanup)
+
+
+async def _set_run_status(run_id: str, status: str) -> None:
+    try:
+        get_supabase().table("batch_runs").update({
+            "status": status,
+            "completed_at": _now_iso(),
+        }).eq("id", run_id).execute()
+    except Exception as exc:
+        log.error("Futás státuszmentési hiba (%s -> %s): %s", run_id, status, exc)
+
+
 async def _save_batch_run(
     run_id: str,
     project_name: str,
+    runner_name: str | None,
     preview: dict,
     status: str = "running",
     scheduled_at: str | None = None,
@@ -117,6 +151,7 @@ async def _save_batch_run(
         row = {
             "id": run_id,
             "project_name": project_name,
+            "runner_name": _normalize_runner_name(runner_name),
             "status": status,
             "selected_suppliers": preview["selected_suppliers"],
             "total_input_count": preview["total_items"],
@@ -313,6 +348,14 @@ async def _execute_batch(run_id: str, preview: dict, project_name: str, event_qu
         }
         await _save_results(run_id, results, matrix)
         await event_queue.put({"event": "done", "batch_run_id": run_id})
+    except asyncio.CancelledError:
+        log.info("Batch futás megszakítva: %s", run_id)
+        await _set_run_status(run_id, "cancelled")
+        await event_queue.put({
+            "event": "cancelled",
+            "batch_run_id": run_id,
+            "message": "A futást a felhasználó megszakította.",
+        })
     except Exception as exc:
         log.exception("Batch futási hiba")
         await event_queue.put({"event": "error", "message": str(exc)})
@@ -323,8 +366,14 @@ async def _execute_batch(run_id: str, preview: dict, project_name: str, event_qu
 
 
 @app.post("/batch/run")
-async def batch_run_start(req: RunRequest, background_tasks: BackgroundTasks):
+async def batch_run_start(req: RunRequest):
     _validate_request(req.selected_suppliers, req.gepcoop_part_numbers)
+    part_count = _unique_part_count(req.gepcoop_part_numbers)
+    if part_count > IMMEDIATE_MAX_ITEMS:
+        raise HTTPException(
+            400,
+            f"{IMMEDIATE_MAX_ITEMS} cikkszám felett csak ütemezett futás indítható.",
+        )
 
     run_id = str(uuid.uuid4())
     event_queue: asyncio.Queue = asyncio.Queue()
@@ -341,10 +390,13 @@ async def batch_run_start(req: RunRequest, background_tasks: BackgroundTasks):
         raise HTTPException(500, str(exc))
 
     # Mentés Supabase-be (aszinkron)
-    await _save_batch_run(run_id, req.project_name, preview)
+    await _save_batch_run(run_id, req.project_name, req.runner_name, preview)
 
-    # Batch futás háttérben — a közös végrehajtó (azonnali és ütemezett is ezt használja)
-    background_tasks.add_task(_execute_batch, run_id, preview, req.project_name, event_queue)
+    # Saját asyncio taskként fut, így futás közben ténylegesen megszakítható.
+    task = asyncio.create_task(
+        _execute_batch(run_id, preview, req.project_name, event_queue)
+    )
+    _register_run_task(run_id, task)
 
     return {"batch_run_id": run_id, "status": "started"}
 
@@ -433,6 +485,8 @@ async def get_config():
         "schedule_mode": "auto" if server else "manual",
         "auto_spacing_min": AUTO_SLOT_MINUTES,
         "auto_start_hour": AUTO_START_HOUR,
+        "batch_max_items": BATCH_MAX_ITEMS,
+        "immediate_max_items": IMMEDIATE_MAX_ITEMS,
     }
 
 
@@ -444,6 +498,12 @@ async def batch_schedule(req: ScheduleRequest):
     Szerver (auto) módban a backend osztja ki a következő szabad 40 perces sávot
     20:00-tól; lokál (manuális) módban a megadott időpontot használja."""
     _validate_request(req.selected_suppliers, req.gepcoop_part_numbers)
+    part_count = _unique_part_count(req.gepcoop_part_numbers)
+    if part_count <= IMMEDIATE_MAX_ITEMS:
+        raise HTTPException(
+            400,
+            f"{IMMEDIATE_MAX_ITEMS} vagy kevesebb cikkszámnál csak azonnali futás indítható.",
+        )
     sb = get_supabase()
 
     try:
@@ -479,7 +539,14 @@ async def batch_schedule(req: ScheduleRequest):
     except Exception as exc:
         raise HTTPException(500, str(exc))
 
-    await _save_batch_run(run_id, req.project_name, preview, status="scheduled", scheduled_at=when_iso)
+    await _save_batch_run(
+        run_id,
+        req.project_name,
+        req.runner_name,
+        preview,
+        status="scheduled",
+        scheduled_at=when_iso,
+    )
     return {
         "batch_run_id": run_id,
         "status": "scheduled",
@@ -500,7 +567,7 @@ async def batch_progress_stream(run_id: str):
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=30)
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                if event.get("event") in ("done", "error"):
+                if event.get("event") in ("done", "error", "cancelled"):
                     break
             except asyncio.TimeoutError:
                 yield "data: {\"event\": \"heartbeat\"}\n\n"
@@ -510,6 +577,29 @@ async def batch_progress_stream(run_id: str):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.post("/batch/run/{run_id}/cancel")
+async def cancel_batch_run(run_id: str):
+    task = _active_run_tasks.get(run_id)
+    if task is None or task.done():
+        sb = get_supabase()
+        try:
+            rows = (
+                sb.table("batch_runs").select("status")
+                .eq("id", run_id).limit(1).execute().data
+            ) or []
+        except Exception as exc:
+            raise HTTPException(500, str(exc))
+        if not rows:
+            raise HTTPException(404, "Futás nem található.")
+        status = rows[0].get("status")
+        if status == "cancelled":
+            return {"batch_run_id": run_id, "status": "cancelled"}
+        raise HTTPException(409, f"A futás már nem szakítható meg. Jelenlegi státusz: {status}.")
+
+    task.cancel()
+    return {"batch_run_id": run_id, "status": "cancelling"}
 
 
 @app.get("/batch/run/{run_id}")
@@ -565,10 +655,19 @@ async def get_batch_run(run_id: str):
 
 
 @app.get("/batch/runs")
-async def list_batch_runs(limit: int = 50):
+async def list_batch_runs(
+    limit: int = Query(default=50, ge=1, le=500),
+    project_name: str | None = Query(default=None, max_length=120),
+    runner_name: str | None = Query(default=None, max_length=160),
+):
     sb = get_supabase()
     try:
-        res = sb.table("batch_runs").select("*").order("created_at", desc=True).limit(limit).execute()
+        query = sb.table("batch_runs").select("*")
+        if (project_name or "").strip():
+            query = query.ilike("project_name", f"%{project_name.strip()}%")
+        if (runner_name or "").strip():
+            query = query.ilike("runner_name", f"%{runner_name.strip()}%")
+        res = query.order("created_at", desc=True).limit(limit).execute()
         return res.data or []
     except Exception as exc:
         raise HTTPException(500, str(exc))
@@ -723,7 +822,8 @@ async def _scheduler_loop() -> None:
                 )
                 if flipped.data:
                     log.info("Ütemezett futás indul: %s (%s)", run["id"], run.get("scheduled_at"))
-                    asyncio.create_task(_execute_scheduled(run))
+                    task = asyncio.create_task(_execute_scheduled(run))
+                    _register_run_task(run["id"], task)
         except Exception as exc:
             log.warning("Scheduler loop hiba (figyelmen kívül hagyva): %s", exc)
         await asyncio.sleep(60)
