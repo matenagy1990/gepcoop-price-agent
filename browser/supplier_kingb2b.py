@@ -104,7 +104,7 @@ async def _log_results_state(page, supplier_part_no: str, prefix: str = "KingB2B
     log.info("%s body snippet: %s", prefix, data["body_snippet"])
 
 
-async def _dismiss_promo_popup(page, timeout_ms: int = 4000) -> bool:
+async def _dismiss_promo_popup(page, timeout_ms: int = 8000) -> bool:
     """Best-effort close of the king-inox promo modal shown right after login.
 
     After a successful login the portal opens a full-screen SweetAlert2 modal
@@ -165,12 +165,36 @@ async def _wait_for_search_results(page, supplier_part_no: str) -> None:
     )
 
 
+async def _reset_to_search_state(page) -> None:
+    """Navigate back to the portal if the SPA is in an article-table or family state.
+
+    In batch mode the browser stays on the previous part's result view. A fresh
+    navigation resets SPA state cleanly so the next search starts from scratch.
+    Only fires when article rows or family results are already in the DOM.
+    """
+    if (
+        await page.locator("tr.articoli-row").count() > 0
+        or await page.locator("div.singola-famiglia").count() > 0
+    ):
+        log.info("KingB2B: resetting SPA state — re-navigating to portal")
+        await page.goto(PORTAL_URL, wait_until="domcontentloaded", timeout=20000)
+        await page.wait_for_selector("#header-search", timeout=10000)
+        await page.wait_for_function(
+            "() => document.querySelector('#header-search')?.offsetParent !== null",
+            timeout=5000,
+        )
+        log.info("KingB2B: portal search state restored")
+
+
 async def _login_and_locate_row(page, supplier_part_no: str, emit: Callable):
     """Log in (if needed), dismiss the promo popup, run the search and return the
     resolved `tr.articoli-row` locator for the part.
 
     Assumes `page` is already at the portal with #header-search initialised.
     """
+    # ── Reset SPA state from any previous search result view ──────────
+    await _reset_to_search_state(page)
+
     # ── Check if login is required ─────────────────────────────
     doc_btn = page.locator("div.button-text-doc")
     is_hidden = await doc_btn.evaluate(
@@ -205,21 +229,21 @@ async def _login_and_locate_row(page, supplier_part_no: str, emit: Callable):
             await save_session(page.context, SESSION_FILE)
         except Exception as exc:
             log.warning(f"Could not persist session: {exc}")
+
+        # ── Dismiss the king-inox promo popup that appears right after login ──
+        # A full-screen SweetAlert2 modal overlays the whole page and intercepts
+        # pointer events on #header-search. Only relevant immediately after login,
+        # not for subsequent searches in batch mode (already logged in).
+        await _dismiss_promo_popup(page)
     else:
         log.info("Already logged in")
-
-    # ── Dismiss the king-inox promo popup that overlays the portal ──
-    # A full-screen SweetAlert2 modal appears after login and would
-    # otherwise intercept the click on #header-search below.
-    await _dismiss_promo_popup(page)
 
     # ── Search ────────────────────────────────────────────────
     await emit(f"Searching for {supplier_part_no} on kingb2b.it…")
     search_box = page.locator("#header-search")
     await search_box.click()
-    await search_box.press("Control+A")
-    await search_box.press("Backspace")
-    await search_box.type(supplier_part_no, delay=40)
+    await search_box.fill("")          # JS-level clear — reliable headlessly
+    await search_box.type(supplier_part_no, delay=40)  # fires key events SPA expects
 
     search_started = False
     for attempt in (1, 2):
@@ -324,10 +348,10 @@ async def _open_portal(pw, emit: Callable):
     page = await ctx.new_page()
 
     await emit("Opening kingb2b.it…")
-    # networkidle is required when restoring a session so the SPA fully
-    # initialises its search API state before we type a query.
-    wait_until = "networkidle" if use_session else "domcontentloaded"
-    await page.goto(PORTAL_URL, wait_until=wait_until, timeout=30000)
+    # domcontentloaded + explicit selector waits below replace networkidle.
+    # networkidle is unpredictable on SPAs with background polling requests
+    # and can block indefinitely; the selector-based waits are more precise.
+    await page.goto(PORTAL_URL, wait_until="domcontentloaded", timeout=30000)
     await page.wait_for_selector("#header-search", timeout=15000)
     await page.wait_for_function(
         "() => document.querySelector('#header-search')?.offsetParent !== null",
@@ -340,6 +364,10 @@ async def _open_portal(pw, emit: Callable):
 async def _extract_row(page, row_locator, supplier_part_no: str, emit: Callable) -> dict:
     """Wait for the injected price on the located row and parse price + stock."""
     await emit("Reading price and stock from kingb2b.it…")
+    # Brief grace period so the SPA's AJAX price-load can dispatch before we
+    # start polling. Without this the wait_for_function below occasionally
+    # fires on an empty PREZZO cell.
+    await page.wait_for_timeout(300)
     try:
         await page.wait_for_function(
             f"""() => {{

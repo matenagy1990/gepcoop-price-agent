@@ -626,15 +626,15 @@
   .app-select-logout:hover{background:rgba(255,255,255,.2)}
   .app-select-body{position:relative;z-index:1;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:88px 24px 32px}
   .app-select-heading{color:rgba(255,255,255,.85);font-size:18px;font-weight:500;margin-bottom:36px;letter-spacing:.3px}
-  .app-tiles{display:flex;gap:28px;flex-wrap:wrap;justify-content:center}
-  .app-tile{width:675px;height:450px;border-radius:16px;overflow:hidden;cursor:pointer;position:relative;box-shadow:0 8px 32px rgba(0,0,0,.45);transition:transform .22s,box-shadow .22s,border-color .22s;border:2px solid rgba(255,255,255,.1)}
+  .app-tiles{display:grid;grid-template-columns:repeat(2,minmax(0,675px));gap:28px;justify-content:center}
+  .app-tile{width:100%;height:450px;border-radius:16px;overflow:hidden;cursor:pointer;position:relative;box-shadow:0 8px 32px rgba(0,0,0,.45);transition:transform .22s,box-shadow .22s,border-color .22s;border:2px solid rgba(255,255,255,.1)}
   .app-tile:hover{transform:translateY(-7px) scale(1.01);box-shadow:0 18px 52px rgba(0,0,0,.55);border-color:rgba(255,255,255,.35)}
   .app-tile-img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .3s}
   .app-tile:hover .app-tile-img{transform:scale(1.05)}
   .app-tile-overlay{position:absolute;inset:0;background:linear-gradient(to top,rgba(0,0,0,.82) 0%,rgba(0,0,0,.28) 55%,rgba(0,0,0,.08) 100%);display:flex;flex-direction:column;justify-content:flex-end;padding:22px 24px}
   .app-tile-name{font-size:19px;font-weight:700;color:#fff;margin-bottom:5px;letter-spacing:.2px}
   .app-tile-desc{font-size:12px;color:rgba(255,255,255,.72);line-height:1.55}
-  @media(max-width:780px){.app-tiles{flex-direction:column;align-items:center}.app-tile{width:min(675px,100%);height:394px}}
+  @media(max-width:780px){.app-tiles{grid-template-columns:1fr}.app-tile{width:100%;height:394px}}
 </style>
 </head>
 <body>
