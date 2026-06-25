@@ -2948,9 +2948,7 @@ async function loadCopilotConfig() {
   document.getElementById('copilot-panel').classList.add('hidden');
   document.getElementById('adm-nav-copilot').classList.add('hidden');
   try {
-    const res = await fetch('/copilot/config', {
-      headers: { 'Authorization': `Bearer ${authToken}` },
-    });
+    const res = await fetch('/copilot/config');
     const data = await res.json();
     copilotEnabled = !!(res.ok && data.enabled);
   } catch (err) {

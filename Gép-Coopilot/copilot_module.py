@@ -27,8 +27,6 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-COPILOT_ENABLED = _env_bool("COPILOT_ENABLED", False)
-
 PROBLEM_TYPES = {
     "missing_price": "Nem talál árat",
     "wrong_price": "Rossz árat mutat",
@@ -436,9 +434,8 @@ def create_copilot_router(
     router = APIRouter(prefix="/copilot", tags=["Gép-Coopilot"])
 
     @router.get("/config")
-    def config(authorization: str | None = Header(default=None)):
-        get_username(authorization)
-        return {"enabled": COPILOT_ENABLED}
+    def config():
+        return {"enabled": _env_bool("COPILOT_ENABLED", False)}
 
     @router.post("/chat")
     async def chat(req: CopilotChatRequest, authorization: str | None = Header(default=None)):
