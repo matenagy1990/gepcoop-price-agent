@@ -1104,10 +1104,11 @@ def _get_supabase_main():
 
 def _install_copilot_router() -> None:
     """Load the Gép-Coopilot module from its dedicated folder."""
-    module_path = Path(__file__).parent / "Gép-Coopilot" / "copilot_module.py"
-    if not module_path.exists():
-        log.warning("Gép-Coopilot modul nem található: %s", module_path)
+    module_paths = sorted(Path(__file__).parent.glob("*-Coopilot/copilot_module.py"))
+    if not module_paths:
+        log.warning("Gép-Coopilot modul nem található")
         return
+    module_path = module_paths[0]
     try:
         spec = importlib.util.spec_from_file_location("gep_coopilot_module", module_path)
         if spec is None or spec.loader is None:
