@@ -1732,11 +1732,12 @@ function schedulePastRunsFilter() {
 // ══════════════════════════════════════════════════════
 // Ütemezett futás — slot-választó (19:00–05:00, 30 perces sávok, 7 éjszaka)
 // ══════════════════════════════════════════════════════
-// Ütemezési mód: 'manual' (lokál → dátum+idő választó) vagy 'auto' (szerver → 20:00-tól)
+// Ütemezési mód: 'manual' (lokál → dátum+idő választó) vagy 'auto' (szerver → 23:30-tól)
 let _appConfig = {
   schedule_mode: 'manual',
-  auto_spacing_min: 40,
-  auto_start_hour: 20,
+  auto_spacing_min: 30,
+  auto_start_hour: 23,
+  auto_start_minute: 30,
   batch_max_items: 400,
   immediate_max_items: 50,
 };
@@ -1765,7 +1766,7 @@ function onScheduleClick() {
   else openScheduleModal();
 }
 
-// Szerver mód: a backend osztja ki a következő szabad 40 perces sávot (20:00-tól)
+// Szerver mód: a backend osztja ki a következő szabad félórás sávot (23:30-tól)
 async function scheduleAuto() {
   const data = state.previewData;
   if (!data) return;
@@ -1830,11 +1831,13 @@ function renderScheduleTakenInfo() {
 
 async function openScheduleModal() {
   scheduleMsg('', '');
-  // Alapérték: ma 20:00 (ha már elmúlt, holnap 20:00) — kerek, de szabadon átírható
+  // Helyi manuális alapérték: a következő 23:30, de szabadon átírható.
   const def = new Date();
   def.setSeconds(0, 0);
-  if (def.getHours() >= 20) def.setDate(def.getDate() + 1);
-  def.setHours(20, 0, 0, 0);
+  if (def.getHours() > 23 || (def.getHours() === 23 && def.getMinutes() >= 30)) {
+    def.setDate(def.getDate() + 1);
+  }
+  def.setHours(23, 30, 0, 0);
   document.getElementById('schedule-datetime').value = _toLocalInputValue(def);
 
   // A már ütemezett időpontok lekérése (csak tájékoztatás)

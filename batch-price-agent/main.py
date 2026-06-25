@@ -85,7 +85,7 @@ class ScheduleRequest(BaseModel):
     selected_suppliers: list[str]
     gepcoop_part_numbers: list[str]
     # Manuális (lokál) módban kötelező; szerver (auto) módban figyelmen kívül
-    # marad, mert a backend osztja ki a következő szabad 40 perces sávot.
+    # marad, mert a backend osztja ki a következő szabad 30 perces sávot.
     scheduled_at: str | None = None
 
 
@@ -479,9 +479,10 @@ async def batch_run_start(
 
 
 # ── Ütemezési mód: lokál = manuális választás, Hetzner (Docker) = automatikus ──
-AUTO_START_HOUR   = 20    # az auto-lánc 20:00-tól indul (budapesti idő)
-AUTO_SLOT_MINUTES = 40    # szerveren minden futásra 40 perc jut
-AUTO_END_HOUR     = 5     # az éjszaka vége a következő nap ~05:00
+AUTO_START_HOUR   = 23    # az auto-lánc 23:30-kor indul (budapesti idő)
+AUTO_START_MINUTE = 30
+AUTO_SLOT_MINUTES = 30    # szerveren félóránként indulhat egy új futás
+AUTO_END_HOUR     = 5     # az éjszaka vége a következő nap 05:00
 AUTO_HORIZON_DAYS = 7     # max ennyi napra előre keresünk szabad sávot
 
 
@@ -532,17 +533,23 @@ def _taken_scheduled_utc(sb) -> set:
     return taken
 
 
-def _next_auto_slot(sb) -> datetime | None:
-    """A következő SZABAD 40 perces sáv 20:00-tól (budapesti idő), éjszakánként
-    ~05:00-ig, max AUTO_HORIZON_DAYS napra előre. UTC datetime-ot ad vissza,
-    vagy None, ha minden tele van. Így ha valaki ütemez → 20:00, a következő →
-    20:40, aztán 21:20… (a már foglalt sávokat kihagyja)."""
-    now_utc = datetime.now(timezone.utc)
+def _next_auto_slot(sb, now_utc: datetime | None = None) -> datetime | None:
+    """A következő szabad félórás sáv 23:30-tól (budapesti idő), éjszakánként
+    05:00-ig, max AUTO_HORIZON_DAYS napra előre. UTC datetime-ot ad vissza,
+    vagy None, ha minden tele van. Sorrend: 23:30, 00:00, 00:30, ... 04:30."""
+    now_utc = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
     taken = _taken_scheduled_utc(sb)
-    today_local = datetime.now(_BUDAPEST).date()
+    today_local = now_utc.astimezone(_BUDAPEST).date()
     for day in range(AUTO_HORIZON_DAYS):
         d = today_local + timedelta(days=day)
-        base = datetime(d.year, d.month, d.day, AUTO_START_HOUR, 0, tzinfo=_BUDAPEST)
+        base = datetime(
+            d.year,
+            d.month,
+            d.day,
+            AUTO_START_HOUR,
+            AUTO_START_MINUTE,
+            tzinfo=_BUDAPEST,
+        )
         night_end = datetime(d.year, d.month, d.day, AUTO_END_HOUR, 0, tzinfo=_BUDAPEST) + timedelta(days=1)
         slot = base
         while slot < night_end:
@@ -559,13 +566,14 @@ async def get_config(
     x_batch_access_token: str | None = Header(default=None),
 ):
     """A felület ez alapján dönti el: manuális sáv-választó (lokál) vagy
-    automatikus 20:00-os ütemezés (szerver)."""
+    automatikus 23:30-as ütemezés (szerver)."""
     await _require_user(authorization, x_batch_access_token)
     server = _is_server_mode()
     return {
         "schedule_mode": "auto" if server else "manual",
         "auto_spacing_min": AUTO_SLOT_MINUTES,
         "auto_start_hour": AUTO_START_HOUR,
+        "auto_start_minute": AUTO_START_MINUTE,
         "batch_max_items": BATCH_MAX_ITEMS,
         "immediate_max_items": IMMEDIATE_MAX_ITEMS,
     }
@@ -580,8 +588,8 @@ async def batch_schedule(
     """Ütemezett futás létrehozása. Nem indít scrapert — eltárolja a futást
     `scheduled` státusszal, a háttér-ütemező indítja majd az időpontban.
 
-    Szerver (auto) módban a backend osztja ki a következő szabad 40 perces sávot
-    20:00-tól; lokál (manuális) módban a megadott időpontot használja."""
+    Szerver (auto) módban a backend osztja ki a következő szabad 30 perces sávot
+    23:30-tól; lokál (manuális) módban a megadott időpontot használja."""
     user = await _require_user(authorization, x_batch_access_token)
     _validate_request(req.selected_suppliers, req.gepcoop_part_numbers)
     part_count = _unique_part_count(req.gepcoop_part_numbers)

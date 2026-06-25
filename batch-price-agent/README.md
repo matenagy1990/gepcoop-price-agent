@@ -175,12 +175,13 @@ A `_is_server_mode()` függvény (`main.py`) felismeri, hol fut az app:
 | Környezet | Ütemezési mód | UI viselkedés |
 |---|---|---|
 | Lokál (direct uvicorn) | **manuális** | Pontos dátum+perc választó (bármely jövőbeli perc) |
-| Szerver (Docker/Hetzner) | **automatikus** | Gomb → backend kiosztja a következő szabad 40 perces sávot 20:00-tól |
+| Szerver (Docker/Hetzner) | **automatikus** | Gomb → backend kiosztja a következő szabad félórás sávot 23:30-tól |
 
 Érzékelés: `/.dockerenv` fájl létezése (Docker-specifikus) + `SCHEDULE_MODE` env
 változó (felülírható). A `docker-compose.yml`-ben `SCHEDULE_MODE: auto`.
 
-Automatikus sávok: 20:00 → 20:40 → 21:20 → … (foglalt sávokat kihagyja).
+Automatikus sávok: 23:30 → 00:00 → 00:30 → … → 04:30
+(a foglalt sávokat kihagyja).
 
 ### Háttér-ütemező (`_scheduler_loop`)
 
@@ -398,7 +399,7 @@ Batch-jegyet. A `:8001` cím közvetlen megnyitása hozzáférés nélkül vissz
 - A gyökér `docker-compose.yml` mindkét szolgáltatást indítja.
 - A batch konténer a price agent kódját **csak olvashatóan** (`ro`) csatolja,
   de a `assets/sessions` mappát **írhatóan** — Vipa session mindkét appból menthető.
-- `SCHEDULE_MODE: auto` a szerveren: 20:00-tól, 40 perces sávok.
+- `SCHEDULE_MODE: auto` a szerveren: 23:30-tól, 30 perces sávok.
 - `restart: unless-stopped` biztosítja, hogy reboot után újraindul.
 
 ### Frissítés a szerveren

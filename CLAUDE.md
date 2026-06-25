@@ -42,6 +42,9 @@ Current batch execution rule:
 - 1-50 unique part numbers: only immediate execution is allowed.
 - 51-400 unique part numbers: only scheduled execution is allowed.
 - The backend enforces both rules; they are not only frontend restrictions.
+- In production, scheduled runs are assigned to the next free Budapest-time
+  slot starting at 23:30, then every 30 minutes through 04:30. Occupied or
+  elapsed slots are skipped, and allocation continues on the next night.
 
 ## Architecture
 
