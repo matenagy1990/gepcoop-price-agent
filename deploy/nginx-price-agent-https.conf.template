@@ -13,8 +13,9 @@ server {
 }
 
 server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
     server_name ${PRICE_AGENT_IP};
 
     ssl_certificate /etc/letsencrypt/live/${PRICE_AGENT_IP}/fullchain.pem;
