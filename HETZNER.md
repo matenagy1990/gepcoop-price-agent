@@ -1,4 +1,6 @@
-# Deploy Price Agent to Hetzner Cloud
+# Price Agent a Hetzner szerveren
+
+Utolsó éles ellenőrzés: **2026-06-25**, commit: **`8f8883f`**.
 
 Colleagues can access the app from any device at a stable internet URL.
 Budget: ~€22.59/month (Hetzner CPX42).
@@ -10,13 +12,19 @@ Budget: ~€22.59/month (Hetzner CPX42).
 | Component | Details |
 |---|---|
 | Server | Hetzner CPX42 — 8 vCPU (AMD), 16 GB RAM, 320 GB SSD |
-| OS | Ubuntu 24.04+ / current Hetzner Ubuntu image |
+| Public IP | `178.104.208.200` |
+| OS | Ubuntu 26.04 LTS |
 | App | FastAPI + Playwright/Chromium, running in Docker |
-| URL | `https://<server-ip>`; Batch Agent: `https://<server-ip>/batch-agent/` |
+| Price Agent | `https://178.104.208.200/` |
+| Batch Agent | `https://178.104.208.200/batch-agent/` |
+| Public ports | `22`, `80`, `443` |
+| Internal-only ports | `127.0.0.1:8080`, `127.0.0.1:8001` |
+| TLS | Let's Encrypt short-lived IP certificate, automatic renewal |
 | Auto-restart | Yes — survives reboots and crashes |
 
-Everything runs in the existing Docker container (same image as local).
-No code changes are needed.
+The root Docker Compose stack runs two containers: `price-agent` and
+`batch-price-agent`. Nginx runs on the host and routes public HTTPS traffic to
+their localhost-only ports.
 
 ---
 
@@ -59,7 +67,7 @@ The script will pause and ask you to create the `.env` file before continuing.
 At that point, open a **second terminal** and copy your local `.env` to the server:
 ```bash
 # Run this on your Mac (second terminal window):
-scp /Users/nagyi_home/Desktop/AI/Price_agent/.env root@65.21.10.42:/opt/price_agent/.env
+scp /path/to/gepcoop-price-agent/.env root@65.21.10.42:/opt/price_agent/.env
 ```
 
 Then press **Enter** in the first terminal to continue.
@@ -94,13 +102,17 @@ Futtasd:
 
 ```bash
 cd /opt/price_agent
-sudo bash deploy/enable-https.sh 178.104.208.200 admin@gepcoop.hu
+sudo bash deploy/enable-https.sh 178.104.208.200
 ```
 
 Ez hatnapos Let's Encrypt IP-tanúsítványt kér, bekapcsolja a HTTPS
 átirányítást és az automatikus megújítást, majd a
 tűzfalon csak az SSH (`22`), HTTP (`80`) és HTTPS (`443`) portokat hagyja
 elérhetően. A `8080` és `8001` portokat kívülről lezárja.
+
+Az IP-tanúsítvány körülbelül hatnapos. Ez nem jelent kézi karbantartást:
+a Snapből telepített Certbot időzítő automatikusan megújítja, a deploy hook
+pedig újratölti az Nginxet.
 
 ---
 
@@ -111,8 +123,13 @@ elérhetően. A `8080` és `8001` portokat kívülről lezárja.
 | Check status | `systemctl status price-agent` |
 | View live logs | `journalctl -u price-agent -f` |
 | Restart app | `systemctl restart price-agent` |
-| Update to latest code | `git -C /opt/price_agent pull && systemctl restart price-agent` |
+| Update to latest code | `cd /opt/price_agent && git pull && docker compose up -d --build` |
 | Full rebuild | `cd /opt/price_agent && git pull origin main && docker compose build && docker compose up -d && systemctl restart price-agent` |
+| Certificate state | `certbot certificates` |
+| Renewal timer | `systemctl status snap.certbot.renew.timer` |
+| Renewal test | `certbot renew --cert-name 178.104.208.200 --dry-run` |
+| Firewall | `ufw status numbered` |
+| Listening ports | `ss -lntp \| grep -E ':(80\|443\|8080\|8001) '` |
 
 ---
 
@@ -148,3 +165,5 @@ systemctl restart price-agent
 | Login fails | Ellenőrizd az aktív felhasználót az admin felületen és a szerver naplóját |
 | App stopped after reboot | `systemctl start price-agent` (shouldn't happen — auto-start is enabled) |
 | Need to update `.env` on server | `nano /opt/price_agent/.env`, then `systemctl restart price-agent` |
+| HTTPS certificate renewal fails | Check `journalctl -u snap.certbot.renew.service` and ensure port 80 remains publicly reachable |
+| Direct `:8080` or `:8001` URL times out | Expected production behaviour; use the HTTPS URLs above |

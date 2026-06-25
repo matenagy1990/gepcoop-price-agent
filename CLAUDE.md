@@ -1,7 +1,8 @@
 # CLAUDE.md
 
 This file is the working technical guide for agents modifying this repository.
-Last verified against the codebase: **2026-06-25** (`main` at `74cbfae`).
+Last verified against the codebase and production: **2026-06-25**
+(`main` at `8f8883f`).
 
 ## Project Purpose
 
@@ -22,15 +23,19 @@ There are currently **14 implemented supplier integrations** (Vipa added 2026-06
 
 This repository hosts **two separate applications**:
 
-| App | Port | Description |
-|---|---|---|
-| Price Agent | 8080 | Single part number lookup, real-time result cards |
-| Batch Price Agent | 8001 | Bulk lookup (up to 400 parts × 14 suppliers), matrix view + Excel export |
+| App | Internal port | Production URL | Description |
+|---|---:|---|---|
+| Price Agent | 8080 | `https://178.104.208.200/` | Single part number lookup, real-time result cards |
+| Batch Price Agent | 8001 | `https://178.104.208.200/batch-agent/` | Bulk lookup (up to 400 parts × 14 suppliers), matrix view + Excel export |
 
 Both apps are served from the same Docker Compose stack (`docker-compose.yml` in the root).
 The Batch Price Agent lives under `batch-price-agent/` and imports scrapers from this repo at runtime — see `batch-price-agent/README.md` for its full documentation.
 
-The Price Agent's UI (`ui/index.html`) includes an **app-selector page** that lets the buyer switch between the two apps. Clicking the Batch tile navigates to port 8001. The app-selector has the same full-screen background (screw photograph + mesh + vignette + spotlight effect) as the login page.
+The Price Agent's UI (`ui/index.html`) includes an **app-selector page** that
+lets the buyer switch between the two apps. Locally the Batch tile navigates to
+port 8001; in production it navigates to `/batch-agent/` on the same HTTPS
+origin. Before navigation, the user must already have a valid Price Agent
+session and must enter the separate `BATCH_ACCESS_PASSWORD`.
 
 Current batch execution rule:
 
@@ -81,6 +86,9 @@ Important runtime properties:
 - Scrapers use headless Chromium and run on the machine hosting FastAPI.
 - Authentication tokens are stored only in the in-memory `sessions` dictionary.
   All users must log in again after a server restart.
+- Batch API calls require both the Price Agent bearer token and a separate
+  12-hour Batch access ticket. The Batch backend validates both against the
+  Price Agent before serving protected endpoints.
 - The UI is served with `Cache-Control: no-store`.
 - The application depends on Supabase for mappings and authentication.
 
@@ -748,6 +756,10 @@ Let's Encrypt IP-address certificate; no purchased domain is required:
 - Container ports `8080` and `8001` bind only to `127.0.0.1` on the host.
 - `deploy/enable-https.sh` provisions a six-day Let's Encrypt IP certificate,
   enables automatic renewal, and closes direct app ports.
+- Nginx accepts public traffic on ports `80` and `443`; port `80` redirects to
+  HTTPS. UFW allows SSH, HTTP and HTTPS and explicitly denies `8080/8001`.
+- The active certificate was first issued on **2026-06-25**, is renewed by
+  `snap.certbot.renew.timer`, and reloads Nginx through a deploy hook.
 
 Useful server commands:
 
@@ -757,6 +769,10 @@ systemctl restart price-agent
 journalctl -u price-agent -f
 docker compose logs price-agent --tail=50
 docker compose logs batch-price-agent --tail=50
+certbot certificates
+systemctl status snap.certbot.renew.timer
+ufw status numbered
+ss -lntp | grep -E ':(80|443|8080|8001) '
 ```
 
 Update workflow:
@@ -768,6 +784,14 @@ docker compose up -d --build
 ```
 
 SSE reverse proxies must disable buffering (`proxy_buffering off`).
+
+Post-deploy checks:
+
+```bash
+curl -sS https://178.104.208.200/health
+curl -sS -o /dev/null -w '%{http_code}\n' https://178.104.208.200/batch-agent/
+certbot renew --cert-name 178.104.208.200 --dry-run
+```
 
 ## Known Deployment Pitfalls
 

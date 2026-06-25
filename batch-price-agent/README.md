@@ -1,7 +1,8 @@
 # Batch Price Agent — technikai leírás
 
 A **Tömeges árlekérdező** (batch agent) műszaki útmutatója.
-Utoljára ellenőrizve a kódbázishoz: **2026-06-25** (`main`: `74cbfae`).
+Utoljára ellenőrizve a kódbázishoz és az éles szerverhez:
+**2026-06-25** (`main`: `8f8883f`).
 
 > Ez a fájl **csak a batch agentet** írja le. A Price Agent (egyedi árlekérdező)
 > teljes dokumentációja a gyökérben: `CLAUDE.md`. A két alkalmazás közös scrapereket
@@ -21,7 +22,8 @@ webshopokat, és az alkalmazás mindet lekérdezi, majd egy összehasonlító m�
 | Webshop / futás | 1+ (párhuzamos) | 1–14 (párhuzamos) |
 | Böngésző / webshop | 1 (nyit–zár) | 1 (nyit–sok cikk–zár) |
 | Eredmény | valós idejű cards | mátrix + Excel |
-| Port | 8080 | 8001 |
+| Belső port | 8080 | 8001 |
+| Éles útvonal | `/` | `/batch-agent/` |
 
 ---
 
@@ -371,8 +373,9 @@ PRICE_AGENT_PATH=/abszolut/ut/a/GepcoopPriceAgent \
 
 Ezután: <http://127.0.0.1:8001>
 
-A price agent ilyenkor párhuzamosan fut 8000-es porton. Az app-selector (8080-on,
-ha Dockerben fut) a 8001-es portra irányít át a Batch tile kattintásakor.
+A Price Agent helyi integrált tesztelésnél a `8080`-as porton fut, a Batch
+Agent pedig a `8001`-esen. Az alkalmazásválasztó helyben a `8001`-es portra,
+éles környezetben a `/batch-agent/` útvonalra irányít.
 
 Helyi tesztelésnél a Batch alkalmazást a Price Agent alkalmazásválasztójából
 nyisd meg. Így megkapja az érvényes bearer tokent és a szerveroldalon ellenőrzött
@@ -383,9 +386,15 @@ Batch-jegyet. A `:8001` cím közvetlen megnyitása hozzáférés nélkül vissz
 ## 15. Szerver / deploy
 
 - Hetzner CPX42 szerver (8 vCPU AMD, 16 GB RAM, 320 GB SSD): `178.104.208.200`
-- Batch agent szerveres útvonala: `/batch-agent/` ugyanazon a HTTPS domainen
+- Price Agent: `https://178.104.208.200/`
+- Batch Agent: `https://178.104.208.200/batch-agent/`
 - A `8080` és `8001` Docker-portok csak `127.0.0.1` címen érhetők el.
 - Kívülről az Nginx `443`-as HTTPS végpontja fogadja a forgalmat.
+- A `80`-as HTTP-port minden kérést HTTPS-re irányít.
+- A nyilvánosan megbízható Let's Encrypt IP-tanúsítvány hatnapos, de a
+  `snap.certbot.renew.timer` automatikusan megújítja, majd újratölti az Nginxet.
+- Az UFW csak az SSH (`22`), HTTP (`80`) és HTTPS (`443`) portokat engedi be;
+  a `8080` és `8001` kívülről tiltott.
 - A gyökér `docker-compose.yml` mindkét szolgáltatást indítja.
 - A batch konténer a price agent kódját **csak olvashatóan** (`ro`) csatolja,
   de a `assets/sessions` mappát **írhatóan** — Vipa session mindkét appból menthető.
@@ -398,6 +407,16 @@ Batch-jegyet. A `:8001` cím közvetlen megnyitása hozzáférés nélkül vissz
 cd /opt/price_agent
 git pull
 docker compose up -d --build
+```
+
+### Szerverellenőrzés
+
+```bash
+curl -sS https://178.104.208.200/health
+curl -sS -o /dev/null -w '%{http_code}\n' https://178.104.208.200/batch-agent/
+certbot certificates
+systemctl status snap.certbot.renew.timer
+ufw status numbered
 ```
 
 Ha csak a batch agentet kell frissíteni:

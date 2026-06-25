@@ -73,9 +73,9 @@ When done, open browser and go to:
 http://localhost:8080
 ```
 
-Log in with:
-- **Username:** `gepcoop`
-- **Password:** `Beszerzes2026!`
+Jelentkezz be az admin által létrehozott aktív felhasználóval. A felhasználók
+a Supabase `app_users` táblájában vannak, és az admin felületen kezelhetők.
+Fix éles felhasználónevet vagy jelszót nem tárolunk a dokumentációban.
 
 ---
 
@@ -111,7 +111,7 @@ docker compose up -d --build
 | `no configuration file provided` | You are not inside the `gepcoop-price-agent` folder — run `cd gepcoop-price-agent` |
 | `.env` not found / named `env` | Rename: `Rename-Item env .env` |
 | `Engine running` not showing | Wait 60 seconds, Docker is still starting |
-| Login fails | Username: `gepcoop` Password: `Beszerzes2026!` |
+| Login fails | Ellenőrizd az admin felületen, hogy a felhasználó aktív-e, majd nézd meg a backend naplóját |
 | Playwright / Chromium error | Run `git pull` then `docker compose up -d --build` to get latest image version |
 | App stopped after PC restart | Run `docker compose up -d` again in the project folder |
 
@@ -131,13 +131,26 @@ The new CSV must have the same column names. It takes effect immediately — no 
 
 ---
 
-## Remote access for colleagues (Tailscale)
+## Production access
 
-If colleagues at other locations need access:
+Az éles alkalmazás nem a fejlesztői számítógépről és nem Tailscale-en érhető el:
+
+```text
+Price Agent: https://178.104.208.200/
+Batch Agent: https://178.104.208.200/batch-agent/
+```
+
+A szerveren az Nginx kezeli a HTTPS-t. A Docker `8080/8001` portjai csak
+localhoston érhetők el, és a tűzfal kívülről is tiltja őket.
+
+## Optional private test access with Tailscale
+
+Ez csak külön, nem éles tesztgép esetén használható:
 
 1. Create a free account at **tailscale.com**
 2. Install Tailscale on the host computer and on each colleague's device
 3. Note the Tailscale IP of the host computer (`tailscale ip` in terminal)
-4. Colleagues open: `http://100.x.x.x:8080` in their browser
+4. A Docker portkötést külön engedélyezni kell a Tailscale interfészre; az éles
+   szerver konfigurációját emiatt ne módosítsd.
 
 See the full Tailscale setup in the deployment plan.
