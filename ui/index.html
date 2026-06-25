@@ -1325,7 +1325,7 @@ async function fetchPartSuggestions(q) {
     if (!res.ok) return;
     const parts = (await res.json()).parts || [];
     document.getElementById('parts-datalist').innerHTML =
-      parts.map(p => `<option value="${p}">`).join('');
+      parts.map(p => `<option value="${escAttr(p)}">`).join('');
   } catch(e) {}
 }
 
@@ -1533,9 +1533,18 @@ function enterPriceAgent(){
   showApp();
 }
 
-function openBatchAgent(){
-  const runner = encodeURIComponent(username || '');
-  window.location.href = `${window.location.protocol}//${window.location.hostname}:8001/#runner_name=${runner}`;
+function openBatchAgent(batchAccessToken){
+  if (!authToken || !batchAccessToken) {
+    doLogout(false);
+    return;
+  }
+  const token = encodeURIComponent(authToken);
+  const access = encodeURIComponent(batchAccessToken);
+  const localDevelopment = ['8080', '8000'].includes(window.location.port);
+  const batchBase = localDevelopment
+    ? `${window.location.protocol}//${window.location.hostname}:8001/`
+    : `${window.location.origin}/batch-agent/`;
+  window.location.href = `${batchBase}#token=${token}&batch_access=${access}`;
 }
 
 function showBatchPwModal(){
@@ -1549,15 +1558,37 @@ function closeBatchPwModal(){
   document.getElementById('batch-pw-modal').classList.add('hidden');
 }
 
-function checkBatchPassword(){
+async function checkBatchPassword(){
   const val = document.getElementById('batch-pw-input').value;
   const msg = document.getElementById('batch-pw-msg');
-  if(val === 'admin007'){
+  if (!authToken) {
     closeBatchPwModal();
-    openBatchAgent();
-  } else {
+    doLogout(false);
+    return;
+  }
+  if (!val) {
     msg.style.color = 'var(--red)';
-    msg.textContent = 'Helytelen kód. Próbáld újra.';
+    msg.textContent = 'Add meg a hozzáférési kódot.';
+    return;
+  }
+  msg.style.color = 'var(--muted)';
+  msg.textContent = 'Ellenőrzés…';
+  try {
+    const res = await fetch('/batch/access', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${authToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ password: val }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Helytelen hozzáférési kód.');
+    closeBatchPwModal();
+    openBatchAgent(data.access_token);
+  } catch (err) {
+    msg.style.color = 'var(--red)';
+    msg.textContent = err.message;
     document.getElementById('batch-pw-input').value = '';
     document.getElementById('batch-pw-input').focus();
   }
@@ -1692,13 +1723,13 @@ function showConfirmCard(data) {
   const tbody = document.getElementById('conf-tbody');
   const availRows = suppliers.map(s => `
     <tr>
-      <td><span class="conf-sup-badge">${s.supplier_id.toUpperCase()}</span></td>
-      <td><span class="conf-part-no-cell">${s.supplier_part_no}</span></td>
+      <td><span class="conf-sup-badge">${escHtml(String(s.supplier_id).toUpperCase())}</span></td>
+      <td><span class="conf-part-no-cell">${escHtml(s.supplier_part_no)}</span></td>
     </tr>`).join('');
 
   const unavailRows = unavailable.map(s => `
     <tr class="conf-row-unavail">
-      <td><span class="conf-sup-badge unavail">${s.supplier_id.toUpperCase()}</span></td>
+      <td><span class="conf-sup-badge unavail">${escHtml(String(s.supplier_id).toUpperCase())}</span></td>
       <td><span class="conf-unavail-cell">&#8212; nem elérhető</span></td>
     </tr>`).join('');
 
@@ -2109,7 +2140,7 @@ function renderSupplierInfo(items) {
 /* ══ RENDER RESULTS ════════════════════════════════════════════ */
 function renderResults(data) {
   const {internal_part_no, run_id='', suppliers={}, recommendation={}} = data;
-  const winner = recommendation.winner;
+  const winner = ALL_SIDS.includes(recommendation.winner) ? recommendation.winner : '';
 
   // ── Recommendation card ──────────────────────────────────────
   const recoCard = document.getElementById('reco-card');
@@ -2130,7 +2161,7 @@ function renderResults(data) {
       const isWinner = i === 0;
       statsHtml += `
         <div class="reco-stat">
-          <div class="reco-stat-label">${RANK_LABELS[i]} &mdash; ${sid.toUpperCase()}</div>
+          <div class="reco-stat-label">${RANK_LABELS[i]} &mdash; ${escHtml(sid.toUpperCase())}</div>
           <div class="reco-stat-value ${isWinner ? 'green' : ''}">${fmtNum(price,4)} HUF/db</div>
         </div>`;
     }
@@ -2155,10 +2186,10 @@ function renderResults(data) {
       <div class="reco-icon">${recoIcon}</div>
       <div class="reco-body">
         <div class="reco-title">Vásárlási javaslat</div>
-        <div class="reco-winner">Rendelés innen: ${winnerLabel}</div>
-        <div class="reco-reason">${recommendation.reason||''}</div>
+        <div class="reco-winner">Rendelés innen: ${escHtml(winnerLabel)}</div>
+        <div class="reco-reason">${escHtml(recommendation.reason || '')}</div>
       </div>
-      <div class="reco-feedback" data-run-id="${run_id || ''}">
+      <div class="reco-feedback" data-run-id="${escAttr(run_id || '')}">
         <button type="button" class="reco-fb-btn positive" data-tip="Király, segített!" title="Király, segített!" aria-label="Király, segített!" onclick="sendRecommendationFeedback('positive', this)">🚀</button>
         <button type="button" class="reco-fb-btn negative" data-tip="Valami nem oké!" title="Valami nem oké!" aria-label="Valami nem oké!" onclick="sendRecommendationFeedback('negative', this)">🛠️</button>
         <div class="reco-fb-thanks hidden" aria-live="polite">
@@ -2198,7 +2229,7 @@ function renderResults(data) {
         A beszerző kihagyta a jelszómódosítást — ez a webshop ki lett hagyva az összehasonlításból.
       </div>`;
     } else if (hasError) {
-      bodyHtml = `<div class="sup-err">⚠️ ${r.error}</div>`;
+      bodyHtml = `<div class="sup-err">⚠️ ${escHtml(r.error)}</div>`;
       if (needsAdmin) {
         const isOtp = _suppliersNeedOtp.has(sid);
         if (isOtp) {
@@ -2213,8 +2244,8 @@ function renderResults(data) {
               <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
                 <input type="text" id="vipa-front-token-${sid}" placeholder="Token az e-mailből"
                        style="flex:1;min-width:150px;height:38px;padding:0 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--fg);font-size:14px">
-                <button class="btn-upload" onclick="vipaFrontLogin('${sid}')">Bejelentkezés</button>
-                <button class="btn-ghost" onclick="vipaFrontResend('${sid}')"
+                <button class="btn-upload" onclick="vipaFrontLogin(${inlineArg(sid)})">Bejelentkezés</button>
+                <button class="btn-ghost" onclick="vipaFrontResend(${inlineArg(sid)})"
                         style="background:none;border:1px solid var(--border);color:var(--muted);padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px">Új token kérése</button>
               </div>
               <div id="vipa-front-msg-${sid}" class="hidden" style="margin-top:10px;font-size:13px"></div>
@@ -2225,7 +2256,7 @@ function renderResults(data) {
               A webshop jelszava valószínűleg megváltozott. A frissítéshez nyissa meg az Admin panel Webshop belépés menüjét.
             </div>
             ${isAdminUser ? `<div style="margin-top:12px">
-              <button class="btn-upload" onclick="openSupplierAdmin('${sid}')">⚙ Admin megnyitása</button>
+              <button class="btn-upload" onclick="openSupplierAdmin(${inlineArg(sid)})">⚙ Admin megnyitása</button>
             </div>` : ''}`;
         }
       }
@@ -2237,7 +2268,7 @@ function renderResults(data) {
         </div>
         <div class="sup-metric">
           <div class="sup-metric-label">Beszállítói cikkszám</div>
-          <div class="sup-part">${r.supplier_part_no||'—'}</div>
+          <div class="sup-part">${escHtml(r.supplier_part_no || '—')}</div>
         </div>
         ${r.queried_at ? `<div class="sup-ts" style="margin-top:12px">🕐 ${fmtTs(r.queried_at)}</div>` : ''}`;
     } else {
@@ -2286,11 +2317,11 @@ function renderResults(data) {
         <div class="sup-metric">
           <div class="sup-metric-label">Egységár</div>
           <div>
-            <span class="sup-price-big">${ppdb}</span>
-            <span class="sup-price-unit">${priceUnit}/db</span>
+            <span class="sup-price-big">${escHtml(ppdb)}</span>
+            <span class="sup-price-unit">${escHtml(priceUnit)}/db</span>
           </div>
-          ${fxNote ? `<div class="sup-price-orig" style="color:var(--muted)">${fxNote}</div>` : ''}
-          ${!isArgip && rawStr ? `<div class="sup-price-orig">${rawStr}</div>` : ''}
+          ${fxNote ? `<div class="sup-price-orig" style="color:var(--muted)">${escHtml(fxNote)}</div>` : ''}
+          ${!isArgip && rawStr ? `<div class="sup-price-orig">${escHtml(rawStr)}</div>` : ''}
         </div>
         ${argipPricingHtml}
         <div class="sup-metric">
@@ -2300,24 +2331,25 @@ function renderResults(data) {
         <div class="sup-divider"></div>
         <div class="sup-metric">
           <div class="sup-metric-label">Beszállítói cikkszám</div>
-          <div class="sup-part">${r.supplier_part_no||'—'}</div>
+          <div class="sup-part">${escHtml(r.supplier_part_no || '—')}</div>
         </div>
-        ${r.queried_at ? `<div class="sup-ts">🕐 ${fmtTs(r.queried_at)}</div>` : ''}`;
+        ${r.queried_at ? `<div class="sup-ts">🕐 ${escHtml(fmtTs(r.queried_at))}</div>` : ''}`;
     }
     bodyHtml += renderSupplierInfo(r.info_items);
 
-    const safePartNo = (r.supplier_part_no||'').replace(/'/g, "\\'");
+    const safePartNo = escAttr(r.supplier_part_no || '');
+    const safeProductUrl = safeExternalUrl(r.product_url);
     const canOpenSupplier = sid !== 'argip';
     card.innerHTML = `
       <div class="sup-card-hdr">
-        <div class="sup-name">${sid.toUpperCase()}</div>
+        <div class="sup-name">${escHtml(sid.toUpperCase())}</div>
         <div class="sup-badge ${isWinner?'badge-winner':isSkipped?'badge-skipped':hasError?'badge-error':isManual?'badge-manual':'badge-loser'}">
           ${isWinner?'LEGJOBB ÁR':isSkipped?'KIHAGYVA':hasError?'HIBA':isManual?'MANUÁLIS':'ALTERNATÍVA'}
         </div>
       </div>
       <div class="sup-body">${bodyHtml}</div>
       ${canOpenSupplier ? `<div class="sup-footer">
-        <button class="btn-goto-supplier" data-product-url="${(r.product_url||'').replace(/"/g,'&quot;')}" onclick="openSupplierSite('${sid}','${safePartNo}',this)">
+        <button class="btn-goto-supplier" data-product-url="${escAttr(safeProductUrl)}" data-supplier-id="${escAttr(sid)}" data-part-no="${safePartNo}" onclick="openSupplierSite(this.dataset.supplierId,this.dataset.partNo,this)">
           🌐 Tovább a honlapra!
         </button>
       </div>` : ''}`;
@@ -2452,7 +2484,7 @@ function renderStock(stock) {
   if (typeof stock==='object') {
     return Object.entries(stock).map(([loc,qty]) =>
       `<div class="stock-row">
-        <span class="stock-loc">${capitalize(loc)}</span>
+        <span class="stock-loc">${escHtml(capitalize(loc))}</span>
         <span class="stock-chip ${chipClass(qty)}">${fmtInt(qty)} db</span>
       </div>`).join('');
   }
@@ -2645,7 +2677,7 @@ async function openLoginHelper() {
     _loginHelperData = data.suppliers || [];
     renderLoginHelper();
   } catch (err) {
-    listEl.innerHTML = `<p class="adm-hint">Nem sikerült betölteni a belépési adatokat: ${err.message}</p>`;
+    listEl.innerHTML = `<p class="adm-hint">Nem sikerült betölteni a belépési adatokat: ${escHtml(err.message)}</p>`;
   }
 }
 
@@ -2922,19 +2954,19 @@ async function admLoadRuns() {
     const statusIcon = s => ({ ok: '✅', partial: '⚠️', error: '❌', running: '⏳' }[s] ?? s);
     const feedbackLabel = f => ({ positive: '👍 Elégedett', negative: '👎 Nem elégedett' }[f] ?? '—');
     tbody.innerHTML = d.runs.map(r => `<tr>
-      <td><code>${r.run_id ?? ''}</code></td>
-      <td>${r.username ?? '—'}</td>
-      <td>${r.gepcoop_part_no ?? ''}</td>
+      <td><code>${escHtml(r.run_id ?? '')}</code></td>
+      <td>${escHtml(r.username ?? '—')}</td>
+      <td>${escHtml(r.gepcoop_part_no ?? '')}</td>
       <td>${r.started_at ? fmtTs(r.started_at) : ''}</td>
-      <td>${statusIcon(r.status)} ${r.status ?? ''}</td>
+      <td>${escHtml(statusIcon(r.status))} ${escHtml(r.status ?? '')}</td>
       <td>${r.duration_ms ?? '—'}</td>
-      <td>${feedbackLabel(r.recommendation_feedback)}</td>
-      <td>${(r.suppliers_ok  ?? []).join(', ') || '—'}</td>
-      <td>${(r.suppliers_error ?? []).join(', ') || '—'}</td>
-      <td style="max-width:200px;white-space:normal;font-size:11px;color:var(--red)">${r.error_message ?? ''}</td>
+      <td>${escHtml(feedbackLabel(r.recommendation_feedback))}</td>
+      <td>${escHtml((r.suppliers_ok  ?? []).join(', ') || '—')}</td>
+      <td>${escHtml((r.suppliers_error ?? []).join(', ') || '—')}</td>
+      <td style="max-width:200px;white-space:normal;font-size:11px;color:var(--red)">${escHtml(r.error_message ?? '')}</td>
     </tr>`).join('');
   } catch(err) {
-    tbody.innerHTML = `<tr><td colspan="10" class="adm-empty">⚠ ${err.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="adm-empty">⚠ ${escHtml(err.message)}</td></tr>`;
   }
 }
 document.getElementById('adm-btn-refresh-runs').addEventListener('click', admLoadRuns);
@@ -3343,7 +3375,7 @@ function admRenderCopilotTasks() {
   }
 
   tbody.innerHTML = tasks.map(t => `
-      <tr class="copilot-task-row" onclick="admOpenCopilotTask('${escAttr(t.id)}')">
+      <tr class="copilot-task-row" onclick="admOpenCopilotTask(${inlineArg(t.id)})">
         <td><code>#${escHtml(String(t.id).slice(0, 6).toUpperCase())}</code></td>
         <td>${escHtml(t.user_id || '—')}</td>
         <td>${escHtml(copilotProblemLabel(t.problem_type))}</td>
@@ -3377,7 +3409,7 @@ async function admOpenCopilotTask(taskId) {
             <option value="in_progress" ${t.status === 'in_progress' ? 'selected' : ''}>Folyamatban</option>
             <option value="resolved" ${t.status === 'resolved' ? 'selected' : ''}>Megoldva</option>
           </select>
-          <button class="btn-upload" onclick="admSaveCopilotStatus('${escAttr(t.id)}')">Státusz mentése</button>
+          <button class="btn-upload" onclick="admSaveCopilotStatus(${inlineArg(t.id)})">Státusz mentése</button>
         </div>
       </div>
       <div style="margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;font-size:13px">
@@ -3545,7 +3577,7 @@ async function admLoadRunsChart(range = 'week') {
     const runs = Array.isArray(d.runs) ? d.runs : [];
     admRenderRunsChart(runs);
   } catch (err) {
-    wrap.innerHTML = `<div class="adm-chart-empty">⚠ ${err.message}</div>`;
+    wrap.innerHTML = `<div class="adm-chart-empty">⚠ ${escHtml(err.message)}</div>`;
     summary.textContent = 'Nem sikerült betölteni a diagramot.';
   }
 }
@@ -3616,7 +3648,7 @@ function admRenderRunsChart(runs) {
       <path class="adm-chart-line" d="${linePath}"></path>
       ${points.map((p, idx) => `
         <circle class="adm-chart-point" cx="${p.x}" cy="${p.y}" r="4">
-          <title>${p.label} • futás: ${p.sec}s • gördülő átlag: ${avgPoints[idx].avg.toFixed(2)}s • ${p.gepcoop_part_no || '—'} • ${p.status || '—'}</title>
+          <title>${escHtml(p.label)} • futás: ${p.sec}s • gördülő átlag: ${avgPoints[idx].avg.toFixed(2)}s • ${escHtml(p.gepcoop_part_no || '—')} • ${escHtml(p.status || '—')}</title>
         </circle>
       `).join('')}
       ${tickIndexes.map(idx => {
@@ -3666,7 +3698,7 @@ function admRenderTable(columns, rows) {
 
   // Update the upload hint with the required column order
   if (columns.length) {
-    const colTags = columns.map(c => `<code>${c}</code>`).join(' <span style="color:var(--muted);font-size:10px">▸</span> ');
+    const colTags = columns.map(c => `<code>${escHtml(c)}</code>`).join(' <span style="color:var(--muted);font-size:10px">▸</span> ');
     hint.innerHTML =
       `<strong>Kötelező oszlopok (ebben a sorrendben):</strong><br>` +
       `<span style="line-height:2">${colTags}</span>`;
@@ -3680,9 +3712,9 @@ function admRenderTable(columns, rows) {
     return;
   }
 
-  thead.innerHTML = '<tr>' + columns.map(c => `<th>${c}</th>`).join('') + '</tr>';
+  thead.innerHTML = '<tr>' + columns.map(c => `<th>${escHtml(c)}</th>`).join('') + '</tr>';
   tbody.innerHTML = preview.map(row =>
-    '<tr>' + columns.map(c => `<td>${row[c] ?? ''}</td>`).join('') + '</tr>'
+    '<tr>' + columns.map(c => `<td>${escHtml(row[c] ?? '')}</td>`).join('') + '</tr>'
   ).join('');
 }
 
@@ -3781,11 +3813,24 @@ const EYE_OFF = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" 
 const admInfoSaveState = new Map();
 
 function escAttr(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#039;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 function escHtml(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+}
+
+function inlineArg(value) {
+  return escAttr(JSON.stringify(String(value ?? '')));
+}
+
+function safeExternalUrl(value) {
+  try {
+    const url = new URL(String(value || ''), window.location.origin);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : '';
+  } catch {
+    return '';
+  }
 }
 
 async function admLoadSuppliers() {
@@ -3806,12 +3851,12 @@ function admInfoRowsHtml(sid, items) {
     <div class="adm-info-row" data-supplier="${escAttr(sid)}">
       <div class="adm-info-index">${idx + 1}.</div>
       <input type="text" class="sup-info-label" value="${escAttr(item.label || '')}" maxlength="80" placeholder="Címke"
-             oninput="admScheduleInfoSave('${sid}')">
+             oninput="admScheduleInfoSave(${inlineArg(sid)})">
       <input type="text" class="sup-info-value" value="${escAttr(item.value || '')}" maxlength="500" placeholder="Érték"
-             oninput="admScheduleInfoSave('${sid}')">
-      <button type="button" class="adm-info-icon" onclick="admMoveInfoRow('${sid}', this, -1)" title="Fel">↑</button>
-      <button type="button" class="adm-info-icon" onclick="admMoveInfoRow('${sid}', this, 1)" title="Le">↓</button>
-      <button type="button" class="adm-info-icon danger" onclick="admRemoveInfoRow('${sid}', this)" title="Törlés">×</button>
+             oninput="admScheduleInfoSave(${inlineArg(sid)})">
+      <button type="button" class="adm-info-icon" onclick="admMoveInfoRow(${inlineArg(sid)}, this, -1)" title="Fel">↑</button>
+      <button type="button" class="adm-info-icon" onclick="admMoveInfoRow(${inlineArg(sid)}, this, 1)" title="Le">↓</button>
+      <button type="button" class="adm-info-icon danger" onclick="admRemoveInfoRow(${inlineArg(sid)}, this)" title="Törlés">×</button>
     </div>`).join('');
 }
 
@@ -3960,15 +4005,15 @@ async function admSaveInfoItems(sid) {
 function admRenderSuppliers(suppliers) {
   const wrap = document.getElementById('adm-suppliers-wrap');
   wrap.innerHTML = suppliers.map(s => `
-    <div class="adm-supplier-row" id="adm-supplier-${s.id}">
+    <div class="adm-supplier-row" id="adm-supplier-${escAttr(s.id)}">
       <div class="adm-sup-header">
-        <span class="adm-sup-name">${s.id}</span>
-        <a href="${escAttr(s.url)}" target="_blank" class="adm-sup-url">${escAttr(s.url)} ↗</a>
+        <span class="adm-sup-name">${escHtml(s.id)}</span>
+        <a href="${escAttr(safeExternalUrl(s.url))}" target="_blank" rel="noopener noreferrer" class="adm-sup-url">${escHtml(s.url)} ↗</a>
       </div>
       <div class="adm-sup-fields">
         ${(s.extra||[]).map(ex => `
         <div class="field">
-          <label>${escAttr(ex.label)}</label>
+          <label>${escHtml(ex.label)}</label>
           <input type="text" id="sup-extra-${s.id}-${ex.key}" value="${escAttr(ex.value)}"
                  autocomplete="off" readonly onfocus="this.removeAttribute('readonly')">
         </div>`).join('')}
@@ -3980,15 +4025,15 @@ function admRenderSuppliers(suppliers) {
         ${s.otp ? `
         <div style="display:flex;align-items:flex-end;padding-bottom:1px">
           <button class="btn-upload" id="sup-btn-${s.id}"
-                  onclick="admSaveSupplier('${s.id}')">E-mail mentése</button>
+                  onclick="admSaveSupplier(${inlineArg(s.id)})">E-mail mentése</button>
         </div>
         <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
           <div class="adm-info-title" style="margin-bottom:10px">OTP Bejelentkezés</div>
           <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
-            <button class="btn-upload" onclick="vipaInitiateLogin('${s.id}')">1. OTP kérése</button>
+            <button class="btn-upload" onclick="vipaInitiateLogin(${inlineArg(s.id)})">1. OTP kérése</button>
             <input type="text" id="vipa-token-${s.id}" class="adm-input"
                    placeholder="Token (e-mailből)" style="flex:1;min-width:160px;height:36px;padding:0 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--fg)">
-            <button class="btn-upload" onclick="vipaCompleteLogin('${s.id}')">2. Bejelentkezés</button>
+            <button class="btn-upload" onclick="vipaCompleteLogin(${inlineArg(s.id)})">2. Bejelentkezés</button>
           </div>
           <div id="vipa-otp-msg-${s.id}" class="hidden" style="margin-top:8px"></div>
         </div>` : `
@@ -3999,21 +4044,21 @@ function admRenderSuppliers(suppliers) {
                    autocomplete="new-password" readonly onfocus="this.removeAttribute('readonly')"
                    placeholder="Csak módosításkor töltse ki">
             <button type="button" class="btn-eye" id="sup-eye-btn-${s.id}"
-                    onclick="admToggleSupPw('${s.id}')" title="Jelszó megjelenítése">
+                    onclick="admToggleSupPw(${inlineArg(s.id)})" title="Jelszó megjelenítése">
               <span id="sup-eye-${s.id}">${EYE_ON}</span>
             </button>
           </div>
         </div>
         <div style="display:flex;align-items:flex-end;padding-bottom:1px">
           <button class="btn-upload" id="sup-btn-${s.id}"
-                  onclick="admSaveSupplier('${s.id}')">Mentés</button>
+                  onclick="admSaveSupplier(${inlineArg(s.id)})">Mentés</button>
         </div>`}
       </div>
       <div class="adm-info-block">
         <div class="adm-info-head">
           <div class="adm-info-title">Rendelési információk</div>
           <div class="adm-info-status" id="sup-info-status-${s.id}"></div>
-          <button type="button" class="adm-info-add" id="sup-info-add-${s.id}" onclick="admAddInfoRow('${s.id}')">+ Sor</button>
+          <button type="button" class="adm-info-add" id="sup-info-add-${escAttr(s.id)}" onclick="admAddInfoRow(${inlineArg(s.id)})">+ Sor</button>
         </div>
         <div class="adm-info-list" id="sup-info-list-${s.id}">
           ${admInfoRowsHtml(s.id, s.info_items || [])}
@@ -4164,24 +4209,24 @@ function admRenderUsers(users) {
             <input type="password" id="adm-user-pass-${rowId}" autocomplete="off" placeholder="Új jelszó">
           </div>
           <div class="adm-user-actions" style="margin-top:10px">
-            <button class="btn-upload" onclick="admUpdateUserPassword('${escAttr(u.username)}','${rowId}', this)">Jelszó mentése</button>
+            <button class="btn-upload" onclick="admUpdateUserPassword(${inlineArg(u.username)},${inlineArg(rowId)}, this)">Jelszó mentése</button>
           </div>
         </div>
         <div class="adm-user-block">
           <div class="adm-user-block-title">Jogosultság</div>
           <div id="adm-user-role-pending-${rowId}" class="adm-pending-note">Nincs mentetlen jogosultságváltozás.</div>
           <div class="adm-user-actions" style="margin-top:10px">
-            <button class="btn-secondary" id="adm-user-role-toggle-${rowId}" onclick="admStageUserAdmin('${escAttr(u.username)}','${rowId}', this)">
+            <button class="btn-secondary" id="adm-user-role-toggle-${rowId}" onclick="admStageUserAdmin(${inlineArg(u.username)},${inlineArg(rowId)}, this)">
               ${u.is_admin ? 'Admin jog elvétele' : 'Adminná tétel'}
             </button>
-            <button class="btn-upload" id="adm-user-role-save-${rowId}" onclick="admSaveUserAdmin('${escAttr(u.username)}','${rowId}', this)" disabled>Jogosultság mentése</button>
+            <button class="btn-upload" id="adm-user-role-save-${rowId}" onclick="admSaveUserAdmin(${inlineArg(u.username)},${inlineArg(rowId)}, this)" disabled>Jogosultság mentése</button>
           </div>
         </div>
         ${u.protected ? '' : `
         <div class="adm-user-block">
           <div class="adm-user-block-title">Veszélyes művelet</div>
           <div class="adm-user-actions">
-            <button class="btn-danger" onclick="admDeleteUser('${escAttr(u.username)}')">Felhasználó törlése</button>
+            <button class="btn-danger" onclick="admDeleteUser(${inlineArg(u.username)})">Felhasználó törlése</button>
           </div>
         </div>`}
         ${admUserMsgHtml(rowId)}

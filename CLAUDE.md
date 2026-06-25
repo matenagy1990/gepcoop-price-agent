@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 This file is the working technical guide for agents modifying this repository.
-Last verified against the codebase: **2026-06-21**.
+Last verified against the codebase: **2026-06-25** (`main` at `74cbfae`).
 
 ## Project Purpose
 
@@ -25,12 +25,18 @@ This repository hosts **two separate applications**:
 | App | Port | Description |
 |---|---|---|
 | Price Agent | 8080 | Single part number lookup, real-time result cards |
-| Batch Price Agent | 8001 | Bulk lookup (up to 50 parts × 14 suppliers), matrix view + Excel export |
+| Batch Price Agent | 8001 | Bulk lookup (up to 400 parts × 14 suppliers), matrix view + Excel export |
 
 Both apps are served from the same Docker Compose stack (`docker-compose.yml` in the root).
 The Batch Price Agent lives under `batch-price-agent/` and imports scrapers from this repo at runtime — see `batch-price-agent/README.md` for its full documentation.
 
 The Price Agent's UI (`ui/index.html`) includes an **app-selector page** that lets the buyer switch between the two apps. Clicking the Batch tile navigates to port 8001. The app-selector has the same full-screen background (screw photograph + mesh + vignette + spotlight effect) as the login page.
+
+Current batch execution rule:
+
+- 1-50 unique part numbers: only immediate execution is allowed.
+- 51-400 unique part numbers: only scheduled execution is allowed.
+- The backend enforces both rules; they are not only frontend restrictions.
 
 ## Architecture
 
@@ -45,6 +51,7 @@ The Price Agent's UI (`ui/index.html`) includes an **app-selector page** that le
   |-- max 4 concurrent scraper executions (SCRAPER_LIMIT = asyncio.Semaphore(4))
   |-- recommendation and run logging
   |-- supplier deep-links and shared login helper
+  |-- dynamically loaded Gép-Coopilot issue-intake router
   |
   |-- agent/tools.py
   |     |-- Supabase article mapping lookup
@@ -64,6 +71,7 @@ The Price Agent's UI (`ui/index.html`) includes an **app-selector page** that le
         |-- argip_price_list
         |-- gepcoop_stock
         |-- supplier_info_items
+        |-- copilot_tasks / copilot_conversations / copilot_messages
         `-- Storage: homepage information JSON
 ```
 
@@ -117,6 +125,14 @@ docs/webshop_utmutato.md
 
 batch-price-agent/
   Companion bulk-query application. See batch-price-agent/README.md.
+
+Gép-Coopilot/
+  copilot_module.py
+    OpenAI-assisted Hungarian issue intake, task persistence and admin API.
+  supabase_copilot_tables.sql
+    Copilot task/conversation/message tables and indexes.
+  MVP_hibafelvetel_admin_attekinto.md
+    Product-level MVP specification and conversation requirements.
 
 Dockerfile
 docker-compose.yml
@@ -178,6 +194,10 @@ SUPABASE_URL
 SUPABASE_KEY             Must be supabase-py >= 2.15.0 compatible (sb_secret_* format).
 PRIMARY_ADMIN_USERNAME   Optional; defaults in main.py.
 EUR_TO_HUF_RATE          Optional; defaults to 400.
+BATCH_ACCESS_PASSWORD    Second gate for authenticated Batch Agent users.
+COPILOT_ENABLED          true/false feature flag for the Gép-Coopilot UI.
+OPENAI_API_KEY           Required for model-assisted Copilot classification.
+OPENAI_MODEL             Defaults to gpt-4o-mini.
 ```
 
 Each supplier uses:
@@ -338,11 +358,31 @@ path:   homepage/info.json
 The application also writes `assets/homepage_info.json` as a local fallback and
 mirror. Empty text hides the block.
 
+### Gép-Coopilot tables
+
+Created by `Gép-Coopilot/supabase_copilot_tables.sql`:
+
+- `copilot_tasks`: structured issue data, status and optional admin note;
+- `copilot_conversations`: one conversation linked to a submitted task;
+- `copilot_messages`: original user/assistant messages in chronological order.
+
+Task statuses are `open`, `in_progress` and `resolved`. Problem types are
+`missing_price`, `wrong_price`, `missing_stock`, `error_message`, `slow_search`
+and `other`.
+
+If Supabase is unavailable, the Copilot temporarily falls back to
+`Gép-Coopilot/copilot_local_store.json`. This keeps issue intake usable, but it
+is a local runtime fallback rather than the production source of truth.
+
 ## Authentication and Authorisation
 
 - `POST /login` validates `app_users` and returns a random bearer token.
 - Tokens are held only in memory and are not JWTs.
 - `GET /me` refreshes username and role information.
+- `POST /batch/access` validates the Batch access password for an already
+  authenticated Price Agent user and issues a 12-hour in-memory Batch ticket.
+- `GET /batch/access/validate` validates the bearer token and Batch ticket
+  together for the Batch backend.
 - Normal protected endpoints call `_get_username()`.
 - Admin endpoints call `_get_admin()`.
 - The primary admin is resolved from `PRIMARY_ADMIN_USERNAME`, then the
@@ -356,11 +396,14 @@ mirror. Empty text hides the block.
 - `GET /` - single-file UI
 - `GET /logo.png`
 - `GET /health`
+- `GET /copilot/config` - public, read-only feature flag used to show the widget
 
 ### Authenticated user
 
 - `POST /login`
 - `GET /me`
+- `POST /batch/access`
+- `GET /batch/access/validate` - internal validation used by the Batch service
 - `GET /homepage-info`
 - `GET /query/lookup?internal_part_no=`
 - `GET /query/stream?internal_part_no=&suppliers=`
@@ -370,6 +413,8 @@ mirror. Empty text hides the block.
 - `POST /supplier/open`
 - `GET /supplier/login-info`
 - `POST /reyher/open`
+- `POST /copilot/chat`
+- `POST /copilot/tasks`
 
 `POST /reyher/open` starts a headed browser on the server and is only useful
 when the server is running on the buyer's own graphical machine.
@@ -401,6 +446,9 @@ when the server is running on the buyer's own graphical machine.
 - `POST /admin/users/{username}/admin`
 - `DELETE /admin/users/{username}`
 - `POST /supplier/update-password`
+- `GET /copilot/admin/tasks`
+- `GET /copilot/admin/tasks/{task_id}`
+- `POST /copilot/admin/tasks/{task_id}/status`
 
 ## Query Flow and SSE
 
@@ -431,6 +479,62 @@ SSE event types:
 
 Login-related scraper errors are detected with keyword matching and emitted as
 `password_required`, allowing admins to jump to supplier credential management.
+
+## Gép-Coopilot
+
+The Gép-Coopilot is a focused Hungarian issue-intake assistant embedded in the
+bottom-right corner of the Price Agent. It is not a general-purpose chatbot.
+
+Runtime loading:
+
+- `main.py` locates `*-Coopilot/copilot_module.py` with a filesystem glob and
+  includes its router dynamically. Do not replace this with an accented literal
+  path: macOS and Linux may store the `é` character with different Unicode
+  normalisation.
+- `COPILOT_ENABLED=true` controls visibility.
+- `/copilot/config` intentionally does not require authentication, because the
+  frontend needs the feature flag while bootstrapping. Chat, submit and admin
+  endpoints remain authenticated.
+
+Conversation flow:
+
+1. The buyer describes the concrete system problem in free text.
+2. `/copilot/chat` uses OpenAI (`OPENAI_MODEL`, currently `gpt-4o-mini`) to
+   determine whether this is a meaningful Price Agent issue and to extract
+   problem type, product number and webshop names.
+3. Greetings, repeated words and vague text such as `szia szia szia` do not
+   advance the issue flow.
+4. If product number and webshop are already present in the first description,
+   the UI skips redundant questions and immediately prepares the summary.
+5. Otherwise the UI requests the missing product number, then displays a
+   multi-select list of supported webshops.
+6. The buyer reviews the summary and can use `Módosítás` exactly once. The
+   additional text is appended to the description and a new summary is shown.
+7. `Véglegesítés` creates the task and stores the conversation. No task exists
+   before explicit confirmation.
+8. After successful submission the UI briefly confirms that the issue was
+   recorded, then clears the conversation and returns to the opening prompt.
+
+The launcher button also acts as a toggle: clicking it while the panel is open
+collapses the panel without clearing the buyer's current local draft. Draft
+state exists only in that browser tab's JavaScript memory, so another logged-in
+buyer cannot see unfinished text.
+
+Failure behaviour:
+
+- OpenAI/API/parsing failures return the fixed buyer-facing fallback:
+  `Még egy chatbot is megérdemel egy kis pihenést...`
+- The deterministic fallback classifier can still recognise common concrete
+  issue phrases, but it does not turn greetings into tickets.
+- Off-topic requests are rejected with a short scope message.
+
+Admin behaviour:
+
+- `Gép-Coopilot Hibapult` lists the latest 200 tasks.
+- The list can be filtered by status.
+- Detail view shows structured fields, summary, original conversation, status
+  and internal admin note.
+- Admins can set `Nyitott`, `Folyamatban` or `Megoldva`.
 
 ## Scraper Contract
 
@@ -577,6 +681,7 @@ if (authToken) {
 - supplier result cards with ordering information;
 - product/deep-link opening;
 - webshop login helper.
+- bottom-right Gép-Coopilot issue intake when enabled.
 
 ### Admin tabs
 
@@ -588,6 +693,7 @@ if (authToken) {
 - Gép-Coop stock
 - Run log
 - Exchange rate
+- Gép-Coopilot Hibapult with status filtering
 
 Escape dynamic user/database text with `escHtml()` or `escAttr()` before adding
 it to template strings.
@@ -619,6 +725,14 @@ The Docker image is based on the Playwright Python `v1.60.0-noble` image.
 `docker-compose.yml` mounts both `assets/` and `.env`, allocates 256 MB shared
 memory and uses `restart: unless-stopped`.
 
+The same root `.env` is loaded by both containers. Production Copilot requires:
+
+```text
+COPILOT_ENABLED=true
+OPENAI_API_KEY=<secret>
+OPENAI_MODEL=gpt-4o-mini
+```
+
 ## Deployment
 
 Hetzner deployment uses Docker Compose under `/opt/price_agent` and the
@@ -626,8 +740,14 @@ Hetzner deployment uses Docker Compose under `/opt/price_agent` and the
 
 Server: Hetzner CPX42 (8 vCPU AMD, 16 GB RAM, 320 GB SSD) — ~€22.59/month.
 IP: `178.104.208.200`
-Price agent: `http://178.104.208.200:8080`
-Batch agent: `http://178.104.208.200:8001`
+Production access goes through one Nginx HTTPS endpoint using a public
+Let's Encrypt IP-address certificate; no purchased domain is required:
+
+- Price Agent: `https://178.104.208.200/`
+- Batch Agent: `https://178.104.208.200/batch-agent/`
+- Container ports `8080` and `8001` bind only to `127.0.0.1` on the host.
+- `deploy/enable-https.sh` provisions a six-day Let's Encrypt IP certificate,
+  enables automatic renewal, and closes direct app ports.
 
 Useful server commands:
 
@@ -658,6 +778,8 @@ SSE reverse proxies must disable buffering (`proxy_buffering off`).
 | Login page flashes on app switch | `#login-page` without `class="hidden"` in HTML | Always start login page hidden; boot JS removes `.hidden` only if no token |
 | Docker build uses cache, old packages installed | `docker compose build` reuses pip layer | Run `docker compose build --no-cache` when `requirements.txt` changes |
 | git pull fails with auth error on server | GitHub token expired or not set in remote URL | `git remote set-url origin https://<user>:<token>@github.com/...` |
+| Copilot button remains hidden although `COPILOT_ENABLED=true` | Copilot router did not load, commonly due to an accented folder-name normalisation mismatch | Keep the `*-Coopilot/copilot_module.py` glob loader and verify `/copilot/config` returns `{"enabled":true}` |
+| `/copilot/config` returns 401 during UI bootstrap | Feature discovery was incorrectly tied to bearer auth | Keep this endpoint public; protect only chat/task/admin operations |
 
 ## Database Migrations
 
@@ -671,12 +793,14 @@ deploy/supabase_supplier_info_items.sql
 deploy/supabase_article_mapping_new_suppliers.sql
 deploy/supabase_argip_price_list.sql
 deploy/supabase_gepcoop_stock.sql
+Gép-Coopilot/supabase_copilot_tables.sql
 ```
 
-Batch agent additional migration (run once):
+Batch agent schema and incremental migration:
 
-```sql
-alter table batch_runs add column if not exists scheduled_at timestamptz;
+```text
+batch-price-agent/deploy/supabase_batch_tables.sql
+batch-price-agent/deploy/supabase_batch_runner_migration.sql
 ```
 
 ## Adding a Supplier
@@ -710,10 +834,13 @@ For API/UI changes, start the local server and check:
 
 ```text
 GET /health
+GET /copilot/config returns enabled=true when enabled
 login → app-selector appears (no login flash)
 enter price agent → mapping preview works
 selected-supplier query streams correctly
 switch to batch agent (tile click)
+Copilot rejects vague text, recognises a complete issue and submits a task
+admin Copilot status filter and status update work
 admin save/reload
 ```
 

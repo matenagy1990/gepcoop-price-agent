@@ -305,7 +305,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
   <span class="logo">⚙️ Batch Price Agent</span>
   <button onclick="newRun()" id="nav-new-run">+ Új lekérdezés</button>
   <button onclick="showScreen('past-runs')" id="nav-past-runs">Korábbi futások</button>
-  <button onclick="window.location.href=window.location.protocol+'//'+window.location.hostname+':8080?select=1'" style="margin-left:auto;opacity:.85">⊞ Alkalmazások</button>
+  <button onclick="window.location.href=priceAgentUrl('?select=1')" style="margin-left:auto;opacity:.85">⊞ Alkalmazások</button>
   <button onclick="logoutBatchAgent()" style="opacity:.85">Kijelentkezés</button>
 </nav>
 
@@ -600,12 +600,48 @@ hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
 // ══════════════════════════════════════════════════════
 // State
 // ══════════════════════════════════════════════════════
-const _runnerHash = new URLSearchParams(window.location.hash.slice(1)).get('runner_name');
-if (_runnerHash) {
-  sessionStorage.setItem('batch_runner_name', _runnerHash);
+const _batchHash = new URLSearchParams(window.location.hash.slice(1));
+const _transferredToken = _batchHash.get('token');
+const _transferredBatchAccess = _batchHash.get('batch_access');
+if (_transferredToken && _transferredBatchAccess) {
+  sessionStorage.setItem('batch_auth_token', _transferredToken);
+  sessionStorage.setItem('batch_access_token', _transferredBatchAccess);
   history.replaceState(null, '', window.location.pathname + window.location.search);
 }
-const batchRunnerName = (sessionStorage.getItem('batch_runner_name') || '').trim() || 'Ismeretlen';
+let batchAuthToken = sessionStorage.getItem('batch_auth_token') || '';
+let batchAccessToken = sessionStorage.getItem('batch_access_token') || '';
+let batchRunnerName = '';
+const BATCH_PUBLIC_BASE = window.location.pathname.startsWith('/batch-agent/')
+  ? '/batch-agent'
+  : '';
+
+function priceAgentUrl(query = '') {
+  if (BATCH_PUBLIC_BASE) return `${window.location.origin}/${query.replace(/^\//, '')}`;
+  return `${window.location.protocol}//${window.location.hostname}:8080${query}`;
+}
+
+function redirectToPriceAgent() {
+  sessionStorage.removeItem('batch_auth_token');
+  sessionStorage.removeItem('batch_access_token');
+  batchAuthToken = '';
+  batchAccessToken = '';
+  window.location.replace(priceAgentUrl('?select=1'));
+}
+
+const _nativeFetch = window.fetch.bind(window);
+window.fetch = async function(input, init = {}) {
+  const headers = new Headers(init.headers || {});
+  if (batchAuthToken) headers.set('Authorization', `Bearer ${batchAuthToken}`);
+  if (batchAccessToken) headers.set('X-Batch-Access-Token', batchAccessToken);
+  const requestInput = typeof input === 'string' && input.startsWith('/') && BATCH_PUBLIC_BASE
+    ? `${BATCH_PUBLIC_BASE}${input}`
+    : input;
+  const response = await _nativeFetch(requestInput, { ...init, headers });
+  if (response.status === 401 || response.status === 403) {
+    redirectToPriceAgent();
+  }
+  return response;
+};
 
 let state = {
   suppliers: [],           // [{id, name, url}]
@@ -652,9 +688,11 @@ function newRun() {
 }
 
 function logoutBatchAgent() {
-  sessionStorage.removeItem('batch_runner_name');
-  window.location.href =
-    `${window.location.protocol}//${window.location.hostname}:8080?logout=1`;
+  sessionStorage.removeItem('batch_auth_token');
+  sessionStorage.removeItem('batch_access_token');
+  batchAuthToken = '';
+  batchAccessToken = '';
+  window.location.href = priceAgentUrl('?logout=1');
 }
 
 // ══════════════════════════════════════════════════════
@@ -695,6 +733,23 @@ function escapeHtml(value) {
   })[char]);
 }
 
+function escapeAttr(value) {
+  return escapeHtml(value);
+}
+
+function inlineArg(value) {
+  return escapeAttr(JSON.stringify(String(value ?? '')));
+}
+
+function safeExternalUrl(value) {
+  try {
+    const url = new URL(String(value || ''), window.location.origin);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : '';
+  } catch {
+    return '';
+  }
+}
+
 function statusTag(status) {
   const map = {
     completed: ['tag-green', '✓ kész'],
@@ -705,7 +760,7 @@ function statusTag(status) {
     scheduled: ['tag-blue', '⏰ ütemezve'],
   };
   const [cls, label] = map[status] || ['tag-gray', status];
-  return `<span class="tag ${cls}">${label}</span>`;
+  return `<span class="tag ${cls}">${escapeHtml(label)}</span>`;
 }
 
 // "Olvasott" futások nyilvántartása böngészőben (localStorage) — ez alapján
@@ -736,11 +791,17 @@ async function loadSuppliers() {
 function renderSupplierGrid() {
   const grid = document.getElementById('supplier-grid');
   grid.innerHTML = state.suppliers.map(s => `
-    <label class="supplier-chip" id="chip-${s.id}" onclick="toggleSupplier('${s.id}')">
-      <input type="checkbox" id="sup-${s.id}" value="${s.id}" style="pointer-events:none"/>
-      ${s.name}
+    <label class="supplier-chip" id="chip-${escapeAttr(s.id)}" data-supplier-id="${escapeAttr(s.id)}">
+      <input type="checkbox" id="sup-${escapeAttr(s.id)}" value="${escapeAttr(s.id)}" style="pointer-events:none"/>
+      ${escapeHtml(s.name)}
     </label>
   `).join('');
+  grid.querySelectorAll('.supplier-chip').forEach(chip => {
+    chip.addEventListener('click', event => {
+      event.preventDefault();
+      toggleSupplier(chip.dataset.supplierId);
+    });
+  });
 }
 
 function toggleSupplier(id) {
@@ -880,7 +941,7 @@ function _vipaCloseModal(result) {
 // ══════════════════════════════════════════════════════
 // Part number counter
 // ══════════════════════════════════════════════════════
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('part-numbers').addEventListener('input', () => {
     const lines = getPartNumbers();
     const uniqueCount = countUniquePartNumbers(lines);
@@ -888,6 +949,19 @@ document.addEventListener('DOMContentLoaded', () => {
     el.textContent = `${uniqueCount} / ${_appConfig.batch_max_items} cikkszám`;
     el.style.color = uniqueCount > _appConfig.batch_max_items ? 'var(--red)' : 'var(--gray)';
   });
+  if (!batchAuthToken || !batchAccessToken) {
+    redirectToPriceAgent();
+    return;
+  }
+  try {
+    const res = await fetch('/auth/me');
+    if (!res.ok) return;
+    const user = await res.json();
+    batchRunnerName = (user.username || '').trim();
+  } catch {
+    redirectToPriceAgent();
+    return;
+  }
   loadSuppliers();
   loadConfig();
 });
@@ -953,7 +1027,7 @@ async function startPreview() {
     renderPreview(data);
   } catch (e) {
     document.getElementById('preview-table-wrap').innerHTML =
-      `<div class="alert alert-error" style="margin:16px">${e.message}</div>`;
+      `<div class="alert alert-error" style="margin:16px">${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -970,7 +1044,7 @@ function renderPreview(data) {
   // Duplikáció
   const dupAlert = document.getElementById('preview-duplicates-alert');
   if (data.duplicates && data.duplicates.length > 0) {
-    dupAlert.innerHTML = `<div class="alert alert-warn">⚠ ${data.duplicates.length} duplikált cikkszámot eltávolítottunk: ${data.duplicates.join(', ')}</div>`;
+    dupAlert.innerHTML = `<div class="alert alert-warn">⚠ ${data.duplicates.length} duplikált cikkszámot eltávolítottunk: ${escapeHtml(data.duplicates.join(', '))}</div>`;
   } else {
     dupAlert.innerHTML = '';
   }
@@ -990,19 +1064,19 @@ function renderPreview(data) {
 
   let thead = '<thead><tr><th class="sticky-col">Gép-Coop cikkszám</th><th class="sticky-col" style="left:140px">Terméknév</th>';
   sups.forEach(sid => {
-    thead += `<th>${supNames[sid] || sid}</th>`;
+    thead += `<th>${escapeHtml(supNames[sid] || sid)}</th>`;
   });
   thead += '</tr></thead>';
 
   let tbody = '<tbody>';
   data.items.forEach(item => {
     tbody += `<tr>
-      <td class="sticky-col" style="font-weight:600">${item.gepcoop_part_no}</td>
-      <td class="sticky-col" style="left:140px;max-width:180px">${item.product_name || '<span class="text-muted">—</span>'}</td>`;
+      <td class="sticky-col" style="font-weight:600">${escapeHtml(item.gepcoop_part_no)}</td>
+      <td class="sticky-col" style="left:140px;max-width:180px">${item.product_name ? escapeHtml(item.product_name) : '<span class="text-muted">—</span>'}</td>`;
     sups.forEach(sid => {
       const s = item.suppliers[sid] || {};
       if (s.status === 'mapped') {
-        tbody += `<td><span class="tag tag-green">✓ ${s.supplier_part_no}</span></td>`;
+        tbody += `<td><span class="tag tag-green">✓ ${escapeHtml(s.supplier_part_no)}</span></td>`;
       } else if (s.status === 'not_in_db') {
         tbody += `<td><span class="tag tag-red">✗ nem ismert</span></td>`;
       } else {
@@ -1022,7 +1096,7 @@ function renderPreview(data) {
   document.getElementById('preview-plan').innerHTML = `
     <table style="width:auto;font-size:13px">
       <tbody>
-        <tr><td style="padding:6px 16px 6px 0;color:var(--gray)">Projekt neve</td><td style="font-weight:600">${data.project_name}</td></tr>
+        <tr><td style="padding:6px 16px 6px 0;color:var(--gray)">Projekt neve</td><td style="font-weight:600">${escapeHtml(data.project_name)}</td></tr>
         <tr><td style="padding:6px 16px 6px 0;color:var(--gray)">Cikkszámok száma</td><td><strong>${data.total_items}</strong></td></tr>
         <tr><td style="padding:6px 16px 6px 0;color:var(--gray)">Kiválasztott webshopok</td><td><strong>${data.selected_suppliers.length}</strong></td></tr>
         <tr><td style="padding:6px 16px 6px 0;color:var(--gray)">Összes lehetséges keresés</td><td><strong>${data.total_possible_searches}</strong></td></tr>
@@ -1061,6 +1135,40 @@ function renderPreview(data) {
 // SCREEN 3: Progress
 // ══════════════════════════════════════════════════════
 let _supplierProgress = {};   // sid → {total, done, ok, errors, status}
+
+function openProgressStream(runId, onMessage, onError) {
+  const controller = new AbortController();
+  (async () => {
+    const response = await fetch(`/batch/run/${runId}/progress`, {
+      signal: controller.signal,
+      headers: { 'Accept': 'text/event-stream' },
+    });
+    if (!response.ok || !response.body) {
+      throw new Error(`SSE kapcsolat sikertelen: HTTP ${response.status}`);
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const blocks = buffer.split('\n\n');
+      buffer = blocks.pop() || '';
+      for (const block of blocks) {
+        const payload = block
+          .split('\n')
+          .filter(line => line.startsWith('data:'))
+          .map(line => line.slice(5).trim())
+          .join('\n');
+        if (payload) onMessage(JSON.parse(payload));
+      }
+    }
+  })().catch(err => {
+    if (err.name !== 'AbortError') onError(err);
+  });
+  return { close: () => controller.abort() };
+}
 
 async function startBatchRun() {
   const data = state.previewData;
@@ -1123,15 +1231,15 @@ async function startBatchRun() {
   runSuppliers.forEach(sid => {
     _supplierProgress[sid] = { total: 0, done: 0, ok: 0, errors: 0, status: 'várakozik' };
     tbody.insertAdjacentHTML('beforeend', `
-      <tr id="sprow-${sid}">
-        <td><strong>${data.supplier_names[sid] || sid}</strong></td>
-        <td id="spstatus-${sid}"><span class="tag tag-gray">várakozik</span></td>
-        <td id="spprog-${sid}" style="min-width:160px">
-          <div class="progress-bar-outer"><div class="progress-bar-inner" id="spbar-${sid}" style="width:0%"></div></div>
-          <div class="text-muted" id="sptext-${sid}">0 / 0</div>
+      <tr id="sprow-${escapeAttr(sid)}">
+        <td><strong>${escapeHtml(data.supplier_names[sid] || sid)}</strong></td>
+        <td id="spstatus-${escapeAttr(sid)}"><span class="tag tag-gray">várakozik</span></td>
+        <td id="spprog-${escapeAttr(sid)}" style="min-width:160px">
+          <div class="progress-bar-outer"><div class="progress-bar-inner" id="spbar-${escapeAttr(sid)}" style="width:0%"></div></div>
+          <div class="text-muted" id="sptext-${escapeAttr(sid)}">0 / 0</div>
         </td>
-        <td id="spok-${sid}">0</td>
-        <td id="sperr-${sid}">0</td>
+        <td id="spok-${escapeAttr(sid)}">0</td>
+        <td id="sperr-${escapeAttr(sid)}">0</td>
       </tr>
     `);
   });
@@ -1142,7 +1250,6 @@ async function startBatchRun() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         project_name: data.project_name,
-        runner_name: batchRunnerName,
         selected_suppliers: runSuppliers,
         gepcoop_part_numbers: data.items.map(i => i.gepcoop_part_no),
       }),
@@ -1156,14 +1263,11 @@ async function startBatchRun() {
     document.getElementById('progress-run-id').textContent = `Futás azonosító: ${batch_run_id}`;
     cancelBtn.classList.remove('hidden');
 
-    // SSE stream
-    const es = new EventSource(`/batch/run/${batch_run_id}/progress`);
-    state.currentEventSource = es;
+    // Hitelesített SSE stream fetch-csel, mert az EventSource nem támogat headereket.
     let totalSearches = data.searchable_count || 1;
     let globalDone = 0;
 
-    es.onmessage = (e) => {
-      const evt = JSON.parse(e.data);
+    const es = openProgressStream(batch_run_id, (evt) => {
       handleProgressEvent(evt, totalSearches, () => globalDone++);
 
       if (evt.event === 'batch_started') {
@@ -1188,21 +1292,21 @@ async function startBatchRun() {
           showScreen('new-run');
         } else {
           document.getElementById('progress-summary').innerHTML =
-            `<span style="color:var(--red)">✗ Hiba: ${evt.message}</span>`;
+            `<span style="color:var(--red)">✗ Hiba: ${escapeHtml(evt.message)}</span>`;
         }
       }
-    };
-    es.onerror = () => {
+    }, () => {
       es.close();
       state.currentEventSource = null;
       if (!state.cancellingRun) {
         document.getElementById('progress-summary').textContent = 'Kapcsolat megszakadt.';
       }
-    };
+    });
+    state.currentEventSource = es;
 
   } catch (e) {
     document.getElementById('progress-summary').innerHTML =
-      `<div class="alert alert-error">${e.message}</div>`;
+      `<div class="alert alert-error">${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -1293,7 +1397,14 @@ function _updateSupplierRow(sid) {
     'hiba': '<span class="tag tag-red">✗ hiba</span>',
   };
   const el = (id) => document.getElementById(id);
-  if (el(`spstatus-${sid}`)) el(`spstatus-${sid}`).innerHTML = statusMap[sp.status] || sp.status;
+  const statusEl = el(`spstatus-${sid}`);
+  if (statusEl) {
+    if (statusMap[sp.status]) {
+      statusEl.innerHTML = statusMap[sp.status];
+    } else {
+      statusEl.textContent = sp.status || '';
+    }
+  }
   if (el(`spbar-${sid}`)) {
     el(`spbar-${sid}`).style.width = pct + '%';
     if (sp.status === 'kész') el(`spbar-${sid}`).classList.add('done');
@@ -1324,7 +1435,7 @@ async function loadRunResults(runId) {
   document.getElementById('matrix-wrap').innerHTML = '';
 
   try {
-    const res = await fetch(`/batch/run/${runId}`);
+    const res = await fetch(`/batch/run/${encodeURIComponent(runId)}`);
     if (!res.ok) throw new Error('Eredmény lekérési hiba');
     const data = await res.json();
     state.currentRunId = runId;
@@ -1334,7 +1445,7 @@ async function loadRunResults(runId) {
   } catch (e) {
     document.getElementById('results-title').textContent = 'Hiba';
     document.getElementById('results-alerts').innerHTML =
-      `<div class="alert alert-error">${e.message}</div>`;
+      `<div class="alert alert-error">${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -1382,7 +1493,7 @@ function renderMappingTable(matrix) {
   let html = '<table><thead><tr>';
   html += '<th class="sticky-col">Gép-Coop cikkszám</th>';
   html += '<th class="sticky-col" style="left:140px">Terméknév</th>';
-  sups.forEach(sid => html += `<th>${supNames[sid] || sid}</th>`);
+  sups.forEach(sid => html += `<th>${escapeHtml(supNames[sid] || sid)}</th>`);
   html += '</tr></thead><tbody id="mapping-tbody"></tbody></table>';
   document.getElementById('mapping-wrap').innerHTML = html;
 
@@ -1397,12 +1508,12 @@ function _renderFilteredMapping(items, sups, supNames) {
     return;
   }
   tbody.innerHTML = items.map(item => {
-    let cells = `<td class="sticky-col" style="font-weight:600;font-family:monospace">${item.gepcoop_part_no}</td>`;
-    cells += `<td class="sticky-col" style="left:140px;max-width:180px">${item.product_name || '<span class="text-muted">—</span>'}</td>`;
+    let cells = `<td class="sticky-col" style="font-weight:600;font-family:monospace">${escapeHtml(item.gepcoop_part_no)}</td>`;
+    cells += `<td class="sticky-col" style="left:140px;max-width:180px">${item.product_name ? escapeHtml(item.product_name) : '<span class="text-muted">—</span>'}</td>`;
     sups.forEach(sid => {
       const s = item.suppliers[sid] || {};
       if (s.mapping_status === 'mapped' && s.supplier_part_no) {
-        cells += `<td><span class="tag tag-blue" style="font-family:monospace;font-size:11px">${s.supplier_part_no}</span></td>`;
+        cells += `<td><span class="tag tag-blue" style="font-family:monospace;font-size:11px">${escapeHtml(s.supplier_part_no)}</span></td>`;
       } else {
         cells += `<td><span class="text-muted">—</span></td>`;
       }
@@ -1443,7 +1554,7 @@ function renderMatrixTable(matrix) {
   html += '<th class="sticky-col" rowspan="2" style="vertical-align:middle">Gép-Coop cikkszám</th>';
   html += '<th class="sticky-col" style="left:140px;vertical-align:middle" rowspan="2">Terméknév</th>';
   sups.forEach(sid => {
-    html += `<th colspan="3" style="text-align:center;border-left:2px solid rgba(255,255,255,0.25)">${supNames[sid] || sid}</th>`;
+    html += `<th colspan="3" style="text-align:center;border-left:2px solid rgba(255,255,255,0.25)">${escapeHtml(supNames[sid] || sid)}</th>`;
   });
   html += '</tr><tr>';
   sups.forEach(() => {
@@ -1480,8 +1591,8 @@ function _renderFilteredMatrix(items, sups) {
   const supUrls = state.currentMatrix?.supplier_urls || {};
   tbody.innerHTML = items.map(item => {
     const ranks = _computeRanks(item, sups);
-    let cells = `<td class="sticky-col" style="font-weight:600;font-family:monospace">${item.gepcoop_part_no}</td>`;
-    cells += `<td class="sticky-col" style="left:140px;max-width:160px;font-size:12px">${item.product_name || '—'}</td>`;
+    let cells = `<td class="sticky-col" style="font-weight:600;font-family:monospace">${escapeHtml(item.gepcoop_part_no)}</td>`;
+    cells += `<td class="sticky-col" style="left:140px;max-width:160px;font-size:12px">${escapeHtml(item.product_name || '—')}</td>`;
     sups.forEach(sid => { cells += _renderMatrixCells(item.suppliers[sid] || {}, ranks[sid]); });
     return `<tr>${cells}</tr>`;
   }).join('');
@@ -1512,9 +1623,9 @@ function _renderMatrixCells(cell, rank) {
   const stock = cell.stock_quantity;
   const rankBadge = rank ? `<span class="rank-badge rank-${rank}">${rank}</span>` : '';
   const stockStr = (stock !== null && stock !== undefined) ? stock.toLocaleString('hu-HU') : '—';
-  const linkUrl = cell.product_url || '';
+  const linkUrl = safeExternalUrl(cell.product_url);
   const linkHtml = linkUrl
-    ? `<a href="${linkUrl.replace(/"/g, '&quot;')}" target="_blank" rel="noopener" style="color:var(--blue);font-size:12px;text-decoration:none;white-space:nowrap">🔗 Megnyitás</a>`
+    ? `<a href="${escapeAttr(linkUrl)}" target="_blank" rel="noopener noreferrer" style="color:var(--blue);font-size:12px;text-decoration:none;white-space:nowrap">🔗 Megnyitás</a>`
     : '<span class="text-muted">—</span>';
 
   return `<td class="price-cell" style="border-left:2px solid #dde3f0">${rankBadge}${price ? fmtPriceNum(price) : '—'}</td>` +
@@ -1525,9 +1636,28 @@ function _renderMatrixCells(cell, rank) {
 // ══════════════════════════════════════════════════════
 // Excel export
 // ══════════════════════════════════════════════════════
-function downloadExcel() {
-  if (!state.currentRunId) { toast('Nincs aktív futás'); return; }
-  window.location.href = `/batch/run/${state.currentRunId}/export.xlsx`;
+async function downloadExcel(runId = state.currentRunId) {
+  if (!runId) { toast('Nincs kiválasztott futás'); return; }
+  try {
+    const res = await fetch(`/batch/run/${runId}/export.xlsx`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || 'Az Excel export sikertelen.');
+    }
+    const blob = await res.blob();
+    const disposition = res.headers.get('Content-Disposition') || '';
+    const filename = disposition.match(/filename="?([^"]+)"?/i)?.[1] || `batch_${runId.slice(0, 8)}.xlsx`;
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    toast(`⚠ ${err.message}`);
+  }
 }
 
 // ══════════════════════════════════════════════════════
@@ -1563,18 +1693,18 @@ async function loadPastRuns() {
         ? `<span style="color:var(--navy);font-weight:600">⏰ ${fmtDate(run.scheduled_at)}</span>`
         : fmtDate(run.created_at);
       const delBtn = `<button class="btn btn-ghost" style="padding:4px 10px;font-size:12px;margin-left:4px;color:var(--red);border-color:#f1c7c7"
-             onclick="deleteRun('${run.id}', ${isScheduled})">🗑 Törlés</button>`;
+             onclick="deleteRun(${inlineArg(run.id)}, ${isScheduled})">🗑 Törlés</button>`;
       const actions = isScheduled
         ? `<span style="color:var(--gray);font-size:12px">Indításra vár…</span>${delBtn}`
         : isRunning
           ? `<button class="btn btn-ghost" style="padding:4px 10px;font-size:12px;color:var(--red);border-color:#f1c7c7"
-               onclick="cancelCurrentRun('${run.id}')">■ Megszakítás</button>`
+               onclick="cancelCurrentRun(${inlineArg(run.id)})">■ Megszakítás</button>`
         : run.status === 'cancelled'
           ? `<span style="color:var(--gray);font-size:12px">Megszakítva</span>${delBtn}`
         : `<button class="btn btn-ghost" style="padding:4px 10px;font-size:12px"
-             onclick="loadRunResults('${run.id}')">Megnyitás</button>
-           <a href="/batch/run/${run.id}/export.xlsx" class="btn btn-ghost"
-             style="padding:4px 10px;font-size:12px;text-decoration:none;margin-left:4px">📥 Excel</a>${delBtn}`;
+             onclick="loadRunResults(${inlineArg(run.id)})">Megnyitás</button>
+           <button class="btn btn-ghost" onclick="downloadExcel(${inlineArg(run.id)})"
+             style="padding:4px 10px;font-size:12px;margin-left:4px">📥 Excel</button>${delBtn}`;
       return `
       <tr ${unread ? 'style="background:#FFFDF0"' : ''}>
         <td style="font-weight:600;max-width:240px">${escapeHtml(run.project_name)}${newBadge}</td>
@@ -1656,7 +1786,6 @@ async function scheduleAuto() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         project_name: data.project_name,
-        runner_name: batchRunnerName,
         selected_suppliers: runSuppliers,
         gepcoop_part_numbers: data.items.map(i => i.gepcoop_part_no),
         // szerver módban nincs időpont — a backend osztja ki a következő szabad sávot
@@ -1758,7 +1887,6 @@ async function confirmSchedule() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         project_name: data.project_name,
-        runner_name: batchRunnerName,
         selected_suppliers: runSuppliers,
         gepcoop_part_numbers: data.items.map(i => i.gepcoop_part_no),
         scheduled_at: when.toISOString(),   // UTC ISO

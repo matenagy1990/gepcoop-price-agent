@@ -1,7 +1,7 @@
 # Batch Price Agent — technikai leírás
 
 A **Tömeges árlekérdező** (batch agent) műszaki útmutatója.
-Utoljára ellenőrizve a kódbázishoz: **2026-06-21**.
+Utoljára ellenőrizve a kódbázishoz: **2026-06-25** (`main`: `74cbfae`).
 
 > Ez a fájl **csak a batch agentet** írja le. A Price Agent (egyedi árlekérdező)
 > teljes dokumentációja a gyökérben: `CLAUDE.md`. A két alkalmazás közös scrapereket
@@ -69,6 +69,10 @@ batch-price-agent/
 ## 4. A feldolgozás lépésről lépésre
 
 1. **Cikkszámok megadása + webshopok kiválasztása** (UI).
+   - A bemenet normalizált, egyedi cikkszámai számítanak a limiteknél.
+   - 1-50 cikkszám esetén csak azonnali futás választható.
+   - 51-400 cikkszám esetén csak ütemezett futás választható.
+   - A korlátokat a backend is ellenőrzi.
 2. **Mapping előellenőrzés** (`POST /batch/preview` → `batch/planner.py`):
    - Egyetlen kötegelt Supabase-lekérdezéssel (`.in_()`) nézzük meg, melyik
      Gép-Coop cikkszámhoz melyik webshopban van társított cikkszám.
@@ -82,7 +86,7 @@ batch-price-agent/
    - Az eredményeket SSE-n streameljük és Supabase-be mentjük.
 4. **Eredmény** (`aggregator.py` + `export_excel.py`):
    - Összehasonlító mátrix (cikk × webshop, a legolcsóbb kiemelve zölddel).
-   - Letölthető Excel (csak Mátrix lap).
+   - Letölthető Excel (csak Mátrix lap, külön legjobb-ajánlat összesítővel).
 
 ---
 
@@ -154,11 +158,13 @@ feleslegesen.
 
 ## 9. Ütemezett futások
 
-A mapping után a beszerző kétféleképp indíthat:
+A mapping után a cikkszámok számától függően pontosan egy futtatási mód érhető el:
 
-- **Azonnali futás** — azonnal indul (`POST /batch/run`).
-- **Ütemezett futás** — a batch agent maga indítja el a megadott időpontban
-  (`POST /batch/schedule`).
+- **1-50 egyedi cikkszám:** csak azonnali futás (`POST /batch/run`).
+- **51-400 egyedi cikkszám:** csak ütemezett futás (`POST /batch/schedule`).
+
+A felület elrejti a nem használható opciót, de a backend is visszautasítja a
+szabályt megkerülő közvetlen API-kérést.
 
 ### Környezet-mód
 
@@ -188,6 +194,51 @@ Egyetlen igazságforrás = az adatbázis.
 - „⏰ ütemezve \<időpont\>" jelölés az ütemezett sorokon.
 - **„Új"** badge a még meg nem nyitott eredményeken (localStorage alapján).
 - **🗑 Törlés** minden sorhoz (ütemezett és lefutott egyaránt); éppen futó nem törölhető.
+- A projekt neve után külön oszlopban látható a futtató neve.
+- A lista részleges egyezéssel szűrhető projekt- és futtatónévre.
+- A backend legfeljebb 500 sort ad vissza, a UI szűréskor query paramétereket küld.
+
+### Futtató azonosítása és kijelentkezés
+
+A Batch csempe csak érvényes Price Agent bejelentkezés után érhető el. A
+felhasználó ezután megadja a `BATCH_ACCESS_PASSWORD` második hozzáférési kódot.
+A Price Agent ezt szerveroldalon ellenőrzi, majd egy 12 órás, véletlen Batch
+hozzáférési jegyet ad.
+
+A bearer token és a Batch-jegy URL hashben kerül át a Batch alkalmazásnak
+(lokálisan `:8001`, szerveren `/batch-agent/`),
+amely azonnal eltávolítja őket a címsorból és saját `sessionStorage`-ában
+tárolja. Minden Batch API-kérés elküldi:
+
+```text
+Authorization: Bearer <price-agent-token>
+X-Batch-Access-Token: <batch-ticket>
+```
+
+A Batch backend a Price Agent `/batch/access/validate` endpointján ellenőrzi
+mindkét értéket. A futtató nevét a hitelesített válaszból veszi, ezért azt a
+böngésző nem tudja más felhasználó nevére átírni.
+
+A Batch fejlécében külön `Kijelentkezés` gomb van. Ez törli a batch
+tokeneket, majd a Price Agent alkalmazásválasztójához
+irányít, ahol a közös Price Agent munkamenet is törlődik.
+
+Közvetlen Batch-megnyitáskor, hiányzó/lejárt tokennél vagy lejárt Batch
+jegynél a felület visszairányít a Price Agent alkalmazásválasztójához.
+
+### Aktív futás megszakítása
+
+Az azonnali futás külön `asyncio.Task` objektumban fut, amelyet a backend
+`run_id` alapján nyilvántart. A `POST /batch/run/{run_id}/cancel` meghívása:
+
+1. megszakítja az aktív taskot;
+2. `cancelled` státuszt ment a `batch_runs` táblába;
+3. `cancelled` SSE eseményt küld;
+4. a frontend törli az aktív futás állapotát és visszanavigál az
+   `Új batch árlekérdezés` oldalra.
+
+A Korábbi futások táblából a `running` sor szintén megszakítható. Már befejezett,
+hibás vagy törölt futás nem szakítható meg utólag.
 
 ### Adatbázis-követelmény
 
@@ -202,6 +253,9 @@ futtasd a Supabase SQL Editorban:
 ```sql
 alter table public.batch_runs
     add column if not exists runner_name text;
+
+alter table public.batch_runs
+    add column if not exists scheduled_at timestamptz;
 
 create extension if not exists pg_trgm;
 
@@ -219,11 +273,12 @@ A teljes migráció külön fájlban is megtalálható:
 
 ---
 
-## 10. Státusz-feliratok (egységesítve)
+## 10. Státuszok és megjelenítés
 
-Minden felületen (UI mátrix, Excel mátrix) azonos magyar szövegek:
+A magyar szövegek az UI-ban és Excelben azonosak, de a színezési szabály
+szándékosan eltér:
 
-| `scrape_status` | Megjelenített szöveg | Háttérszín |
+| `scrape_status` | Megjelenített szöveg | UI mátrix |
 |---|---|---|
 | *(nincs mapping)* | Hiányzó mapping | szürke |
 | `not_found` | Termék nincs a webshopban | piros |
@@ -232,6 +287,10 @@ Minden felületen (UI mátrix, Excel mátrix) azonos magyar szövegek:
 | `login_failed` | Technikai hiba | piros |
 | `error` | Technikai hiba | piros |
 | `ok` | ár + készlet megjelenik | zöld (legjobb ár) |
+
+Az Excelben nincs piros vagy szürke háttér. Ott kizárólag a legjobb ajánlat
+egységár-cellája kap zöld kitöltést; a hibák és hiányzó mappingok csak szöveggel
+jelennek meg.
 
 ---
 
@@ -248,7 +307,7 @@ eredményhez nem tartozik piros vagy szürke háttérszín.
   karakterek kerülnek be (ékezetes betűk `_`-ra cserélve, hogy HTTP fejlécben
   ne okozzanak `latin-1` kódolási hibát).
 - Fejléc: kék (`#2F5496`), aláfejléc: (`#4472C4`), legjobb ár: halvány zöld kiemelés.
-- Hiányzó mapping cella: szürke `—`, hibacellák: piros háttér, magyar szöveg (ld. fent).
+- Hiányzó mapping és hibás eredmény: magyar szöveg, háttérszínezés nélkül.
 - Link oszlop: `=HYPERLINK(...)` képlettel, ha a scraper visszaadott `product_url`-t.
 
 ---
@@ -258,7 +317,7 @@ eredményhez nem tartozik piros vagy szürke háttérszín.
 | Metódus | Útvonal | Mit csinál |
 |---|---|---|
 | `GET` | `/` | UI (ui/index.html) kiszolgálása |
-| `GET` | `/config` | Ütemezési mód (`auto`/`manual`) + auto-paraméterek |
+| `GET` | `/config` | Ütemezési mód, auto-paraméterek, `batch_max_items=400`, `immediate_max_items=50` |
 | `GET` | `/suppliers` | Választható webshopok listája |
 | `GET` | `/vipa/status` | Van-e friss Vipa session? `{"live": true/false}` |
 | `POST` | `/vipa/initiate-login` | Vipa OTP e-mail kérése |
@@ -268,8 +327,8 @@ eredményhez nem tartozik piros vagy szürke háttérszín.
 | `POST` | `/batch/schedule` | Ütemezett futás (auto: kiosztott sáv; manuális: megadott perc) |
 | `GET` | `/batch/run/{id}/progress` | SSE stream a futás haladásáról |
 | `GET` | `/batch/run/{id}` | Egy futás eredménye (mátrix) |
-| `GET` | `/batch/runs` | Korábbi + ütemezett futások listája |
-| `POST` | `/batch/run/{run_id}/cancel` | Aktív futás megszakítása |
+| `GET` | `/batch/runs` | Korábbi + ütemezett futások; `project_name`, `runner_name`, `limit` szűrők |
+| `POST` | `/batch/run/{run_id}/cancel` | Aktív futás megszakítása és `cancelled` státusz mentése |
 | `DELETE` | `/batch/run/{id}` | Futás törlése (ütemezett/lefutott; futó nem) |
 | `GET` | `/batch/run/{id}/export.xlsx` | Excel letöltés |
 
@@ -293,6 +352,8 @@ A szerveren a gyökér `.env`-ből táplálkozik mindkét alkalmazás
 | `SCRAPER_RETRY_COUNT` | Újrapróbálkozások száma hiba esetén (csak a fallback per-cikk úton) |
 | `SCHEDULE_MODE` | `auto` vagy `manual`. Ha nincs megadva: `/.dockerenv` alapján dönt. Szerveren `auto` |
 | `PRICE_AGENT_PATH` | A price agent gyökerének elérési útja (importhoz). Lokál: `..`, Docker: `/app/GepcoopPriceAgent` |
+| `PRICE_AGENT_AUTH_URL` | A Price Agent belső címe a bearer + Batch-jegy ellenőrzéséhez. Lokál: `http://127.0.0.1:8080`, Docker: `http://price-agent:8080` |
+| `BATCH_ACCESS_PASSWORD` | A bejelentkezés után kért második Batch hozzáférési kód; a gyökér `.env`-ben tárolandó |
 | `SUPPLIER_*_URL/USERNAME/PASSWORD` | Webshop belépési adatok (price agent `.env`-jéből másolva) |
 | `SUPPLIER_VIPA_URL/USERNAME` | Vipa (OTP-alapú, nincs jelszó) |
 
@@ -313,12 +374,18 @@ Ezután: <http://127.0.0.1:8001>
 A price agent ilyenkor párhuzamosan fut 8000-es porton. Az app-selector (8080-on,
 ha Dockerben fut) a 8001-es portra irányít át a Batch tile kattintásakor.
 
+Helyi tesztelésnél a Batch alkalmazást a Price Agent alkalmazásválasztójából
+nyisd meg. Így megkapja az érvényes bearer tokent és a szerveroldalon ellenőrzött
+Batch-jegyet. A `:8001` cím közvetlen megnyitása hozzáférés nélkül visszairányít.
+
 ---
 
 ## 15. Szerver / deploy
 
 - Hetzner CPX42 szerver (8 vCPU AMD, 16 GB RAM, 320 GB SSD): `178.104.208.200`
-- Batch agent URL: `http://178.104.208.200:8001`
+- Batch agent szerveres útvonala: `/batch-agent/` ugyanazon a HTTPS domainen
+- A `8080` és `8001` Docker-portok csak `127.0.0.1` címen érhetők el.
+- Kívülről az Nginx `443`-as HTTPS végpontja fogadja a forgalmat.
 - A gyökér `docker-compose.yml` mindkét szolgáltatást indítja.
 - A batch konténer a price agent kódját **csak olvashatóan** (`ro`) csatolja,
   de a `assets/sessions` mappát **írhatóan** — Vipa session mindkét appból menthető.
@@ -360,12 +427,84 @@ A batch agent UI a price agent vizuális stílusát követi:
 - **Paletta:** `--navy: #161B63`, `--navy2: #1F4977`, `--blue: #009fe6`
 - **Gombok:** gradiens háttér, 16px border-radius, hover-emelkedés
 - **Kártyák:** fehér háttér, enyhe árnyék, 16px radius
+- **Fő nézetek:** Új batch árlekérdezés, futási folyamat, eredménymátrix,
+  korábbi futások
+- **Korábbi futások:** projekt- és futtatónév-szűrés, státusz, időpont,
+  megnyitás/törlés/megszakítás műveletek
 
 A felület egyetlen `ui/index.html` fájl (beágyazott CSS + JS, nincs build lépés).
 
 ---
 
-## 18. Hibakódok (`scrape_status`)
+## 18. Supabase adatmodell
+
+### `batch_runs`
+
+Egy futás fejléce:
+
+```text
+id
+project_name
+runner_name
+created_at
+scheduled_at
+status
+selected_suppliers[]
+total_input_count
+unique_part_count
+searchable_count
+missing_mapping_count
+success_count
+error_count
+completed_at
+duration_ms
+```
+
+### `batch_run_items`
+
+Az egyedi bemeneti Gép-Coop cikkszámok eredeti sorrendben. Tartalmazza a
+terméknevet, sorindexet és az előellenőrzési státuszt.
+
+### `batch_run_supplier_results`
+
+Egy sor egy cikkszám és egy webshop eredménye. Tárolja a mapping- és
+scrape-státuszt, nyers és HUF-ra normalizált árat, készletet, TOP/alternatíva
+jelölést, hibát és időzítési adatokat.
+
+### `batch_run_events`
+
+Opcionális audit tábla. A jelenlegi élő UI elsődleges eseményforrása az
+in-memory SSE queue; ez a tábla nincs használva a normál eredménybetöltéshez.
+
+Az aktuális létrehozó SQL:
+`deploy/supabase_batch_tables.sql`. A már létező környezetekhez a futtatónév
+és index migráció: `deploy/supabase_batch_runner_migration.sql`.
+
+---
+
+## 19. Ellenőrzési lista módosítás után
+
+Backend:
+
+```bash
+../.venv/bin/python -m py_compile main.py batch/*.py shared/*.py
+```
+
+Kézi folyamatok:
+
+1. 50 cikkszámnál csak az azonnali futás látszik és indul.
+2. 51 cikkszámnál csak az ütemezés látszik és indul.
+3. 400 cikkszám elfogadott, 401 elutasított.
+4. Aktív futás megszakítható, státusza `cancelled`, a UI az új futás oldalára tér vissza.
+5. A Korábbi futások projekt- és futtatónév alapján szűrhetők.
+6. A futtató neve megjelenik a projekt mellett.
+7. Az Excel összesítő a legjobb árat, készletet és webshopot mutatja.
+8. Az Excelben csak a legjobb ár zöld; nincs piros vagy szürke kitöltés.
+9. A kijelentkezés visszavisz a Price Agenthez és megszünteti a közös sessiont.
+
+---
+
+## 20. Hibakódok (`scrape_status`)
 
 | Státusz | Jelentés | Jelleg |
 |---|---|---|

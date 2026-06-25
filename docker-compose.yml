@@ -2,7 +2,7 @@ services:
   price-agent:
     build: .
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     env_file:
       - .env
     volumes:
@@ -14,11 +14,12 @@ services:
   batch-price-agent:
     build: ./batch-price-agent
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
     env_file:
       - .env
     environment:
       PRICE_AGENT_PATH: /app/GepcoopPriceAgent
+      PRICE_AGENT_AUTH_URL: http://price-agent:8080
       EUR_TO_HUF_RATE: "400"
       BATCH_MAX_ITEMS: "400"
       BATCH_IMMEDIATE_MAX_ITEMS: "50"

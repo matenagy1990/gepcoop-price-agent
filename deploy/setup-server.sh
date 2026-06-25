@@ -14,7 +14,7 @@ apt-get update -y
 apt-get upgrade -y
 
 echo "==> Installing Docker…"
-apt-get install -y ca-certificates curl gnupg
+apt-get install -y ca-certificates curl gnupg nginx ufw
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
   | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
@@ -55,15 +55,22 @@ systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}"
 
 echo "==> Configuring Nginx…"
-if command -v nginx &>/dev/null; then
-  cp "${APP_DIR}/deploy/nginx-price-agent.conf" /etc/nginx/sites-available/price-agent
-  ln -sf /etc/nginx/sites-available/price-agent /etc/nginx/sites-enabled/price-agent
-  rm -f /etc/nginx/sites-enabled/default
-  nginx -t && systemctl reload nginx
-  echo "   Nginx configured (port 80 → 8080, max upload 50M)"
-else
-  echo "   Nginx not installed — skipping (app available on :8080 directly)"
-fi
+cp "${APP_DIR}/deploy/nginx-price-agent.conf" /etc/nginx/sites-available/price-agent
+ln -sf /etc/nginx/sites-available/price-agent /etc/nginx/sites-enabled/price-agent
+rm -f /etc/nginx/sites-enabled/default
+nginx -t
+systemctl enable --now nginx
+systemctl reload nginx
+echo "   Nginx configured (port 80 → Price Agent, /batch-agent/ → Batch Agent)"
+
+echo "==> Configuring firewall…"
+ufw allow OpenSSH
+ufw allow 80/tcp
+ufw delete allow 8080/tcp >/dev/null 2>&1 || true
+ufw delete allow 8001/tcp >/dev/null 2>&1 || true
+ufw deny 8080/tcp
+ufw deny 8001/tcp
+ufw --force enable
 
 echo "==> Starting the app for the first time (Docker image download ~1.5 GB)…"
 systemctl start "${SERVICE_NAME}"
@@ -75,7 +82,10 @@ systemctl status "${SERVICE_NAME}" --no-pager
 SERVER_IP=$(curl -s ifconfig.me || echo "<server-ip>")
 echo ""
 echo "App is accessible at: http://${SERVER_IP}"
-echo "Batch agent at:       http://${SERVER_IP}:8001"
+echo "Batch agent at:       http://${SERVER_IP}/batch-agent/"
+echo ""
+echo "HTTPS activation directly for the server IP (no domain required):"
+echo "  bash ${APP_DIR}/deploy/enable-https.sh ${SERVER_IP} admin@example.hu"
 echo ""
 echo "Useful commands:"
 echo "  systemctl status ${SERVICE_NAME}     # check if running"

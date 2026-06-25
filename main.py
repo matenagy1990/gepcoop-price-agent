@@ -265,9 +265,14 @@ def _invalidate_user_sessions(username: str) -> None:
     for token, user in list(sessions.items()):
         if user.get("username") == username:
             del sessions[token]
+    for token, access in list(batch_access_sessions.items()):
+        if access.get("username") == username:
+            del batch_access_sessions[token]
 
 
 sessions: dict[str, dict[str, object]] = {}   # token → {username,is_admin}
+batch_access_sessions: dict[str, dict[str, object]] = {}
+BATCH_ACCESS_TTL_HOURS = 12
 
 # ── Supplier credentials ──────────────────────────────────────────
 SUPPLIER_META = {
@@ -945,6 +950,9 @@ class UpdateAppUserRequest(BaseModel):
 class UpdateUserRoleRequest(BaseModel):
     is_admin: bool
 
+class BatchAccessRequest(BaseModel):
+    password: str
+
 class SupplierInfoItemRequest(BaseModel):
     label: str = ""
     value: str = ""
@@ -1048,6 +1056,52 @@ def get_me(
     authorization: str | None = Header(default=None),
 ):
     username = _get_username(authorization)
+    return {
+        "username": username,
+        "is_admin": _is_admin_user(username),
+        "is_primary_admin": _is_primary_admin_user(username),
+    }
+
+
+@app.post("/batch/access")
+def create_batch_access(
+    req: BatchAccessRequest,
+    authorization: str | None = Header(default=None),
+):
+    username = _get_username(authorization)
+    expected = os.environ.get("BATCH_ACCESS_PASSWORD", "admin007")
+    if not req.password or not hmac.compare_digest(req.password, expected):
+        raise HTTPException(status_code=403, detail="Helytelen Batch hozzáférési kód.")
+    now = datetime.now(timezone.utc)
+    for ticket, data in list(batch_access_sessions.items()):
+        if data.get("expires_at") and data["expires_at"] <= now:
+            batch_access_sessions.pop(ticket, None)
+    ticket = secrets.token_hex(32)
+    batch_access_sessions[ticket] = {
+        "username": username,
+        "expires_at": now + timedelta(hours=BATCH_ACCESS_TTL_HOURS),
+    }
+    return {
+        "access_token": ticket,
+        "expires_in_seconds": BATCH_ACCESS_TTL_HOURS * 3600,
+    }
+
+
+@app.get("/batch/access/validate")
+def validate_batch_access(
+    authorization: str | None = Header(default=None),
+    x_batch_access_token: str | None = Header(default=None),
+):
+    username = _get_username(authorization)
+    ticket = (x_batch_access_token or "").strip()
+    data = batch_access_sessions.get(ticket)
+    if not data:
+        raise HTTPException(status_code=403, detail="Hiányzó vagy érvénytelen Batch hozzáférés.")
+    if data.get("expires_at") <= datetime.now(timezone.utc):
+        batch_access_sessions.pop(ticket, None)
+        raise HTTPException(status_code=403, detail="A Batch hozzáférés lejárt.")
+    if data.get("username") != username:
+        raise HTTPException(status_code=403, detail="A Batch hozzáférés más felhasználóhoz tartozik.")
     return {
         "username": username,
         "is_admin": _is_admin_user(username),
@@ -2960,6 +3014,11 @@ def admin_update_user_password(
     user = _get_auth_user(username, include_inactive=True)
     if not user:
         raise HTTPException(status_code=404, detail="Ismeretlen felhasználó.")
+    if _is_primary_admin_user(username):
+        raise HTTPException(
+            status_code=403,
+            detail="A fő admin jelszavát másik admin nem módosíthatja.",
+        )
     _set_auth_password(username, req.password)
     _invalidate_user_sessions(username)
     log.info(f"Felhasználói jelszó frissítve: username={username}")

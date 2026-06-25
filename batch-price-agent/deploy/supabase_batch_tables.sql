@@ -9,6 +9,7 @@ create table if not exists batch_runs (
     project_name            text not null,
     runner_name             text,
     created_at              timestamptz not null default now(),
+    scheduled_at            timestamptz,
     status                  text not null default 'running',   -- scheduled | running | completed | partial | failed | cancelled
     selected_suppliers      text[] not null default '{}',
     total_input_count       int  not null default 0,

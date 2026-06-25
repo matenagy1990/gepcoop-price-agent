@@ -10,6 +10,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
+
 try:
     from zoneinfo import ZoneInfo
     _BUDAPEST = ZoneInfo("Europe/Budapest")
@@ -17,7 +19,7 @@ except Exception:  # pragma: no cover — tzdata hiányában esik vissza UTC-re
     _BUDAPEST = timezone.utc
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -46,6 +48,10 @@ log = logging.getLogger(__name__)
 
 BATCH_MAX_ITEMS = int(os.environ.get("BATCH_MAX_ITEMS", "400"))
 IMMEDIATE_MAX_ITEMS = int(os.environ.get("BATCH_IMMEDIATE_MAX_ITEMS", "50"))
+PRICE_AGENT_AUTH_URL = os.environ.get(
+    "PRICE_AGENT_AUTH_URL",
+    "http://127.0.0.1:8080",
+).rstrip("/")
 
 app = FastAPI(title="Batch Price Agent", version="1.0.0")
 
@@ -114,6 +120,42 @@ def _now_iso() -> str:
 
 def _normalize_runner_name(runner_name: str | None) -> str:
     return (runner_name or "").strip()[:160] or "Ismeretlen"
+
+
+async def _require_user(
+    authorization: str | None,
+    batch_access_token: str | None,
+) -> dict:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Bejelentkezés szükséges.")
+    if not (batch_access_token or "").strip():
+        raise HTTPException(status_code=403, detail="Batch hozzáférési kód szükséges.")
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            response = await client.get(
+                f"{PRICE_AGENT_AUTH_URL}/batch/access/validate",
+                headers={
+                    "Authorization": authorization,
+                    "X-Batch-Access-Token": batch_access_token,
+                },
+            )
+    except httpx.HTTPError as exc:
+        log.warning("Price Agent auth ellenőrzés nem elérhető: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="A hitelesítési szolgáltatás jelenleg nem elérhető.",
+        )
+    if response.status_code == 403:
+        raise HTTPException(status_code=403, detail="Érvénytelen vagy lejárt Batch hozzáférés.")
+    if response.status_code != 200:
+        raise HTTPException(status_code=401, detail="Érvénytelen vagy lejárt munkamenet.")
+    try:
+        user = response.json()
+    except ValueError:
+        raise HTTPException(status_code=503, detail="Érvénytelen hitelesítési válasz.")
+    if not (user.get("username") or "").strip():
+        raise HTTPException(status_code=401, detail="Érvénytelen munkamenet.")
+    return user
 
 
 def _register_run_task(run_id: str, task: asyncio.Task) -> None:
@@ -255,8 +297,20 @@ async def serve_ui():
 
 
 @app.get("/suppliers")
-async def get_suppliers():
+async def get_suppliers(
+    authorization: str | None = Header(default=None),
+    x_batch_access_token: str | None = Header(default=None),
+):
+    await _require_user(authorization, x_batch_access_token)
     return list_suppliers()
+
+
+@app.get("/auth/me")
+async def batch_auth_me(
+    authorization: str | None = Header(default=None),
+    x_batch_access_token: str | None = Header(default=None),
+):
+    return await _require_user(authorization, x_batch_access_token)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -266,7 +320,10 @@ async def get_suppliers():
 # ──────────────────────────────────────────────────────────────────────────────
 
 @app.get("/vipa/status")
-async def vipa_status():
+async def vipa_status(
+    authorization: str | None = Header(default=None),
+    x_batch_access_token: str | None = Header(default=None),
+):
     """Van-e használható (mentett és friss) Vipa session?
 
     Szándékosan a könnyű, nem-destruktív ellenőrzést használja: nem indít
@@ -274,20 +331,30 @@ async def vipa_status():
     tényleg nincs friss session — egy flaky élő-teszt nem törölheti ki a jó
     sessiont és nem kérhet feleslegesen újra belépést.
     """
+    await _require_user(authorization, x_batch_access_token)
     from browser.vipa_otp import vipa_session_available
     return {"live": vipa_session_available()}
 
 
 @app.post("/vipa/initiate-login")
-async def vipa_initiate_login():
+async def vipa_initiate_login(
+    authorization: str | None = Header(default=None),
+    x_batch_access_token: str | None = Header(default=None),
+):
     """Headless OTP folyamat indítása: e-mail beírása + 'Log in', ami elküldi a tokent."""
+    await _require_user(authorization, x_batch_access_token)
     from browser.vipa_otp import start_vipa_otp_flow
     return start_vipa_otp_flow()
 
 
 @app.post("/vipa/complete-login")
-async def vipa_complete_login(req: VipaCompleteLoginRequest):
+async def vipa_complete_login(
+    req: VipaCompleteLoginRequest,
+    authorization: str | None = Header(default=None),
+    x_batch_access_token: str | None = Header(default=None),
+):
     """Az e-mailben kapott OTP token beküldése, a Vipa bejelentkezés véglegesítése."""
+    await _require_user(authorization, x_batch_access_token)
     from browser.vipa_otp import vipa_login_state
     if not vipa_login_state["active"]:
         raise HTTPException(
@@ -313,7 +380,12 @@ async def vipa_complete_login(req: VipaCompleteLoginRequest):
 
 
 @app.post("/batch/preview")
-async def batch_preview(req: PreviewRequest):
+async def batch_preview(
+    req: PreviewRequest,
+    authorization: str | None = Header(default=None),
+    x_batch_access_token: str | None = Header(default=None),
+):
+    await _require_user(authorization, x_batch_access_token)
     _validate_request(req.selected_suppliers, req.gepcoop_part_numbers)
     try:
         preview = build_preview(
@@ -366,7 +438,12 @@ async def _execute_batch(run_id: str, preview: dict, project_name: str, event_qu
 
 
 @app.post("/batch/run")
-async def batch_run_start(req: RunRequest):
+async def batch_run_start(
+    req: RunRequest,
+    authorization: str | None = Header(default=None),
+    x_batch_access_token: str | None = Header(default=None),
+):
+    user = await _require_user(authorization, x_batch_access_token)
     _validate_request(req.selected_suppliers, req.gepcoop_part_numbers)
     part_count = _unique_part_count(req.gepcoop_part_numbers)
     if part_count > IMMEDIATE_MAX_ITEMS:
@@ -390,7 +467,7 @@ async def batch_run_start(req: RunRequest):
         raise HTTPException(500, str(exc))
 
     # Mentés Supabase-be (aszinkron)
-    await _save_batch_run(run_id, req.project_name, req.runner_name, preview)
+    await _save_batch_run(run_id, req.project_name, user["username"], preview)
 
     # Saját asyncio taskként fut, így futás közben ténylegesen megszakítható.
     task = asyncio.create_task(
@@ -477,9 +554,13 @@ def _next_auto_slot(sb) -> datetime | None:
 
 
 @app.get("/config")
-async def get_config():
+async def get_config(
+    authorization: str | None = Header(default=None),
+    x_batch_access_token: str | None = Header(default=None),
+):
     """A felület ez alapján dönti el: manuális sáv-választó (lokál) vagy
     automatikus 20:00-os ütemezés (szerver)."""
+    await _require_user(authorization, x_batch_access_token)
     server = _is_server_mode()
     return {
         "schedule_mode": "auto" if server else "manual",
@@ -491,12 +572,17 @@ async def get_config():
 
 
 @app.post("/batch/schedule")
-async def batch_schedule(req: ScheduleRequest):
+async def batch_schedule(
+    req: ScheduleRequest,
+    authorization: str | None = Header(default=None),
+    x_batch_access_token: str | None = Header(default=None),
+):
     """Ütemezett futás létrehozása. Nem indít scrapert — eltárolja a futást
     `scheduled` státusszal, a háttér-ütemező indítja majd az időpontban.
 
     Szerver (auto) módban a backend osztja ki a következő szabad 40 perces sávot
     20:00-tól; lokál (manuális) módban a megadott időpontot használja."""
+    user = await _require_user(authorization, x_batch_access_token)
     _validate_request(req.selected_suppliers, req.gepcoop_part_numbers)
     part_count = _unique_part_count(req.gepcoop_part_numbers)
     if part_count <= IMMEDIATE_MAX_ITEMS:
@@ -542,7 +628,7 @@ async def batch_schedule(req: ScheduleRequest):
     await _save_batch_run(
         run_id,
         req.project_name,
-        req.runner_name,
+        user["username"],
         preview,
         status="scheduled",
         scheduled_at=when_iso,
@@ -556,8 +642,13 @@ async def batch_schedule(req: ScheduleRequest):
 
 
 @app.get("/batch/run/{run_id}/progress")
-async def batch_progress_stream(run_id: str):
+async def batch_progress_stream(
+    run_id: str,
+    authorization: str | None = Header(default=None),
+    x_batch_access_token: str | None = Header(default=None),
+):
     """SSE stream a futás eseményeihez."""
+    await _require_user(authorization, x_batch_access_token)
     queue = _active_runs.get(run_id)
     if queue is None:
         raise HTTPException(404, f"Nincs aktív futás: {run_id}")
@@ -580,7 +671,12 @@ async def batch_progress_stream(run_id: str):
 
 
 @app.post("/batch/run/{run_id}/cancel")
-async def cancel_batch_run(run_id: str):
+async def cancel_batch_run(
+    run_id: str,
+    authorization: str | None = Header(default=None),
+    x_batch_access_token: str | None = Header(default=None),
+):
+    await _require_user(authorization, x_batch_access_token)
     task = _active_run_tasks.get(run_id)
     if task is None or task.done():
         sb = get_supabase()
@@ -603,7 +699,12 @@ async def cancel_batch_run(run_id: str):
 
 
 @app.get("/batch/run/{run_id}")
-async def get_batch_run(run_id: str):
+async def get_batch_run(
+    run_id: str,
+    authorization: str | None = Header(default=None),
+    x_batch_access_token: str | None = Header(default=None),
+):
+    await _require_user(authorization, x_batch_access_token)
     # Elsőként az in-memory cache-t ellenőrizzük (Supabase mentési hiba esetén is működik)
     if run_id in _completed_matrices:
         return _completed_matrices[run_id]
@@ -659,7 +760,10 @@ async def list_batch_runs(
     limit: int = Query(default=50, ge=1, le=500),
     project_name: str | None = Query(default=None, max_length=120),
     runner_name: str | None = Query(default=None, max_length=160),
+    authorization: str | None = Header(default=None),
+    x_batch_access_token: str | None = Header(default=None),
 ):
+    await _require_user(authorization, x_batch_access_token)
     sb = get_supabase()
     try:
         query = sb.table("batch_runs").select("*")
@@ -674,13 +778,18 @@ async def list_batch_runs(
 
 
 @app.delete("/batch/run/{run_id}")
-async def delete_run(run_id: str):
+async def delete_run(
+    run_id: str,
+    authorization: str | None = Header(default=None),
+    x_batch_access_token: str | None = Header(default=None),
+):
     """Futás törlése.
     - Ütemezett (scheduled) → eltűnik, így este NEM fog elindulni (a sávja
       újra szabaddá válik).
     - Lefutott (completed/failed) → a teljes eredményével együtt törlődik.
     - Éppen futó (running) → NEM törölhető (várjuk meg, amíg befejeződik).
     """
+    await _require_user(authorization, x_batch_access_token)
     sb = get_supabase()
     run = sb.table("batch_runs").select("status").eq("id", run_id).limit(1).execute().data
     if not run:
@@ -700,7 +809,12 @@ async def delete_run(run_id: str):
 
 
 @app.get("/batch/run/{run_id}/export.xlsx")
-async def export_excel(run_id: str):
+async def export_excel(
+    run_id: str,
+    authorization: str | None = Header(default=None),
+    x_batch_access_token: str | None = Header(default=None),
+):
+    await _require_user(authorization, x_batch_access_token)
     sb = get_supabase()
     try:
         run_res = sb.table("batch_runs").select("*").eq("id", run_id).limit(1).execute()

@@ -1,8 +1,11 @@
--- Batch Price Agent - futtato neve es szuresi indexek
+-- Batch Price Agent - utemezes, futtato neve es szuresi indexek
 -- Futtasd egyszer a Supabase SQL Editorban.
 
 alter table public.batch_runs
     add column if not exists runner_name text;
+
+alter table public.batch_runs
+    add column if not exists scheduled_at timestamptz;
 
 create extension if not exists pg_trgm;
 

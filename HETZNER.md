@@ -12,7 +12,7 @@ Budget: ~€22.59/month (Hetzner CPX42).
 | Server | Hetzner CPX42 — 8 vCPU (AMD), 16 GB RAM, 320 GB SSD |
 | OS | Ubuntu 24.04+ / current Hetzner Ubuntu image |
 | App | FastAPI + Playwright/Chromium, running in Docker |
-| URL | `http://<server-ip>:8080` or with Nginx `http://<server-ip>` |
+| URL | `https://<server-ip>`; Batch Agent: `https://<server-ip>/batch-agent/` |
 | Auto-restart | Yes — survives reboots and crashes |
 
 Everything runs in the existing Docker container (same image as local).
@@ -76,60 +76,31 @@ systemctl status price-agent
 
 Should show `active (running)`.
 
-Open a browser and navigate to:
+Az első HTTP-ellenőrzéshez nyisd meg:
 ```
-http://65.21.10.42:8080
+http://65.21.10.42
 ```
 
 Log in and test a part number lookup.
 
-If you want plain-IP access without `:8080`, install Nginx and proxy port 80 to
-the container:
-
-```bash
-apt install -y nginx
-```
-
-Create `/etc/nginx/sites-available/price-agent`:
-
-```nginx
-server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
-    server_name _;
-
-    location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_buffering off;
-        proxy_cache off;
-    }
-}
-```
-
-Enable and reload:
-
-```bash
-ln -sf /etc/nginx/sites-available/price-agent /etc/nginx/sites-enabled/price-agent
-rm -f /etc/nginx/sites-enabled/default
-nginx -t
-systemctl reload nginx
-```
+Az Nginxet a telepítő automatikusan beállítja. A Docker `8080` és `8001`
+portjai kizárólag a szerver saját `127.0.0.1` címén érhetők el.
 
 ---
 
-## Step 5 — (Optional) Restrict firewall
+## Step 5 — HTTPS aktiválása domain nélkül
 
-Allow only the app port and SSH:
+Futtasd:
+
 ```bash
-ufw allow 22/tcp      # SSH — keep this open!
-ufw allow 8080/tcp    # Price Agent UI
-ufw enable
+cd /opt/price_agent
+sudo bash deploy/enable-https.sh 178.104.208.200 admin@gepcoop.hu
 ```
+
+Ez hatnapos Let's Encrypt IP-tanúsítványt kér, bekapcsolja a HTTPS
+átirányítást és az automatikus megújítást, majd a
+tűzfalon csak az SSH (`22`), HTTP (`80`) és HTTPS (`443`) portokat hagyja
+elérhetően. A `8080` és `8001` portokat kívülről lezárja.
 
 ---
 
@@ -166,43 +137,6 @@ systemctl restart price-agent
 
 ---
 
-## (Optional later) Add a domain name
-
-1. Buy a domain (e.g. `price.gepcoop.hu`) and point its **A record** to the server IP.
-2. Install Nginx as a reverse proxy:
-   ```bash
-   apt install -y nginx
-   ```
-3. Create `/etc/nginx/sites-available/price-agent`:
-   ```nginx
-   server {
-       listen 80;
-       server_name price.gepcoop.hu;
-
-       location / {
-           proxy_pass http://127.0.0.1:8080;
-           proxy_set_header Host $host;
-           proxy_set_header X-Real-IP $remote_addr;
-           # Required for SSE (streaming query results):
-           proxy_buffering off;
-           proxy_cache off;
-       }
-   }
-   ```
-4. Enable and reload:
-   ```bash
-   ln -s /etc/nginx/sites-available/price-agent /etc/nginx/sites-enabled/price-agent
-   rm -f /etc/nginx/sites-enabled/default
-   nginx -t && systemctl reload nginx
-   ```
-5. (Recommended) Add HTTPS with Let's Encrypt:
-   ```bash
-   apt install -y certbot python3-certbot-nginx
-   certbot --nginx -d price.gepcoop.hu
-   ```
-
----
-
 ## Troubleshooting
 
 | Problem | Fix |
@@ -211,6 +145,6 @@ systemctl restart price-agent
 | `active (running)` but browser shows nothing | Check `journalctl -u price-agent -f` for errors |
 | Docker image download stuck | Wait — Playwright image is ~1.5 GB on first pull |
 | `BrowserType.launch: Executable doesn't exist` | Pull latest code and rebuild the Docker image so Playwright package and base image versions match |
-| Login fails | Username: `gepcoop` Password: `Beszerzes2026!` |
+| Login fails | Ellenőrizd az aktív felhasználót az admin felületen és a szerver naplóját |
 | App stopped after reboot | `systemctl start price-agent` (shouldn't happen — auto-start is enabled) |
 | Need to update `.env` on server | `nano /opt/price_agent/.env`, then `systemctl restart price-agent` |
