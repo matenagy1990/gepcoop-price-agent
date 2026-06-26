@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from agent.runtime_config import get_runtime_env
 from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
 from browser.messages import MSG_NOT_FOUND, MSG_NOT_PRICED, has_numeric_price
 
@@ -133,8 +134,8 @@ async def _login_or_restore(pw, emit: Callable):
                 log.info("No cookie banner")
 
         await emit("Logging in to hopefix.cz…")
-        username = os.getenv("SUPPLIER_G_USERNAME", "")
-        password = os.getenv("SUPPLIER_G_PASSWORD", "")
+        username = get_runtime_env("SUPPLIER_G_USERNAME", "")
+        password = get_runtime_env("SUPPLIER_G_PASSWORD", "")
         log.info(f"Logging in as: {username}")
 
         await page.get_by_role("textbox", name="E-mail").fill(username)

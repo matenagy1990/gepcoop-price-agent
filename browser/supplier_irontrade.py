@@ -30,6 +30,7 @@ from typing import Callable
 from urllib.parse import quote
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from agent.runtime_config import get_runtime_env
 from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
 from browser.messages import MSG_NOT_FOUND, MSG_NOT_PRICED, has_numeric_price
 
@@ -294,10 +295,10 @@ async def _login_or_restore(pw, emit: Callable, verify_url: str):
             log.info("No cookie banner appeared")
 
         async def fill_login_form():
-            username = os.getenv("SUPPLIER_B_USERNAME", "")
+            username = get_runtime_env("SUPPLIER_B_USERNAME", "")
             log.info(f"Filling login form for user: {username}")
             await page.locator("#LoginEmail").fill(username)
-            await page.locator("#LoginPassword").fill(os.getenv("SUPPLIER_B_PASSWORD", ""))
+            await page.locator("#LoginPassword").fill(get_runtime_env("SUPPLIER_B_PASSWORD", ""))
             filled_email = await page.locator("#LoginEmail").input_value()
             filled_pass  = await page.locator("#LoginPassword").input_value()
             log.info(f"Form filled — email: {filled_email}, password length: {len(filled_pass)}")

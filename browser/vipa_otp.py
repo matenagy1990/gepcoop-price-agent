@@ -16,6 +16,8 @@ import logging
 import os
 import re
 
+from agent.runtime_config import get_runtime_env
+
 log = logging.getLogger("vipa_otp")
 
 # Shared mutable state for the running OTP flow. Mutated in place so importers
@@ -95,7 +97,7 @@ async def _run_vipa_otp_login() -> None:
 
     try:
         _vipa_set_stage("starting")
-        email = os.environ.get("SUPPLIER_VIPA_USERNAME", "")
+        email = get_runtime_env("SUPPLIER_VIPA_USERNAME", "")
         if not email:
             vipa_login_state["error"] = "SUPPLIER_VIPA_USERNAME nincs beállítva a .env fájlban."
             return
@@ -258,7 +260,7 @@ def start_vipa_otp_flow() -> dict:
 
     Returns a dict with ok/message. Safe to call when a flow is already active.
     """
-    email = os.environ.get("SUPPLIER_VIPA_USERNAME", "—")
+    email = get_runtime_env("SUPPLIER_VIPA_USERNAME", "—")
     if vipa_login_state["active"]:
         return {
             "ok": True,

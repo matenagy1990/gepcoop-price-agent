@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from agent.runtime_config import get_runtime_env
 from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
 from browser.messages import MSG_NOT_FOUND, MSG_NOT_PRICED, has_numeric_price
 
@@ -433,7 +434,7 @@ async def _login_or_restore(pw, emit: Callable):
         log.info(f"Loaded: {page.url}")
 
         await emit("Logging in to eshop.mekrs.cz…")
-        username = os.getenv("SUPPLIER_D_USERNAME", "")
+        username = get_runtime_env("SUPPLIER_D_USERNAME", "")
         log.info(f"Logging in as: {username}")
 
         user_input = page.locator("input[name='username']")
@@ -443,7 +444,7 @@ async def _login_or_restore(pw, emit: Callable):
         await user_input.type(username, delay=20)
         await pass_input.click()
         await pass_input.fill("")
-        await pass_input.type(os.getenv("SUPPLIER_D_PASSWORD", ""), delay=20)
+        await pass_input.type(get_runtime_env("SUPPLIER_D_PASSWORD", ""), delay=20)
         log.info("Submitting Mekrs login with Enter on password field")
         await pass_input.press("Enter")
         await page.wait_for_timeout(3000)

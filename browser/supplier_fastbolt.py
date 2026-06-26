@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from agent.runtime_config import get_runtime_env
 from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
 from browser.messages import MSG_NOT_FOUND, MSG_NOT_PRICED, has_numeric_price
 
@@ -132,8 +133,8 @@ async def _login_or_restore(pw, emit: Callable):
 
         await emit("Logging in to fbonline.fastbolt.com…")
         shortname = os.getenv("SUPPLIER_H_SHORTNAME", "")
-        username  = os.getenv("SUPPLIER_H_USERNAME", "")
-        password  = os.getenv("SUPPLIER_H_PASSWORD", "")
+        username  = get_runtime_env("SUPPLIER_H_USERNAME", "")
+        password  = get_runtime_env("SUPPLIER_H_PASSWORD", "")
         log.info(f"Logging in — shortname: {shortname}, user: {username}")
 
         await page.get_by_role("searchbox", name="Shortname:").fill(shortname)

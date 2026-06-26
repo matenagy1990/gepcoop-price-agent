@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from agent.runtime_config import get_runtime_env
 from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
 from browser.messages import MSG_NOT_FOUND, MSG_NOT_PRICED, has_numeric_price
 
@@ -203,8 +204,8 @@ async def _login_and_locate_row(page, supplier_part_no: str, emit: Callable):
 
     if is_hidden:
         await emit("Logging in to kingb2b.it…")
-        username = os.getenv("SUPPLIER_J_USERNAME", "")
-        password = os.getenv("SUPPLIER_J_PASSWORD", "")
+        username = get_runtime_env("SUPPLIER_J_USERNAME", "")
+        password = get_runtime_env("SUPPLIER_J_PASSWORD", "")
         log.info(f"Logging in as: {username}")
 
         # Open login modal

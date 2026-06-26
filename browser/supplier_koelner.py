@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from agent.runtime_config import get_runtime_env
 from browser.session_utils import invalidate_session, load_session, save_session
 from browser.messages import MSG_NOT_FOUND, MSG_NOT_PRICED, has_numeric_price
 
@@ -148,11 +149,11 @@ async def _login_or_restore(pw, emit: Callable):
         await emit("Logging in to webshop.koelner.hu…")
         log.info(f"Login page URL: {page.url}")
 
-        username = os.getenv("SUPPLIER_C_USERNAME", "")
+        username = get_runtime_env("SUPPLIER_C_USERNAME", "")
         log.info(f"Filling login form for user: '{username}'")
 
         await page.locator("#login_username").fill(username)
-        await page.locator("#login_password").fill(os.getenv("SUPPLIER_C_PASSWORD", ""))
+        await page.locator("#login_password").fill(get_runtime_env("SUPPLIER_C_PASSWORD", ""))
 
         filled_user = await page.locator("#login_username").input_value()
         filled_pass = await page.locator("#login_password").input_value()

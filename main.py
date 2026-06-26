@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from pathlib import Path
 import pandas as pd
 from dotenv import dotenv_values, load_dotenv
+from agent.runtime_config import get_runtime_env
 from agent.tools import lookup_mapping_all, fetch_supplier_price, get_all_part_numbers, search_part_numbers
 
 load_dotenv(Path(__file__).parent / ".env")
@@ -669,7 +670,7 @@ async def _run_vipa_otp_login() -> None:
 
     try:
         _vipa_set_stage("starting")
-        email = os.environ.get("SUPPLIER_VIPA_USERNAME", "")
+        email = get_runtime_env("SUPPLIER_VIPA_USERNAME", "")
         if not email:
             _vipa_login_state["error"] = "SUPPLIER_VIPA_USERNAME nincs beállítva a .env fájlban."
             return
@@ -904,7 +905,7 @@ async def _ensure_vipa_session_before_scraping(queue: asyncio.Queue) -> None:
         "supplier": "vipa",
         "msg": "Vipa: aktív session nem áll rendelkezésre – OTP bejelentkezés szükséges.",
         "otp": True,
-        "otp_email": os.environ.get("SUPPLIER_VIPA_USERNAME", ""),
+        "otp_email": get_runtime_env("SUPPLIER_VIPA_USERNAME", ""),
         "otp_message": otp_info.get("message", ""),
     }))
     await queue.put(("progress", {
@@ -1420,7 +1421,7 @@ async def query_stream(
                                 "supplier": sid,
                                 "msg": err_msg,
                                 "otp": True,
-                                "otp_email": os.environ.get("SUPPLIER_VIPA_USERNAME", ""),
+                                "otp_email": get_runtime_env("SUPPLIER_VIPA_USERNAME", ""),
                                 "otp_message": otp_info.get("message", ""),
                             }))
                         else:
@@ -1824,8 +1825,8 @@ async def _supplier_open_headed(sid: str, supplier_part_no: str) -> None:
                 if await page.locator("#login_username").count() > 0:
                     # Session expired — full login
                     log.info(f"[{sid}/open] Session expired — logging in")
-                    await page.locator("#login_username").fill(os.environ.get("SUPPLIER_C_USERNAME", ""))
-                    await page.locator("#login_password").fill(os.environ.get("SUPPLIER_C_PASSWORD", ""))
+                    await page.locator("#login_username").fill(get_runtime_env("SUPPLIER_C_USERNAME", ""))
+                    await page.locator("#login_password").fill(get_runtime_env("SUPPLIER_C_PASSWORD", ""))
                     await page.locator("#loginbutton").click()
                     try:
                         await page.locator("#login_username").wait_for(state="hidden", timeout=10000)
@@ -1870,9 +1871,9 @@ async def _supplier_open_headed(sid: str, supplier_part_no: str) -> None:
                         except PlaywrightTimeout:
                             continue
                     if "/customer/account/login" in page.url:
-                        await page.locator("#customernumber").fill(os.environ.get("SUPPLIER_F_CUSTOMER_CODE", ""))
-                        await page.locator("#userid").fill(os.environ.get("SUPPLIER_F_USERNAME", ""))
-                        await page.locator("#pass").fill(os.environ.get("SUPPLIER_F_PASSWORD", ""))
+                        await page.locator("#customernumber").fill(get_runtime_env("SUPPLIER_F_CUSTOMER_CODE", ""))
+                        await page.locator("#userid").fill(get_runtime_env("SUPPLIER_F_USERNAME", ""))
+                        await page.locator("#pass").fill(get_runtime_env("SUPPLIER_F_PASSWORD", ""))
                         await page.get_by_role("button", name="Bejelentkezés").click()
                         try:
                             await page.wait_for_url(HOME_URLS[sid], timeout=15000)
@@ -1922,7 +1923,7 @@ def _start_vipa_otp_flow() -> dict:
     Returns a dict with ok/message describing the result. Safe to call when a
     flow is already active (it will report that one is in progress).
     """
-    email = os.environ.get("SUPPLIER_VIPA_USERNAME", "—")
+    email = get_runtime_env("SUPPLIER_VIPA_USERNAME", "—")
     if _vipa_login_state["active"]:
         return {
             "ok": True,

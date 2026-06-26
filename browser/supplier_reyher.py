@@ -35,6 +35,7 @@ from typing import Callable
 
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from agent.runtime_config import get_runtime_env
 from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
 from browser.messages import MSG_NOT_FOUND, MSG_NOT_PRICED, has_numeric_price
 
@@ -66,9 +67,9 @@ async def _is_logged_in(page) -> bool:
 
 async def _login(page, emit) -> None:
     """Full login flow. Raises RuntimeError on failure."""
-    customer_code = os.getenv("SUPPLIER_F_CUSTOMER_CODE", "")
-    username      = os.getenv("SUPPLIER_F_USERNAME", "")
-    password      = os.getenv("SUPPLIER_F_PASSWORD", "")
+    customer_code = get_runtime_env("SUPPLIER_F_CUSTOMER_CODE", "")
+    username      = get_runtime_env("SUPPLIER_F_USERNAME", "")
+    password      = get_runtime_env("SUPPLIER_F_PASSWORD", "")
 
     # Mask sensitive data in logs
     log.info(

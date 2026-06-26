@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Callable
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from agent.runtime_config import get_runtime_env
 from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
 from browser.messages import MSG_NOT_FOUND, MSG_NOT_PRICED, has_numeric_price
 
@@ -209,8 +210,8 @@ async def _login_or_restore(pw, emit: Callable):
         log.info(f"Login page: {page.url}")
 
         await emit("Logging in to shop.schaefer-peters.com…")
-        username = os.getenv("SUPPLIER_I_USERNAME", "")
-        password = os.getenv("SUPPLIER_I_PASSWORD", "")
+        username = get_runtime_env("SUPPLIER_I_USERNAME", "")
+        password = get_runtime_env("SUPPLIER_I_PASSWORD", "")
         log.info(f"Logging in as: {username}")
 
         await page.locator("input[name='input_login']").first.fill(username)

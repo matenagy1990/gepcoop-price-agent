@@ -35,6 +35,7 @@ from typing import Callable
 from urllib.parse import quote
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from agent.runtime_config import get_runtime_env
 from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
 from browser.messages import MSG_NOT_FOUND, MSG_NOT_PRICED, has_numeric_price
 
@@ -193,11 +194,11 @@ async def _login_or_restore(pw, emit: Callable, verify_url: str):
             log.info("No cookie banner appeared")
 
         await emit("Logging in to fabory.com…")
-        username = os.getenv("SUPPLIER_E_USERNAME", "")
+        username = get_runtime_env("SUPPLIER_E_USERNAME", "")
         log.info(f"Filling login form for user: {username}")
 
         await page.get_by_role("textbox", name="Email cím").fill(username)
-        await page.locator("input[placeholder='Jelszó']").fill(os.getenv("SUPPLIER_E_PASSWORD", ""))
+        await page.locator("input[placeholder='Jelszó']").fill(get_runtime_env("SUPPLIER_E_PASSWORD", ""))
         await page.get_by_role("button", name="Belépés").click()
 
         try:

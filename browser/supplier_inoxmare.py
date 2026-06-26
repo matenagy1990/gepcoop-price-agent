@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 from playwright.async_api import async_playwright
 
+from agent.runtime_config import get_runtime_env
 from browser.messages import MSG_NOT_FOUND, MSG_NOT_PRICED, has_numeric_price
 from browser.session_utils import invalidate_session, load_session, save_session, session_is_fresh
 
@@ -44,8 +45,8 @@ async def _is_logged_in(page) -> bool:
 
 async def _login(page) -> None:
     await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=30000)
-    username = os.getenv("SUPPLIER_L_USERNAME", "")
-    password = os.getenv("SUPPLIER_L_PASSWORD", "")
+    username = get_runtime_env("SUPPLIER_L_USERNAME", "")
+    password = get_runtime_env("SUPPLIER_L_PASSWORD", "")
     if not username or not password:
         raise RuntimeError("Login to inoxmare.com failed. Please check credentials.")
 
