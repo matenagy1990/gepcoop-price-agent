@@ -20,7 +20,6 @@ services:
     environment:
       PRICE_AGENT_PATH: /app/GepcoopPriceAgent
       PRICE_AGENT_AUTH_URL: http://price-agent:8080
-      EUR_TO_HUF_RATE: "400"
       BATCH_MAX_ITEMS: "400"
       BATCH_IMMEDIATE_MAX_ITEMS: "50"
       BATCH_SUPPLIER_LIMIT: "4"
