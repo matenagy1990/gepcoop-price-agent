@@ -5,13 +5,14 @@ import re
 import os
 import time
 from pathlib import Path
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 load_dotenv()
 
 log = logging.getLogger(__name__)
 _DEFAULT_EUR_TO_HUF = 400.0
 
+ENV_FILE = Path(__file__).parent.parent / ".env"
 MAPPING_FILE = Path(__file__).parent.parent / "assets" / "mapping.csv"
 _part_numbers_cache: dict[str, object] = {"parts": [], "loaded_at": 0.0}
 _PARTS_CACHE_TTL = 300
@@ -126,7 +127,14 @@ def _get_manual_huf_rate(currency: str) -> float | None:
     if currency != "EUR":
         return None
 
-    raw = (os.environ.get("EUR_TO_HUF_RATE", "") or "").strip()
+    raw = ""
+    if ENV_FILE.exists():
+        try:
+            raw = str(dotenv_values(ENV_FILE).get("EUR_TO_HUF_RATE") or "").strip()
+        except Exception as exc:
+            log.warning("EUR_TO_HUF_RATE nem olvasható a .env fájlból: %s", exc)
+    if not raw:
+        raw = (os.environ.get("EUR_TO_HUF_RATE", "") or "").strip()
     if not raw:
         return _DEFAULT_EUR_TO_HUF
 

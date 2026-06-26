@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from pathlib import Path
 import pandas as pd
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from agent.tools import lookup_mapping_all, fetch_supplier_price, get_all_part_numbers, search_part_numbers
 
 load_dotenv(Path(__file__).parent / ".env")
@@ -62,7 +62,14 @@ def _update_env_file(updates: dict[str, str]) -> None:
 
 
 def _get_manual_eur_huf_rate() -> float:
-    raw = (os.environ.get("EUR_TO_HUF_RATE", "") or "").strip()
+    raw = ""
+    if ENV_FILE.exists():
+        try:
+            raw = str(dotenv_values(ENV_FILE).get("EUR_TO_HUF_RATE") or "").strip()
+        except Exception as exc:
+            log.warning("EUR_TO_HUF_RATE nem olvasható a .env fájlból: %s", exc)
+    if not raw:
+        raw = (os.environ.get("EUR_TO_HUF_RATE", "") or "").strip()
     if not raw:
         return DEFAULT_EUR_TO_HUF_RATE
     try:

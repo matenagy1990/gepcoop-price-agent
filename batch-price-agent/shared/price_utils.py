@@ -1,12 +1,34 @@
 import os
 import logging
+from pathlib import Path
+from dotenv import dotenv_values
 
 log = logging.getLogger(__name__)
 _DEFAULT_EUR_TO_HUF = 400.0
 
 
+def _env_file_candidates() -> list[Path]:
+    candidates = []
+    price_agent_path = os.environ.get("PRICE_AGENT_PATH")
+    if price_agent_path:
+        candidates.append(Path(price_agent_path) / ".env")
+    candidates.append(Path(__file__).resolve().parents[2] / ".env")
+    return candidates
+
+
 def get_eur_to_huf() -> float:
-    raw = (os.environ.get("EUR_TO_HUF_RATE", "") or "").strip()
+    raw = ""
+    for env_file in _env_file_candidates():
+        if not env_file.exists():
+            continue
+        try:
+            raw = str(dotenv_values(env_file).get("EUR_TO_HUF_RATE") or "").strip()
+        except Exception as exc:
+            log.warning("EUR_TO_HUF_RATE nem olvasható a .env fájlból (%s): %s", env_file, exc)
+        if raw:
+            break
+    if not raw:
+        raw = (os.environ.get("EUR_TO_HUF_RATE", "") or "").strip()
     if not raw:
         return _DEFAULT_EUR_TO_HUF
     try:
