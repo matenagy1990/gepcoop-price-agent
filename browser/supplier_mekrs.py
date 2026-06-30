@@ -279,28 +279,81 @@ async def _extract_price_block(container, currency_code: str):
     }""", currency_pattern)
 
 
-async def _extract_results_page_data(page, currency_code: str):
-    """Extract the first priced B2B result from the authenticated results page text."""
+async def _extract_results_page_data(page, supplier_part_no: str, currency_code: str):
+    """Extract priced B2B data after the results page is confirmed for the searched part."""
     currency_pattern = _price_currency_pattern(currency_code)
     return await page.evaluate(
-        """({ currencyCode, currencyPattern }) => {
-            const body = (document.body.innerText || '').replace(/\\s+/g, ' ').trim();
+        """({ partNo, currencyCode, currencyPattern }) => {
+            const normalize = (value) => String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+            const expected = normalize(partNo);
+            const hasPart = (text) => normalize(text).includes(expected);
+            const cleanText = (node) => (node?.innerText || node?.textContent || '').replace(/\\s+/g, ' ').trim();
+            const hasUsablePrice = (text) => new RegExp(
+                `[\\\\d][\\\\d.,]*\\\\s*${currencyPattern}\\\\s*\\\\/\\\\s*\\\\d[\\\\d,]*\\\\s*pcs\\\\s*without VAT`,
+                'i'
+            ).test(text);
+
+            const candidates = [];
+            for (const card of Array.from(document.querySelectorAll("[data-testid='product-card']"))) {
+                let node = card;
+                for (let depth = 0; node && depth < 5; depth += 1, node = node.parentElement) {
+                    const text = cleanText(node);
+                    if (hasPart(text)) candidates.push({ node, text, score: hasUsablePrice(text) ? 0 : 1 });
+                }
+            }
+            for (const node of Array.from(document.querySelectorAll('article, li, tr, section, div'))) {
+                const text = cleanText(node);
+                if (text && text.length < 5000 && hasPart(text) && hasUsablePrice(text)) {
+                    candidates.push({ node, text, score: 2 });
+                }
+            }
+
+            candidates.sort((a, b) => {
+                const priceDiff = Number(hasUsablePrice(b.text)) - Number(hasUsablePrice(a.text));
+                if (priceDiff) return priceDiff;
+                if (a.score !== b.score) return a.score - b.score;
+                return a.text.length - b.text.length;
+            });
+
+            let selected = candidates.find(item => hasUsablePrice(item.text)) || candidates[0];
+            if (!selected) {
+                const body = (document.body.innerText || '').replace(/\\s+/g, ' ').trim();
+                selected = {
+                    node: document.body,
+                    text: body,
+                    score: 9,
+                    used_body_fallback: true,
+                };
+            }
+
+            const body = selected.text;
             const stockMatch = body.match(/In stock\\s+([\\d.,\\s]+)\\s*pcs/i);
             const unitPriceMatch = body.match(
                 new RegExp(`([\\\\d][\\\\d.,]*)\\\\s*${currencyPattern}\\\\s*\\\\/\\\\s*(\\\\d[\\\\d,]*)\\\\s*pcs\\\\s*without VAT`, 'i')
             );
-            if (!unitPriceMatch) return null;
+            if (!unitPriceMatch) {
+                return {
+                    part_present: hasPart(body),
+                    price_present: false,
+                    block_html: selected.node.outerHTML.slice(0, 3000),
+                    text: body.slice(0, 3000),
+                };
+            }
 
             return {
+                part_present: hasPart(body),
+                price_present: true,
+                matched_part_no: partNo,
+                used_body_fallback: !!selected.used_body_fallback,
                 price_str: `${unitPriceMatch[1]} ${currencyCode}`,
                 unit_str: `/ ${unitPriceMatch[2]} pcs`,
                 price_html: null,
                 stock_str: stockMatch ? `In stock ${stockMatch[1]} pcs` : '',
-                block_html: body.slice(0, 3000),
+                block_html: selected.node.outerHTML.slice(0, 3000),
                 text: body.slice(0, 3000),
             };
         }""",
-        {"currencyCode": currency_code, "currencyPattern": currency_pattern},
+        {"partNo": supplier_part_no, "currencyCode": currency_code, "currencyPattern": currency_pattern},
     )
 
 
@@ -478,6 +531,16 @@ async def _search_and_parse(page, supplier_part_no: str, emit: Callable) -> dict
     await emit(f"Searching for part {supplier_part_no} on eshop.mekrs.cz…")
     search_inp = page.locator("input[placeholder='Search by name, code, DIN']").first
     await search_inp.wait_for(state="visible", timeout=8000)
+    previous_results_signature = await page.evaluate(
+        """() => {
+            const cards = Array.from(document.querySelectorAll("[data-testid='product-card']"));
+            const source = cards.length ? cards : [document.body];
+            return source
+                .map(node => (node.innerText || node.textContent || '').replace(/\\s+/g, ' ').trim())
+                .join('\\n---\\n')
+                .slice(0, 4000);
+        }"""
+    )
     await search_inp.click()
     await search_inp.fill("")
     try:
@@ -489,8 +552,22 @@ async def _search_and_parse(page, supplier_part_no: str, emit: Callable) -> dict
         log.warning("Mekrs search box did not clear via fill(''); trying select-all fallback")
         await search_inp.press("Control+A")
         await search_inp.press("Backspace")
-    await search_inp.type(supplier_part_no, delay=50)
-    log.info(f"Typed '{supplier_part_no}' into search box, waiting for Mekrs search suggestions…")
+    await search_inp.fill(supplier_part_no)
+    await page.wait_for_function(
+        """(expected) => {
+            const el = document.querySelector("input[placeholder='Search by name, code, DIN']");
+            return !!el && el.value === expected;
+        }""",
+        arg=supplier_part_no,
+        timeout=3000,
+    )
+    await search_inp.evaluate(
+        """(el) => {
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        }"""
+    )
+    log.info(f"Filled '{supplier_part_no}' into search box, waiting for Mekrs search suggestions…")
     current_currency = await _current_mekrs_currency(page)
     log.info("Mekrs active currency before search: %s", current_currency)
 
@@ -505,7 +582,7 @@ async def _search_and_parse(page, supplier_part_no: str, emit: Callable) -> dict
             timeout=8000,
         )
     except PlaywrightTimeout:
-        raise RuntimeError(MSG_NOT_FOUND)
+        log.warning("Mekrs search suggestions did not appear for %r; submitting search directly", supplier_part_no)
 
     current_value = await search_inp.input_value()
     if current_value != supplier_part_no:
@@ -529,7 +606,28 @@ async def _search_and_parse(page, supplier_part_no: str, emit: Callable) -> dict
 
     try:
         await page.wait_for_function(
-            "() => location.pathname.includes('/products')",
+            """(partNo) => {
+                if (!location.pathname.includes('/products')) return false;
+                const params = new URLSearchParams(location.search);
+                return (params.get('nazev') || '') === partNo;
+            }""",
+            arg=supplier_part_no,
+            timeout=10000,
+        )
+    except PlaywrightTimeout:
+        raise RuntimeError(MSG_NOT_FOUND)
+    try:
+        await page.wait_for_function(
+            """(previous) => {
+                const cards = Array.from(document.querySelectorAll("[data-testid='product-card']"));
+                const source = cards.length ? cards : [document.body];
+                const current = source
+                    .map(node => (node.innerText || node.textContent || '').replace(/\\s+/g, ' ').trim())
+                    .join('\\n---\\n')
+                    .slice(0, 4000);
+                return current && current !== previous;
+            }""",
+            arg=previous_results_signature,
             timeout=10000,
         )
     except PlaywrightTimeout:
@@ -572,8 +670,14 @@ async def _search_and_parse(page, supplier_part_no: str, emit: Callable) -> dict
 
     # ── Step 4: extract data ──────────────────────────────────────────
     await emit("Reading price and stock from eshop.mekrs.cz…")
-    results_data = await _extract_results_page_data(page, current_currency)
+    results_data = await _extract_results_page_data(page, supplier_part_no, current_currency)
     if not results_data:
+        raise RuntimeError(MSG_NOT_FOUND)
+    if results_data.get("price_present") is False:
+        raise RuntimeError(MSG_NOT_PRICED)
+    if results_data.get("matched_part_no") != supplier_part_no:
+        raise RuntimeError(MSG_NOT_FOUND)
+    if not results_data.get("price_str"):
         # A product card present without a usable price = found but not priced;
         # no card at all = the product is not in the webshop.
         if card_count > 0:

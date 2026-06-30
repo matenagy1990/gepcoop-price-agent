@@ -635,6 +635,157 @@
   .app-tile-name{font-size:19px;font-weight:700;color:#fff;margin-bottom:5px;letter-spacing:.2px}
   .app-tile-desc{font-size:12px;color:rgba(255,255,255,.72);line-height:1.55}
   @media(max-width:780px){.app-tiles{grid-template-columns:1fr}.app-tile{width:100%;height:394px}}
+
+  @media(min-width:681px) and (max-width:1024px){
+    .app-select-body{padding:92px 28px 36px;justify-content:flex-start}
+    .app-select-heading{margin-bottom:26px}
+    .app-tiles{grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;width:100%;max-width:900px}
+    .app-tile{height:clamp(300px,40vw,380px);border-radius:14px}
+
+    .app-hdr{height:auto;min-height:92px;padding:10px 24px 12px;align-items:flex-start;gap:10px;flex-wrap:wrap}
+    .hdr-brand{width:100%;justify-content:flex-start}
+    .hdr-brand img{height:32px!important}
+    .hdr-right{width:100%;display:grid;grid-template-columns:minmax(0,1.35fr) repeat(4,minmax(104px,1fr));gap:8px;align-items:stretch}
+    .hdr-right .btn-admin,.hdr-right .btn-logout{width:100%;min-width:0;min-height:38px;justify-content:center;padding:0 8px;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .user-chip{display:flex;align-items:center;justify-content:center;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+    .app-main{padding:32px 24px 88px}
+    .query-card{padding:26px 28px}
+    .query-row{gap:12px}
+    .btn-query{min-width:220px;justify-content:center}
+    .sup-filter-section{align-items:flex-start}
+    .sup-filter-track{gap:6px}
+    .sup-chip{height:32px;padding:0 12px}
+
+    body:has(.copilot-panel:not(.hidden)) .copilot-launch{display:none}
+    .copilot-panel{right:20px;bottom:20px;width:min(440px,calc(100vw - 40px));height:min(650px,calc(100dvh - 40px))}
+    .copilot-webshop-grid{grid-template-columns:1fr 1fr;max-height:240px}
+
+    #login-helper-overlay{padding:18px}
+    #login-helper-overlay .adm-card{max-width:760px}
+    #login-helper-overlay .adm-card > div:not(.adm-hdr){padding:22px 24px!important}
+    .lh-row{display:grid;grid-template-columns:minmax(120px,1fr) minmax(160px,2fr) auto;align-items:center}
+    .lh-spacer{display:none}
+    .lh-btn{min-width:110px}
+
+    #adm-overlay{padding:18px}
+    .adm-card{max-width:940px}
+    .adm-hdr{padding:16px 22px}
+    .adm-content{padding:24px 24px}
+    .adm-nav{width:184px;min-width:184px}
+    .adm-nav-item{padding:10px 13px;font-size:12px}
+    .adm-section-title{line-height:1.35}
+    .adm-section-title[style*="display:flex"]{align-items:flex-start!important}
+    .adm-chart-svg{height:220px}
+  }
+
+  @media(max-width:680px){
+    body{font-size:14px}
+    #app-page{overflow-x:hidden}
+
+    .app-hdr{height:auto;min-height:60px;padding:7px 12px 10px;align-items:flex-start;gap:7px;flex-wrap:wrap}
+    .hdr-brand{width:100%;justify-content:space-between}
+    .hdr-brand img{height:28px!important}
+    .hdr-right{width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+    .hdr-right .btn-admin,.hdr-right .btn-logout{width:100%;min-height:34px;padding:0 8px;justify-content:center;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-radius:9px}
+
+    .app-main{padding:14px 10px 80px}
+    .query-card,.pipeline-card,.info-card,.confirm-card,.reco-card,.notes-wrap{border-radius:12px;margin-bottom:14px}
+    .query-card{padding:16px 14px}
+    .query-card h2{font-size:14px;margin-bottom:12px}
+    .query-input{min-height:46px;font-size:14px;padding:11px 12px}
+    .btn-query{min-height:44px;font-size:14px;padding:0 16px;border-radius:10px}
+
+    .sup-filter-section{margin-top:12px;padding-top:10px;display:block}
+    .sup-filter-track{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));flex-wrap:unset;gap:8px;max-height:218px;overflow-y:auto;overflow-x:hidden;padding:4px 8px 8px 2px;scroll-snap-type:none;-webkit-overflow-scrolling:touch;scrollbar-width:thin}
+    .sup-filter-track::-webkit-scrollbar{display:block;width:6px;height:0}
+    .sup-filter-track::-webkit-scrollbar-thumb{background:rgba(22,27,99,.22);border-radius:999px}
+    .sup-chip{width:100%;height:36px;padding:0 10px;font-size:12px;display:flex;align-items:center;justify-content:center;scroll-snap-align:unset;overflow:hidden;text-overflow:ellipsis}
+    .sup-chip-sep{display:none}
+
+    .confirm-hdr,.confirm-footer{padding:14px}
+    .confirm-footer{flex-direction:column;align-items:stretch}
+    .confirm-part-no{font-size:18px;word-break:break-all}
+    .confirm-table{min-width:420px}
+
+    .pipeline-card{padding:16px 12px}
+    .pipe-mapping{align-items:flex-start}
+    .pipe-sup-row{display:grid;grid-template-columns:72px minmax(0,1fr);align-items:center;gap:8px;padding:10px}
+    .pipe-sup-name{width:auto;font-size:10px;overflow:hidden;text-overflow:ellipsis}
+    .pipe-step-icon{width:26px;height:26px;font-size:12px}
+    .progress-msg{font-size:12px;line-height:1.45}
+
+    .reco-hdr{padding:15px 14px;gap:10px}
+    .reco-icon{font-size:23px}
+    .reco-winner{font-size:19px;overflow-wrap:anywhere}
+    .reco-feedback{justify-content:flex-start;min-width:0}
+    .reco-fb-btn{width:42px;height:42px;border-radius:12px}
+    .reco-savings{padding:12px 14px 14px;gap:8px}
+    .reco-stat{width:100%;padding:9px 12px}
+
+    .results-grid{gap:14px}
+    .sup-card{border-radius:12px}
+    .sup-card-hdr{padding:13px 14px;gap:8px}
+    .sup-name{font-size:15px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .sup-badge{flex:0 0 auto;font-size:10px;padding:3px 8px}
+    .sup-body{padding:15px 14px}
+    .sup-footer{padding:10px 14px 14px}
+    .stock-row{gap:10px;align-items:flex-start}
+    .stock-loc{min-width:0;overflow-wrap:anywhere}
+    .stock-chip{flex:0 0 auto}
+    .btn-goto-supplier{min-height:40px}
+
+    body:has(.copilot-panel:not(.hidden)) .copilot-launch{display:none}
+    .copilot-launch{max-width:calc(100vw - 24px);right:12px;bottom:12px;padding:10px 13px;font-size:13px}
+    .copilot-panel{left:8px;right:8px;bottom:8px;width:auto;height:min(620px,calc(100dvh - 16px));border-radius:12px}
+    .copilot-head{padding:12px 14px}
+    .copilot-msgs{padding:12px}
+    .copilot-webshops{margin:0 12px 10px}
+    .copilot-webshop-grid{grid-template-columns:1fr;max-height:170px}
+    .copilot-actions{flex-direction:column}
+    .copilot-actions .btn-upload,.copilot-actions .btn-secondary{width:100%}
+    .copilot-foot{gap:6px;padding:10px}
+    .copilot-send{min-width:74px;padding:0 10px}
+
+    #login-helper-overlay .adm-card{height:100dvh;min-height:100dvh;border-radius:0;overflow:hidden}
+    #login-helper-overlay .adm-card > div:not(.adm-hdr){height:calc(100dvh - 64px);overflow-y:auto;padding:18px 16px!important}
+    #login-helper-open-all{font-size:13px;letter-spacing:.4px;line-height:1.35;padding:12px 14px}
+    .lh-row{flex-direction:column;align-items:stretch;padding:12px}
+    .lh-name{min-width:0}
+    .lh-spacer{display:none}
+    .lh-btn{width:100%;min-height:38px}
+    .adm-supplier-row{padding:13px 14px}
+    .adm-sup-header{align-items:flex-start;flex-direction:column;gap:7px}
+    .adm-sup-url{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .adm-section-title{font-size:12px;line-height:1.35;letter-spacing:.8px}
+    .adm-section-title[style*="display:flex"]{flex-direction:column;align-items:stretch!important}
+    .adm-section-title .btn-upload,
+    .adm-section-title .btn-delete-map,
+    .adm-section-title #adm-btn-template{width:100%;justify-content:center;margin-top:4px}
+    .adm-nav-item{padding-left:28px}
+    .adm-content{padding:18px 16px 24px}
+    .adm-table th{padding:9px 12px;font-size:10px}
+    .adm-table td{padding:9px 12px;font-size:12px}
+    .adm-chart-card{padding:12px}
+    .adm-chart-svg{height:200px}
+  }
+
+  @media(max-width:420px){
+    .hdr-right{grid-template-columns:1fr 1fr}
+    .hdr-right .btn-admin,.hdr-right .btn-logout{font-size:11px}
+    .app-main{padding-left:8px;padding-right:8px}
+    .query-card{padding:14px 12px}
+    .sup-filter-track{max-height:200px;grid-template-columns:1fr 1fr}
+    .app-select-hdr{padding:12px 14px;gap:8px}
+    .app-select-hdr-brand span{display:none}
+    .app-select-body{padding:72px 12px 18px;justify-content:flex-start}
+    .app-select-heading{margin-bottom:16px;font-size:16px}
+    .app-tile{height:250px;border-radius:12px}
+    .app-tile-overlay{padding:16px}
+    .app-tile-name{font-size:17px}
+    .app-tile-desc{font-size:11px}
+    .pipe-sup-row{grid-template-columns:64px minmax(0,1fr)}
+  }
 </style>
 </head>
 <body>
@@ -1526,6 +1677,7 @@ function showAppSelect(){
   document.getElementById('app-page').classList.add('hidden');
   document.getElementById('app-select-page').classList.remove('hidden');
   document.getElementById('select-username-display').textContent = username || '';
+  updateCopilotVisibility();
 }
 
 function enterPriceAgent(){
@@ -1602,6 +1754,7 @@ function showApp(){
   document.getElementById('btn-admin').classList.toggle('hidden', !isAdminUser);
   document.getElementById('btn-webshop-login').classList.remove('hidden');
   loadCopilotConfig();
+  updateCopilotVisibility();
   adminToken = isAdminUser ? authToken : null;
   loadHomepageInfo();
   syncResponsiveLayout();
@@ -2554,7 +2707,7 @@ function admIsMobile() {
 }
 
 function admSetNavOpen(open) {
-  const admCardEl = document.querySelector('.adm-card');
+  const admCardEl = document.querySelector('#adm-overlay .adm-card');
   if (!admCardEl) return;
   admCardEl.classList.toggle('adm-nav-open', !!open);
 }
@@ -2926,7 +3079,7 @@ document.querySelectorAll('.adm-nav-item').forEach(btn => {
 });
 
 document.getElementById('adm-menu-btn').addEventListener('click', () => {
-  const admCardEl = document.querySelector('.adm-card');
+  const admCardEl = document.querySelector('#adm-overlay .adm-card');
   admSetNavOpen(!(admCardEl && admCardEl.classList.contains('adm-nav-open')));
 });
 document.getElementById('adm-nav-backdrop').addEventListener('click', () => admSetNavOpen(false));
@@ -2976,8 +3129,7 @@ document.getElementById('adm-btn-export-runs').addEventListener('click', admExpo
 /* ══ GÉP-COOPILOT CHAT ═════════════════════════════════════════════ */
 async function loadCopilotConfig() {
   copilotEnabled = false;
-  document.getElementById('copilot-launch').classList.add('hidden');
-  document.getElementById('copilot-panel').classList.add('hidden');
+  updateCopilotVisibility();
   document.getElementById('adm-nav-copilot').classList.add('hidden');
   try {
     const res = await fetch('/copilot/config');
@@ -2986,8 +3138,17 @@ async function loadCopilotConfig() {
   } catch (err) {
     copilotEnabled = false;
   }
-  document.getElementById('copilot-launch').classList.toggle('hidden', !copilotEnabled);
+  updateCopilotVisibility();
   document.getElementById('adm-nav-copilot').classList.toggle('hidden', !copilotEnabled || !isAdminUser);
+}
+
+function updateCopilotVisibility() {
+  const priceAgentActive = !document.getElementById('app-page').classList.contains('hidden');
+  const shouldShowLaunch = copilotEnabled && priceAgentActive;
+  document.getElementById('copilot-launch').classList.toggle('hidden', !shouldShowLaunch);
+  if (!priceAgentActive) {
+    document.getElementById('copilot-panel').classList.add('hidden');
+  }
 }
 
 function copilotAddMessage(sender, message) {
