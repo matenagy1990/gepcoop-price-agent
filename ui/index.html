@@ -1899,6 +1899,21 @@ function showConfirmCard(data) {
 
 /* ══ SUPPLIER CHIP LOGIC ══════════════════════════════════════ */
 const ALL_SIDS = ['csavarda','irontrade','koelner','mekrs','fabory','reyher','hopefix','fastbolt','schaefer','kingb2b','wasishop','argip','inoxmare','vipa'];
+const SUPPLIER_OPEN_URL_TEMPLATES = {
+  csavarda:  'https://csavarda.hu/pest/kereso?search={part_no}',
+  irontrade: 'https://irontrade.hu/kereso?name={part_no}',
+  koelner:   'https://webshop.koelner.hu/termekek/?keres={part_no}',
+  fabory:    'https://www.fabory.com/hu/search?text={part_no}',
+  fastbolt:  'https://fbonline.fastbolt.com/matrix/{part_no}',
+  reyher:    'https://rio.reyher.de/hu/catalogsearch/advanced/result/?sku={part_no}&q=',
+  mekrs:     'https://eshop.mekrs.cz/en/products?nazev={part_no}&onStock=false',
+  wasishop:  'https://www.wasishop.de/de/handel/Artikelliste.php?search={part_no}',
+  hopefix:   'https://www.hopefix.cz/en',
+  schaefer:  'https://shop.schaefer-peters.com/b2b/en/search/?query={part_no}',
+  kingb2b:   'https://kingb2b.it/PORTAL/',
+  inoxmare:  'https://www.inoxmare.com/en/quicksearch/index/resolve/?item={part_no}',
+  vipa:      'https://www.vipafasteners.com/en/search/?q={part_no}',
+};
 
 function getChip(sid){ return document.querySelector(`#sup-filter-bar [data-sid="${sid}"]`); }
 
@@ -2565,6 +2580,16 @@ function openUrlInNewTab(url) {
   link.remove();
 }
 
+function buildSupplierOpenUrl(sid, supplierPartNo) {
+  const template = SUPPLIER_OPEN_URL_TEMPLATES[sid] || '';
+  if (!template) return '';
+  if (template.includes('{part_no}')) {
+    if (!supplierPartNo) return '';
+    return template.replace('{part_no}', encodeURIComponent(supplierPartNo));
+  }
+  return template;
+}
+
 async function openSupplierSite(sid, supplierPartNo, btn) {
   // If the scrape captured the exact product detail URL, open it straight away.
   const directUrl = btn.getAttribute('data-product-url');
@@ -2572,44 +2597,22 @@ async function openSupplierSite(sid, supplierPartNo, btn) {
     openUrlInNewTab(directUrl);
     return;
   }
-  btn.disabled = true;
-  const origText = btn.innerHTML;
-  btn.innerHTML = '⏳ Megnyitás…';
-  try {
-    const res = await fetch('/supplier/open', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json', 'Authorization': `Bearer ${authToken}`},
-      body: JSON.stringify({supplier_id: sid, supplier_part_no: supplierPartNo}),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    if (data.url) {
-      // Open the product page in the buyer's own browser (a new tab). The
-      // buyer logs in to the webshop there once; afterwards the page shows the
-      // authenticated prices directly.
-      const link = document.createElement('a');
-      link.href = data.url;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
-      link.style.display = 'none';
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
 
-      // Suppliers without a product deep-link (e.g. kingb2b's SPA) open on the
-      // home/portal page — copy the part number so the buyer can paste & search.
-      if (data.is_product_link === false && supplierPartNo) {
-        try { await writeClipboardText(supplierPartNo); } catch {}
-        btn.innerHTML = '📋 Cikkszám vágólapon — keress rá!';
-        setTimeout(() => { btn.disabled = false; btn.innerHTML = origText; }, 4000);
-        return;
-      }
-    }
-  } catch (err) {
-    alert('Nem sikerült megnyitni: ' + err.message);
+  const fallbackUrl = safeExternalUrl(buildSupplierOpenUrl(sid, supplierPartNo));
+  if (!fallbackUrl) {
+    alert('Ehhez a webshophoz nincs megnyitható terméklink.');
+    return;
   }
-  btn.disabled = false;
-  btn.innerHTML = origText;
+  openUrlInNewTab(fallbackUrl);
+
+  // Suppliers without a product deep-link open on a portal/home page. Copy the
+  // part number so the buyer can paste it into the webshop search field.
+  if ((sid === 'kingb2b' || sid === 'hopefix') && supplierPartNo) {
+    const origText = btn.innerHTML;
+    try { await writeClipboardText(supplierPartNo); } catch {}
+    btn.innerHTML = '📋 Cikkszám vágólapon — keress rá!';
+    setTimeout(() => { btn.innerHTML = origText; }, 4000);
+  }
 }
 
 async function openReyher(supplierPartNo) {
@@ -3987,7 +3990,9 @@ function inlineArg(value) {
 
 function safeExternalUrl(value) {
   try {
-    const url = new URL(String(value || ''), window.location.origin);
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    const url = new URL(raw, window.location.origin);
     return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : '';
   } catch {
     return '';
