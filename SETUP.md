@@ -1,5 +1,17 @@
 # Gép-Coop Price Agent — Setup Guide
 
+Last updated: **2026-08-14**.
+
+The repository contains two applications sharing the same 14 supplier
+scrapers:
+
+- Price Agent: local `http://localhost:8080`
+- Batch Price Agent: local `http://localhost:8001` (open it from the Price
+  Agent application selector so it receives both required access tokens)
+
+The Gép-Coopilot chat launcher and its admin ticket menu are currently hidden
+with reversible frontend feature switches. Existing Copilot data is retained.
+
 ## What you need (one time install)
 
 | Software | Download | Notes |
@@ -56,6 +68,10 @@ dir /a
 ```
 You should see `.env` in the list.
 
+Never paste `.env` values into documentation, issues, commits or terminal
+output shared with others. Supplier credentials are referenced only by their
+`SUPPLIER_<letter>_USERNAME/PASSWORD` variable names.
+
 ---
 
 ## Step 4 — Start the app
@@ -90,6 +106,14 @@ docker compose up -d --build  # rebuild image (needed after code changes)
 git pull                      # get latest code from GitHub
 ```
 
+Focused local checks after scraper/UI changes:
+
+```bash
+python3 -m py_compile browser/supplier_kingb2b.py browser/supplier_wasishop.py
+./.venv/bin/python -m unittest discover -s tests -v
+cd batch-price-agent && ../.venv/bin/python -m unittest discover -s tests -v
+```
+
 ---
 
 ## Update the app (after code changes)
@@ -119,7 +143,9 @@ docker compose up -d --build
 
 ## How the mapping CSV works
 
-The file `assets/mapping.csv` links Gép-Coop internal part numbers to supplier part numbers:
+The Supabase `article_mapping` table links Gép-Coop internal part numbers to
+supplier part numbers. The admin CSV upload updates that table; the CSV is an
+import format, not the runtime source of truth.
 
 ```
 gepcoop_part_no, csavarda_part_no, irontrade_part_no, koelner_part_no, mekrs_part_no

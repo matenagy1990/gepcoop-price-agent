@@ -1,6 +1,12 @@
 # Webshop Bejelentkezési és Keresési Útmutató
 
 Ez a dokumentum leírja, hogyan működik az automatikus scraper minden beszállítónál.
+
+Utolsó frissítés: **2026-08-14**.
+
+Biztonsági szabály: ez a dokumentum nem tartalmaz valódi belépési adatot. A
+felhasználónevek és jelszavak a gitignored `.env` megfelelő
+`SUPPLIER_<betű>_USERNAME/PASSWORD` változóiban vannak.
 A rendszer a háttérben **Playwright** böngészőt használ (headless Chromium).
 
 ---
@@ -10,8 +16,8 @@ A rendszer a háttérben **Playwright** böngészőt használ (headless Chromium
 | | |
 |---|---|
 | **URL** | https://csavarda.hu/bejelentkezes |
-| **Felhasználónév** | gepcoop@gepcoop.hu |
-| **Jelszó** | Din1990_gepcoop |
+| **Felhasználónév** | `SUPPLIER_A_USERNAME` (`.env`) |
+| **Jelszó** | `SUPPLIER_A_PASSWORD` (`.env`) |
 
 **Bejelentkezés lépései:**
 1. Megnyílik a `/bejelentkezes` oldal
@@ -33,8 +39,8 @@ A rendszer a háttérben **Playwright** böngészőt használ (headless Chromium
 | | |
 |---|---|
 | **URL** | https://irontrade.hu/bejelentkezes |
-| **Felhasználónév** | gepcoop@gepcoop.hu |
-| **Jelszó** | Din1990_gepcoop |
+| **Felhasználónév** | `SUPPLIER_B_USERNAME` (`.env`) |
+| **Jelszó** | `SUPPLIER_B_PASSWORD` (`.env`) |
 
 **Bejelentkezés lépései:**
 1. Megnyílik a `/bejelentkezes` oldal
@@ -57,8 +63,8 @@ A rendszer a háttérben **Playwright** böngészőt használ (headless Chromium
 | | |
 |---|---|
 | **URL** | https://webshop.koelner.hu/belepes/ |
-| **Felhasználónév** | herbstk |
-| **Jelszó** | Gepcoop1990 |
+| **Felhasználónév** | `SUPPLIER_C_USERNAME` (`.env`) |
+| **Jelszó** | `SUPPLIER_C_PASSWORD` (`.env`) |
 
 **Bejelentkezés lépései:**
 1. Megpróbálja visszaállítani a mentett munkamenetet (`assets/.koelner_session.json`)
@@ -80,8 +86,8 @@ A rendszer a háttérben **Playwright** böngészőt használ (headless Chromium
 | | |
 |---|---|
 | **URL** | https://eshop.mekrs.cz/en |
-| **Felhasználónév** | csoknyaibalazs@gepcoop.hu |
-| **Jelszó** | Gep/Coop12345 |
+| **Felhasználónév** | `SUPPLIER_D_USERNAME` (`.env`) |
+| **Jelszó** | `SUPPLIER_D_PASSWORD` (`.env`) |
 
 **Bejelentkezés lépései:**
 1. Megnyílik az `/en` oldal
@@ -103,8 +109,8 @@ A rendszer a háttérben **Playwright** böngészőt használ (headless Chromium
 | | |
 |---|---|
 | **URL** | https://www.fabory.com/hu/login |
-| **Felhasználónév** | beszerzes@gepcoop.hu |
-| **Jelszó** | Din1990_gepcoop |
+| **Felhasználónév** | `SUPPLIER_E_USERNAME` (`.env`) |
+| **Jelszó** | `SUPPLIER_E_PASSWORD` (`.env`) |
 
 **Bejelentkezés lépései:**
 1. Megnyílik a `/hu/login` oldal
@@ -128,8 +134,8 @@ A rendszer a háttérben **Playwright** böngészőt használ (headless Chromium
 |---|---|
 | **URL** | https://rio.reyher.de/hu/customer/account/login |
 | **Ügyfélszám** | 901187 |
-| **Felhasználónév** | admin |
-| **Jelszó** | Din1990_gepcoop |
+| **Felhasználónév** | `SUPPLIER_F_USERNAME` (`.env`) |
+| **Jelszó** | `SUPPLIER_F_PASSWORD` (`.env`) |
 
 **Bejelentkezés lépései:**
 1. Megpróbálja visszaállítani a mentett session cookie-kat (`assets/sessions/reyher_session.json`)
@@ -152,7 +158,7 @@ A rendszer a háttérben **Playwright** böngészőt használ (headless Chromium
 |---|---|
 | **URL** | https://www.hopefix.cz/en/login |
 | **E-mail** | csoknyaibalazs@gepcoop.hu |
-| **Jelszó** | Din1990_gepcoop |
+| **Jelszó** | `SUPPLIER_G_PASSWORD` (`.env`) |
 
 **Bejelentkezés lépései:**
 1. Megnyílik az `/en/login` oldal
@@ -178,8 +184,8 @@ A rendszer a háttérben **Playwright** böngészőt használ (headless Chromium
 |---|---|
 | **URL** | https://fbonline.fastbolt.com/login |
 | **Shortname** | GEP001 |
-| **Felhasználónév** | balazs |
-| **Jelszó** | Din1990_gepcoop |
+| **Felhasználónév** | `SUPPLIER_H_USERNAME` (`.env`) |
+| **Jelszó** | `SUPPLIER_H_PASSWORD` (`.env`) |
 
 **Bejelentkezés lépései:**
 1. Megnyílik a `/login` oldal
@@ -199,8 +205,8 @@ A rendszer a háttérben **Playwright** böngészőt használ (headless Chromium
 | | |
 |---|---|
 | **URL** | https://shop.schaefer-peters.com/b2b/en/ |
-| **Felhasználónév** | KT107269 |
-| **Jelszó** | Y0flJdOeiDZr |
+| **Felhasználónév** | `SUPPLIER_I_USERNAME` (`.env`) |
+| **Jelszó** | `SUPPLIER_I_PASSWORD` (`.env`) |
 
 **Bejelentkezés lépései:**
 1. Megnyílik a `/sp/en/login/` oldal
@@ -223,23 +229,34 @@ A rendszer a háttérben **Playwright** böngészőt használ (headless Chromium
 | | |
 |---|---|
 | **URL** | https://kingb2b.it/PORTAL/ |
-| **Felhasználónév** | gepcoop |
-| **Jelszó** | Din1990_gepcoop |
+| **Felhasználónév** | `SUPPLIER_J_USERNAME` (`.env`) |
+| **Jelszó** | `SUPPLIER_J_PASSWORD` (`.env`) |
 
 **Bejelentkezés lépései:**
 1. Megnyílik a `/PORTAL/` oldal (SPA, megvárja a `#header-search` megjelenését)
 2. Ellenőrzi a bejelentkezési állapotot (`div.button-text-doc` láthatósága)
 3. Ha nincs bejelentkezve: `div.header-button.account` kattintás → modal nyílik
 4. Kitölti a Username és Password mezőket → LOGIN gomb
+5. Bezárja a promóciós popupot és csak az árva Bootstrap backdropot távolítja el
+6. A frissnek látszó, de használhatatlan mentett sessiont egyszer érvényteleníti,
+   tisztán újrabejelentkezik, majd megismétli a keresést
 
 **Keresés:**
-1. A `#header-search` mezőbe beírja a cikkszámot → Enter
-2. Megvárja a termékcsalád megjelenését (`div.singola-famiglia`)
-3. Kattint a termékcsaládra → kinyílik a táblázat
-4. Megkeresi a `tr.articoli-row[id="{cikkszám}"]` sort
-5. Kiolvassa: `td[data-cell="PREZZO"]` (ár), `td[data-cell="STOCK"]` (készlet)
+1. A `#header-search` mezőbe beírja a cikkszámot és a keresési ikon handlerét indítja
+2. Megvárja a saját `eseguiRicerca` RD3 hálózati választ, így az előző keresés
+   DOM-ja nem számít új találatnak
+3. Megvárja a termékcsalád megjelenését (`div.singola-famiglia`)
+4. Kattint a termékcsaládra; ha a portál loading overlaye takarja, a natív
+   JavaScript click handlert használja
+5. Megkeresi a `tr.articoli-row[id="{cikkszám}"]` sort
+6. Ha a SPA az ár betöltése előtt visszacseréli a sort a családkártyára, egyszer
+   újranyitja a családot
+7. Kiolvassa: `td[data-cell="PREZZO"]` (ár), `td[data-cell="STOCK"]` (készlet)
    - `%` jelzés → 100 db-onkénti ár
    - `N` jelzés → darabonkénti ár
+
+Egy tiszta sessionben üres eredmény `MSG_NOT_FOUND`; egy még nem ellenőrzött,
+visszaállított session ugyanezzel az állapottal előbb kötelezően újrabelép.
 
 **Pénznem:** EUR
 
@@ -250,18 +267,23 @@ A rendszer a háttérben **Playwright** böngészőt használ (headless Chromium
 | | |
 |---|---|
 | **URL** | https://www.wasishop.de/login_form.php |
-| **Felhasználónév** | gepcoop |
-| **Jelszó** | Din1990_gepcoop |
+| **Felhasználónév** | `SUPPLIER_K_USERNAME` (`.env`) |
+| **Jelszó** | `SUPPLIER_K_PASSWORD` (`.env`) |
 
 **Bejelentkezés lépései:**
-1. Megnyílik a `/login_form.php` oldal
-2. Cookie banner elutasítása
-3. Kitölti a "Name" és "Passwort" mezőket → "Anmelden"
-4. Átirányítás: `/de/handel/index.php`
+1. Visszaállítja a 20 óránál frissebb sessiont, de csak a látható
+   kijelentkezési linket fogadja el hiteles belépési bizonyítékként
+2. Érvénytelen sessionnél megnyitja a `/login_form.php` oldalt
+3. Cookie banner elutasítása
+4. Kitölti a "Name" és "Passwort" mezőket → "Anmelden"
+5. Belépés után ismét ellenőrzi a kijelentkezési markert és menti a sessiont
+6. Ha keresés közben lejár a session, egyszer tisztán újrabelép és újrapróbálja
 
 **Keresés:**
 - `input[name='search']` mezőbe beírja a cikkszámot → Enter → `Artikelliste.php`
-- Megvárja a `networkidle` állapotot (árak JS-sel töltődnek be)
+- Megvárja az adott cikkszám pontos `.shipping_card_pos` kártyájának árát
+- Árat és készletet kizárólag ebből a pontos kártyából olvas, így a hasonló
+  variánsok adatai nem keverednek
 - Kiolvassa: ár (EUR/100 db), készlet
   - Ha sávos árazás van ("Staffelpreis") → a középső sáv árát veszi
   - Ha egyáras → `div.price.discount`
@@ -283,5 +305,5 @@ A rendszer a háttérben **Playwright** böngészőt használ (headless Chromium
 | G | hopefix.cz | EUR | ✅ darabszám | ×100 (100-as csomagok) |
 | H | fastbolt.com | EUR | ✅ darabszám | |
 | I | schaefer-peters.com | EUR | ✅ darabszám | Havi jelszóváltás! |
-| J | kingb2b.it | EUR | ✅ darabszám | Olasz ezres elválasztó |
-| K | wasishop.de | EUR | ✅ darabszám | Sávos árazás lehetséges |
+| J | kingb2b.it | EUR | ✅ darabszám | RD3-szinkron, session- és SPA-race recovery |
+| K | wasishop.de | EUR | ✅ darabszám | Szigorú auth + pontos termékkártya; sávos ár lehetséges |
