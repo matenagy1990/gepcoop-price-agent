@@ -109,10 +109,26 @@ git pull                      # get latest code from GitHub
 Focused local checks after scraper/UI changes:
 
 ```bash
-python3 -m py_compile browser/supplier_kingb2b.py browser/supplier_wasishop.py
+python3 -m py_compile browser/supplier_fabory.py browser/supplier_inoxmare.py browser/supplier_kingb2b.py browser/supplier_wasishop.py
 ./.venv/bin/python -m unittest discover -s tests -v
 cd batch-price-agent && ../.venv/bin/python -m unittest discover -s tests -v
 ```
+
+---
+
+## Required change and release workflow
+
+Minden hibajavításnál és funkciómódosításnál kötelező a következő sorrend:
+
+1. A hibát a lokális repositoryban, a valós mappinggal reprodukáld.
+2. A kódot kizárólag lokálisan módosítsd; az éles szerveren ne szerkessz tracked fájlt.
+3. Futtasd a syntax-, unit- és releváns élő, csak olvasási ellenőrzéseket.
+4. Csak sikeres helyi ellenőrzés után commitolj és pusholj külön GitHub branchre.
+5. A változás review/merge után kerüljön az `origin/main` ágra.
+6. A szerver kizárólag az `origin/main` ellenőrzött commitját húzza le.
+7. Rebuild/restart után ellenőrizd a health endpointokat és ugyanazt a tesztterméket.
+
+Röviden: **local reproduce → local fix/test → GitHub review/merge → server deploy → production verification**.
 
 ---
 

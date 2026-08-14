@@ -419,6 +419,11 @@ Batch-jegyet. A `:8001` cím közvetlen megnyitása hozzáférés nélkül vissz
 
 ### Frissítés a szerveren
 
+Kötelező kiadási sorrend: **local reproduce → local fix/test → GitHub
+review/merge → server deploy → production verification**. Tracked fájlt az éles
+szerveren nem szerkesztünk; a batch is kizárólag az `origin/main` ellenőrzött
+commitjából frissül.
+
 ```bash
 cd /opt/price_agent
 git pull --ff-only origin main
