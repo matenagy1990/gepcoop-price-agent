@@ -615,14 +615,22 @@ Supplier-specific reliability rules added in August 2026:
   matching RD3 `eseguiRicerca` response, bypasses transient portal overlays via
   the result's native click handler, and reopens the family once if the SPA
   replaces a matched article row before price injection.
+- **Fabory** verifies the restored session with account DOM markers, submits
+  searches through the visible `#search` form because direct search URLs can be
+  redirected to `/hu`, retries one unstable form navigation, and never labels
+  the homepage as a found-but-unpriced product.
+- **Inoxmare** accepts an exact result only when both `?art=<part>` and the exact
+  table row are present. A transient/general-search result is retried once;
+  only a repeated explicit Magento catalog-search fallback is `MSG_NOT_FOUND`,
+  while an ambiguous timeout remains a distinct workflow error.
 
 ### Login stability notes (batch context)
 
 Under high parallel load (`BATCH_SUPPLIER_LIMIT=8`) two suppliers showed false
 login failures. Fixes applied:
 
-- **Fabory**: login check changed from `wait_for_url("…/hu")` to
-  `wait_for_function("!pathname.includes('/login')")`, timeout 15 s → 30 s.
+- **Fabory**: login success requires the `/logout` account link, logged-in DOM
+  marker and search field; a guest redirect to `/hu` is not accepted.
 - **Reyher**: `_is_logged_in` Quickinput selector timeout 4 000 ms → 10 000 ms.
 - `BATCH_SUPPLIER_LIMIT` reduced to **4** for stability.
 
@@ -803,9 +811,17 @@ ss -lntp | grep -E ':(80|443|8080|8001) '
 
 Update workflow:
 
+Mandatory order for every application change:
+
+```text
+local reproduce → local fix/test → GitHub review/merge → server deploy → production verification
+```
+
+Never edit tracked application files directly under `/opt/price_agent`.
+
 ```bash
 cd /opt/price_agent
-git pull
+git pull --ff-only origin main
 docker compose up -d --build
 ```
 

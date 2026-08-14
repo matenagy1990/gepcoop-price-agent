@@ -15,6 +15,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
+from urllib.parse import parse_qs, urlparse
 
 from dotenv import load_dotenv
 from playwright.async_api import TimeoutError as PlaywrightTimeout
@@ -32,6 +33,22 @@ HOME_URL = "https://www.inoxmare.com/en"
 LOGIN_URL = "https://www.inoxmare.com/en/customer/account/login/"
 SESSION_FILE = Path(__file__).parent.parent / "assets" / "sessions" / "inoxmare_session.json"
 SESSION_MAX_AGE_HOURS = 20
+
+SEARCH_ATTEMPTS = 2
+SEARCH_OUTCOME_TIMEOUT_MS = 15_000
+MSG_SEARCH_UNSTABLE = (
+    "Az Inoxmare keresési eredménye nem stabilizálódott; kérlek próbáld újra."
+)
+
+
+def _is_exact_result_url(url: str, part_no: str) -> bool:
+    query = parse_qs(urlparse(url or "").query)
+    return query.get("art", [None])[0] == part_no
+
+
+def _is_explicit_not_found_url(url: str) -> bool:
+    """Inoxmare falls back to Magento's general search for unknown articles."""
+    return "/catalogsearch/result/" in urlparse(url or "").path.lower()
 
 
 async def _is_logged_in(page) -> bool:
@@ -126,26 +143,62 @@ async def _search_and_parse(page, supplier_part_no: str, emit: Callable) -> dict
     part_no = (supplier_part_no or "").strip()
 
     await emit(f"Searching for {part_no} on Inoxmare…")
-    exact_search = page.locator("#item-input:visible")
-    await exact_search.wait_for(timeout=10000)
-    await exact_search.fill(part_no)
-    await exact_search.press("Enter")
+    row = None
+    explicit_not_found_count = 0
+    for attempt in range(1, SEARCH_ATTEMPTS + 1):
+        if attempt > 1:
+            await emit("Inoxmare exact search did not resolve; retrying once…")
+            await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=30_000)
+            if not await _is_logged_in(page):
+                raise RuntimeError("Login to inoxmare.com failed. Please check credentials.")
 
-    try:
-        await page.wait_for_function(
-            """partNo => {
-                const row = document.querySelector(`tr[id="${CSS.escape(partNo)}"]`);
-                return new URLSearchParams(location.search).get('art') === partNo && !!row;
-            }""",
-            arg=part_no,
-            timeout=20000,
+        exact_search = page.locator("#item-input:visible")
+        await exact_search.wait_for(timeout=10_000)
+        await exact_search.fill(part_no)
+        await exact_search.press("Enter")
+
+        try:
+            await page.wait_for_function(
+                """partNo => {
+                    const row = document.querySelector(`tr[id="${CSS.escape(partNo)}"]`);
+                    const exact = new URLSearchParams(location.search).get('art') === partNo;
+                    const explicitMiss = location.pathname.toLowerCase()
+                        .includes('/catalogsearch/result/');
+                    return (exact && !!row) || explicitMiss;
+                }""",
+                arg=part_no,
+                timeout=SEARCH_OUTCOME_TIMEOUT_MS,
+            )
+        except PlaywrightTimeout:
+            log.warning(
+                "Inoxmare search attempt %s/%s timed out on URL: %s",
+                attempt,
+                SEARCH_ATTEMPTS,
+                page.url,
+            )
+
+        candidate = page.locator(f'tr[id="{part_no}"]')
+        if _is_exact_result_url(page.url, part_no) and await candidate.count() == 1:
+            row = candidate
+            break
+
+        explicit_not_found = _is_explicit_not_found_url(page.url)
+        if explicit_not_found:
+            explicit_not_found_count += 1
+        log.warning(
+            "Inoxmare exact search attempt %s/%s did not resolve part %s "
+            "(url=%s, explicit_not_found=%s)",
+            attempt,
+            SEARCH_ATTEMPTS,
+            part_no,
+            page.url,
+            explicit_not_found,
         )
-    except PlaywrightTimeout as exc:
-        raise RuntimeError(MSG_NOT_FOUND) from exc
 
-    row = page.locator(f'tr[id="{part_no}"]')
-    if await row.count() != 1:
-        raise RuntimeError(MSG_NOT_FOUND)
+    if row is None:
+        if explicit_not_found_count == SEARCH_ATTEMPTS:
+            raise RuntimeError(MSG_NOT_FOUND)
+        raise RuntimeError(MSG_SEARCH_UNSTABLE)
 
     await emit("Reading price and stock from Inoxmare…")
     price_input = row.locator("td.price-box input[id$='-custom-price']").first

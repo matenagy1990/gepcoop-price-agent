@@ -142,6 +142,16 @@ pedig újratölti az Nginxet.
 
 ## Update workflow (after code changes)
 
+Az éles frissítés csak a lokálisan reprodukált, lokálisan javított és tesztelt,
+majd GitHubon review-zott/merge-ölt commitból történhet. Kötelező sorrend:
+
+```text
+local reproduce → local fix/test → GitHub review/merge → server deploy → production verification
+```
+
+Tracked alkalmazásfájlt közvetlenül a szerveren nem szerkesztünk. Ha a szerver
+HEAD-je nem egyezik az `origin/main` kiadásra szánt commitjával, a deploy megáll.
+
 ```bash
 # On the server:
 cd /opt/price_agent

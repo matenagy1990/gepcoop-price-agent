@@ -4,7 +4,7 @@ Playwright scraper for fabory.com (Supplier E)
 Session flow:
   1. Try to restore saved session from assets/sessions/fabory_session.json
      - Skip restore if saved_at > 20 h old
-  2. Navigate to search URL — if redirected to /login → session invalid
+  2. Open the homepage and verify the authenticated MyFabory account state
   3. If session missing / stale / invalid: full login, save new session
 
 Login flow (fallback):
@@ -12,7 +12,7 @@ Login flow (fallback):
   2. Redirects to /hu on success
 
 Search flow:
-  4. /hu/search?text={supplier_part_no}
+  4. Submit supplier_part_no through the webshop's visible search form
   5. Click first product link
   6. Extract Nettó ár (price), Ár / (unit qty), Készlet (stock)
 
@@ -32,7 +32,6 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
-from urllib.parse import quote
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from agent.runtime_config import get_runtime_env
@@ -44,10 +43,87 @@ load_dotenv()
 log = logging.getLogger("fabory")
 
 LOGIN_URL  = "https://www.fabory.com/hu/login"
+HOME_URL   = "https://www.fabory.com/hu"
 SEARCH_URL = "https://www.fabory.com/hu/search?text={part_no}"
 
 _SESSION_FILE      = Path(__file__).parent.parent / "assets" / "sessions" / "fabory_session.json"
 _SESSION_MAX_AGE_H = 20
+
+SEARCH_ATTEMPTS = 2
+SEARCH_OUTCOME_TIMEOUT_MS = 20_000
+MSG_SEARCH_UNSTABLE = (
+    "A Fabory keresési eredménye nem stabilizálódott; kérlek próbáld újra."
+)
+
+
+def _is_search_outcome_url(url: str) -> bool:
+    """True only on a real Fabory search result or product page."""
+    path = (url or "").split("?", 1)[0].rstrip("/").lower()
+    return "/search" in path or "/p/" in path
+
+
+async def _is_logged_in(page) -> bool:
+    """Verify the authenticated account state, not merely a non-login URL."""
+    try:
+        return (
+            await page.locator("a[href$='/logout']").count() > 0
+            and await page.locator(".user-logged, .logged_in").count() > 0
+            and await page.locator("#search").count() > 0
+        )
+    except Exception:
+        return False
+
+
+async def _submit_search_form(page, supplier_part_no: str, emit: Callable) -> None:
+    """Run an exact search through Fabory's own form, retrying transient misses.
+
+    Fabory currently redirects a search URL opened directly from a blank page
+    back to ``/hu``. Submitting the visible form supplies the expected browser
+    navigation context and redirects exact article numbers to the product page.
+    """
+    for attempt in range(1, SEARCH_ATTEMPTS + 1):
+        await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=20_000)
+        if not await _is_logged_in(page):
+            raise RuntimeError("Login to fabory.com failed. Please check credentials.")
+
+        search = page.locator("#search:visible").first
+        await search.wait_for(timeout=10_000)
+        await search.fill(supplier_part_no)
+        try:
+            async with page.expect_navigation(
+                wait_until="domcontentloaded",
+                timeout=SEARCH_OUTCOME_TIMEOUT_MS,
+            ):
+                await search.press("Enter")
+        except PlaywrightTimeout:
+            # Some Fabory responses complete through client-side redirects; the
+            # URL-state check below remains the source of truth.
+            pass
+
+        try:
+            await page.wait_for_function(
+                """() => {
+                    const path = location.pathname.toLowerCase();
+                    return path.includes('/search') || path.includes('/p/');
+                }""",
+                timeout=5_000,
+            )
+        except PlaywrightTimeout:
+            pass
+
+        if _is_search_outcome_url(page.url):
+            return
+
+        log.warning(
+            "Fabory form search attempt %s/%s stayed on unexpected URL: %s",
+            attempt,
+            SEARCH_ATTEMPTS,
+            page.url,
+        )
+        if attempt < SEARCH_ATTEMPTS:
+            await emit("Fabory search did not open the result; retrying once…")
+
+    raise RuntimeError(MSG_SEARCH_UNSTABLE)
 
 
 async def _extract_top_variant_price(page) -> tuple[float, int] | None:
@@ -139,10 +215,13 @@ async def _extract_price_and_unit_structured(page) -> tuple[float, int] | None:
 
 # ── Session / login (shared) ─────────────────────────────────────────────────
 
-async def _login_or_restore(pw, emit: Callable, verify_url: str):
-    """Launch a browser and return (browser, context, page) on a logged-in fabory
-    context. Verifies a fresh session against `verify_url` (a search URL); on
-    redirect to /login it re-logs in, then leaves `page` on `verify_url`."""
+async def _login_or_restore(pw, emit: Callable, verify_url: str | None = None):
+    """Return a browser page with a verified authenticated Fabory homepage.
+
+    ``verify_url`` remains as a backwards-compatible argument for callers from
+    older releases. Direct search URLs are no longer used for authentication
+    verification because Fabory redirects them to the homepage.
+    """
     session = load_session(_SESSION_FILE)
     use_session = bool(session and session_is_fresh(session, _SESSION_MAX_AGE_H))
 
@@ -168,10 +247,10 @@ async def _login_or_restore(pw, emit: Callable, verify_url: str):
 
     # ── Step 1: try session restore ───────────────────────────────────
     if use_session:
-        await page.goto(verify_url, wait_until="domcontentloaded", timeout=20000)
+        await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=20000)
         log.info(f"After session restore, URL: {page.url}")
 
-        if "/login" in page.url:
+        if not await _is_logged_in(page):
             log.warning("Session invalid — falling back to full login")
             use_session = False
             invalidate_session(_SESSION_FILE)
@@ -202,13 +281,14 @@ async def _login_or_restore(pw, emit: Callable, verify_url: str):
         await page.get_by_role("button", name="Belépés").click()
 
         try:
-            # A belépés akkor sikeres, ha elhagytuk a /login oldalt (a Fabory
-            # /hu, /hu/ vagy /hu?… címre is irányíthat). A korábbi pontos
-            # wait_for_url("…/hu") túl szigorú volt: párhuzamos terhelés alatt
-            # lejárt a 15 mp, miközben a belépés valójában sikerült. Ez elnézőbb
-            # (bármely nem-/login URL = siker) és hosszabb határidőt ad.
+            # The account markers prevent a guest homepage redirect from being
+            # mistaken for a successful login.
             await page.wait_for_function(
-                "() => !location.pathname.includes('/login')",
+                """() => {
+                    return !!document.querySelector('a[href$="/logout"]')
+                        && !!document.querySelector('.user-logged, .logged_in')
+                        && !!document.querySelector('#search');
+                }""",
                 timeout=30000,
             )
             log.info(f"Login successful: {page.url}")
@@ -217,22 +297,25 @@ async def _login_or_restore(pw, emit: Callable, verify_url: str):
             raise RuntimeError("Login to fabory.com failed. Please check credentials.")
 
         await save_session(context, _SESSION_FILE)
+        await page.goto(HOME_URL, wait_until="domcontentloaded", timeout=20000)
 
-        await page.goto(verify_url, wait_until="domcontentloaded", timeout=20000)
+    if not await _is_logged_in(page):
+        raise RuntimeError("Login to fabory.com failed. Please check credentials.")
 
     return browser, context, page
 
 
 async def _search_and_parse(page, supplier_part_no: str, emit: Callable, navigate: bool = True) -> dict:
     """Search one part on a logged-in fabory page and parse price + stock.
-    When `navigate` is True it loads the part's search URL first."""
-    search_url = SEARCH_URL.format(part_no=quote(supplier_part_no, safe=""))
+    When `navigate` is True it submits the webshop's search form first."""
     log.info("Fabory search uses supplier_part_no=%r", supplier_part_no)
     await emit(f"Searching for {supplier_part_no} on fabory.com…")
     if navigate:
-        await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
+        await _submit_search_form(page, supplier_part_no, emit)
 
     log.info(f"Search page loaded: {page.url}")
+    if not _is_search_outcome_url(page.url):
+        raise RuntimeError(MSG_SEARCH_UNSTABLE)
     try:
         await page.wait_for_function(
             """() => {
@@ -334,12 +417,10 @@ async def fetch_price(supplier_part_no: str, on_progress: Callable | None = None
         if on_progress:
             await on_progress({"step": "browser", "status": "running", "msg": msg})
 
-    search_url = SEARCH_URL.format(part_no=quote(supplier_part_no, safe=""))
     async with async_playwright() as pw:
-        browser, context, page = await _login_or_restore(pw, emit, search_url)
+        browser, context, page = await _login_or_restore(pw, emit)
         try:
-            # `page` is already on this part's search result page.
-            return await _search_and_parse(page, supplier_part_no, emit, navigate=False)
+            return await _search_and_parse(page, supplier_part_no, emit, navigate=True)
         except RuntimeError:
             raise
         except Exception as exc:
@@ -368,10 +449,8 @@ async def fetch_prices(
         return results
 
     total = len(part_nos)
-    first_url = SEARCH_URL.format(part_no=quote(part_nos[0], safe=""))
-
     async with async_playwright() as pw:
-        browser, context, page = await _login_or_restore(pw, emit, first_url)
+        browser, context, page = await _login_or_restore(pw, emit)
         try:
             for i, pn in enumerate(part_nos):
                 try:

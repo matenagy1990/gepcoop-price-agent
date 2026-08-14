@@ -113,13 +113,19 @@ A rendszer a háttérben **Playwright** böngészőt használ (headless Chromium
 | **Jelszó** | `SUPPLIER_E_PASSWORD` (`.env`) |
 
 **Bejelentkezés lépései:**
-1. Megnyílik a `/hu/login` oldal
-2. Cookie banner elfogadása ("Összes elfogadása")
-3. Kitölti az "Email cím" és jelszó mezőket → "Belépés"
-4. Átirányítás: `https://www.fabory.com/hu`
+1. Visszaállítja a 20 óránál frissebb sessiont, majd a főoldalon a tényleges
+   account DOM-jelzőkkel (`/logout` link + logged-in marker) igazolja a belépést
+2. Érvénytelen sessionnél megnyitja a `/hu/login` oldalt
+3. Cookie banner elfogadása ("Összes elfogadása")
+4. Kitölti az "Email cím" és jelszó mezőket → "Belépés"
+5. A belépést ugyanazokkal az account DOM-jelzőkkel ellenőrzi, majd sessiont ment
 
 **Keresés:**
-- URL: `https://www.fabory.com/hu/search?text={cikkszám}`
+- A főoldal látható `#search` mezőjébe írja a cikkszámot, majd Entert nyom
+- A kereső-URL közvetlen megnyitása nem használható: a Fabory ezt időnként a
+  `/hu` főoldalra irányítja vissza, ami korábban hamis „nincs beárazva” hibát adott
+- Ha az űrlapkeresés sem jut valódi `/search` vagy `/p/` oldalra, egyszer újrapróbálja;
+  tartósan bizonytalan állapotot nem jelent termék- vagy árhibának
 - Az első `/p/` linkre kattint (termékoldal)
 - Kiolvassa: **Nettó ár** (`Ft / ár / {mennyiség}`), **Készlet** ("Raktáron" / "Nincs készleten")
 
@@ -292,6 +298,35 @@ visszaállított session ugyanezzel az állapottal előbb kötelezően újrabel�
 
 ---
 
+## L) inoxmare.com
+
+| | |
+|---|---|
+| **URL** | https://www.inoxmare.com/en |
+| **Felhasználónév** | `SUPPLIER_L_USERNAME` (`.env`) |
+| **Jelszó** | `SUPPLIER_L_PASSWORD` (`.env`) |
+
+**Bejelentkezés lépései:**
+1. Visszaállítja a 20 óránál frissebb sessiont
+2. A `Sign Out`/`Welcome,` account állapot és a `#item-input` exact kereső együtt
+   igazolja a belépést
+3. Lejárt sessionnél tiszta kontextusban újrabelép és új sessiont ment
+
+**Keresés:**
+- A `#item-input` exact cikkszámkeresőbe írja a beszállítói cikkszámot → Enter
+- A biztos találat feltétele egyszerre a `?art={cikkszám}` URL és a pontos
+  `tr[id="{cikkszám}"]` terméksor
+- Ismeretlen cikknél a webshop a `/catalogsearch/result/` általános keresőoldalra
+  vált; csak két egymást követő ilyen állapot után ad „nem található” eredményt
+- Időszakos/meg nem erősített állapotnál egyszer visszatér a főoldalra és
+  újrapróbálja. Ha ezután sem stabilizálódik, külön workflow-hibát ad, nem hamis
+  termékhiányt
+- Kiolvassa: ár (EUR/100 db), pontos készlet és termékleírás
+
+**Pénznem:** EUR
+
+---
+
 ## Összefoglaló táblázat
 
 | ID | Webshop | Pénznem | Készlet? | Megjegyzés |
@@ -307,3 +342,4 @@ visszaállított session ugyanezzel az állapottal előbb kötelezően újrabel�
 | I | schaefer-peters.com | EUR | ✅ darabszám | Havi jelszóváltás! |
 | J | kingb2b.it | EUR | ✅ darabszám | RD3-szinkron, session- és SPA-race recovery |
 | K | wasishop.de | EUR | ✅ darabszám | Szigorú auth + pontos termékkártya; sávos ár lehetséges |
+| L | inoxmare.com | EUR | ✅ darabszám | Exact URL+sor ellenőrzés, egyszeri tranziens retry |
