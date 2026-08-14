@@ -413,6 +413,9 @@ Batch-jegyet. A `:8001` cím közvetlen megnyitása hozzáférés nélkül vissz
   de a `assets/sessions` mappát **írhatóan** — Vipa session mindkét appból menthető.
 - `SCHEDULE_MODE: auto` a szerveren: 23:30-tól, 30 perces sávok.
 - `restart: unless-stopped` biztosítja, hogy reboot után újraindul.
+- Mindkét Compose szolgáltatás `init: true` beállítást használ. A Tini PID 1-ként
+  begyűjti a Playwright után elárvult Chromium gyerekfolyamatokat, így azok nem
+  halmozódnak zombie folyamatként az Uvicorn alatt.
 
 ### Frissítés a szerveren
 
@@ -451,6 +454,7 @@ docker compose up -d --build batch-price-agent
 | KingB2B üres/instabil keresést ad frissnek látszó sessionnel | A szerveroldali RD3/ASP.NET session már lejárt | A közös scraper egyszer tisztán újrabelép; csak tartós hiba esetén töröld célzottan a King session fájlt |
 | KingB2B `not_priced`, miközben a portálon van ár | A SPA átmeneti sort cserélt családnézetre | A közös scraper új verziója RD3-ra szinkronizál és egyszer újranyitja a családot |
 | Wasishop hasonló variáns árát adja | Oldalszintű parse futott a pontos kártya helyett | A közös scraper új verziója csak exact-card adatot olvas |
+| Chromium zombie folyamatok száma növekszik | A konténer PID 1 folyamata nem gyűjti be az elárvult böngészőfolyamatokat | Mindkét szolgáltatásnál maradjon `init: true`, majd `docker compose up -d --force-recreate` |
 
 ---
 

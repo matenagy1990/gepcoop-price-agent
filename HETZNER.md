@@ -177,7 +177,9 @@ curl -sS -o /dev/null -w '%{http_code}\n' https://178.104.208.200/batch-agent/
 ## Reboot and process-health checks
 
 The server was rebooted and checked on **2026-08-14** after an accumulation of
-zombie processes. A reboot cleared them. For future checks:
+zombie processes. A reboot cleared them. Both Compose services now use
+`init: true`, so Docker's Tini process is PID 1 and reaps orphaned Chromium
+children after Playwright runs. For future checks:
 
 ```bash
 ps -eo stat= | awk '$1 ~ /^Z/ {count++} END {print count+0}'
@@ -186,9 +188,10 @@ systemctl status price-agent --no-pager
 docker compose -f /opt/price_agent/docker-compose.yml ps
 ```
 
-If the zombie count grows continuously, identify the parent process before
-rebooting. A planned reboot is acceptable after confirming both applications
-restart and both HTTPS checks above succeed.
+If the zombie count grows continuously despite Tini, identify the parent
+process before rebooting and verify `docker compose config` still shows
+`init: true` for both services. A planned reboot is acceptable after confirming
+both applications restart and both HTTPS checks above succeed.
 
 ---
 
