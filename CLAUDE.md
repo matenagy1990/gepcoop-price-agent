@@ -753,7 +753,10 @@ The Docker image is based on the Playwright Python `v1.60.0-noble` image.
 `BrowserType.launch: Executable doesn't exist` at runtime.
 
 `docker-compose.yml` mounts both `assets/` and `.env`, allocates 256 MB shared
-memory and uses `restart: unless-stopped`.
+memory, uses `restart: unless-stopped`, and sets `init: true` on both services.
+The Docker init (Tini) must remain enabled because the long-running Uvicorn
+process otherwise becomes PID 1 and accumulates orphaned Chromium zombies after
+Playwright lookups.
 
 The same root `.env` is loaded by both containers. If the Copilot UI is restored,
 production requires:
@@ -831,6 +834,7 @@ certbot renew --cert-name 178.104.208.200 --dry-run
 | KingB2B reports unstable/empty results from a fresh-looking session | ASP.NET/RD3 server state expired before the saved browser-state age | Keep one clean-session retry and RD3 response synchronisation; invalidate only the KingB2B session file when diagnosing |
 | KingB2B reports `MSG_NOT_PRICED` although the family has a numeric price | SPA replaced a transient old row with the new family view | Keep the one-time family reopen in `_extract_row` and exact row/price wait |
 | Wasishop accepts a restored page but returns unrelated variant data | Search box/URL was mistaken for authentication or parsing was page-global | Require the logout marker and scope parsing to the exact article card |
+| Chromium zombie count grows after scraper runs | Uvicorn is PID 1 and does not reap orphaned browser children | Keep `init: true` on both Compose services and recreate the containers |
 
 ## Database Migrations
 
