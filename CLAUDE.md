@@ -1,8 +1,9 @@
 # CLAUDE.md
 
 This file is the working technical guide for agents modifying this repository.
-Last verified against the codebase and production: **2026-06-25**
-(`main` at `8f8883f`).
+Last updated against the codebase and production environment: **2026-08-14**.
+Use `git rev-parse --short HEAD` locally and on `/opt/price_agent` instead of
+keeping a stale commit hash in this document.
 
 ## Project Purpose
 
@@ -502,7 +503,10 @@ Runtime loading:
   includes its router dynamically. Do not replace this with an accented literal
   path: macOS and Linux may store the `é` character with different Unicode
   normalisation.
-- `COPILOT_ENABLED=true` controls visibility.
+- `COPILOT_ENABLED=true` controls backend feature availability. The buyer chat
+  and admin ticket menu are currently additionally hidden by
+  `COPILOT_CHAT_VISIBLE=false` and
+  `COPILOT_ADMIN_TICKETS_VISIBLE=false` in `ui/index.html`.
 - `/copilot/config` intentionally does not require authentication, because the
   frontend needs the feature flag while bootstrapping. Chat, submit and admin
   endpoints remain authenticated.
@@ -546,6 +550,9 @@ Admin behaviour:
 - Detail view shows structured fields, summary, original conversation, status
   and internal admin note.
 - Admins can set `Nyitott`, `Folyamatban` or `Megoldva`.
+- Current product state: the launcher/panel and Hibapult navigation are hidden;
+  direct attempts to switch to the hidden admin tab fall back to `users`.
+  Existing task/conversation/message data and backend routes are retained.
 
 ## Scraper Contract
 
@@ -597,6 +604,17 @@ Scraper responsibilities:
 8. Close Chromium in a `finally` path.
 
 Most sessions use a 20-hour freshness window. Reyher uses 23 hours.
+
+Supplier-specific reliability rules added in August 2026:
+
+- **Wasishop** proves authentication with the logout control, not the URL or
+  search input; parses only the exact `.shipping_card_pos`; and retries one
+  clean login if authentication disappears during search.
+- **KingB2B** treats an empty response from an unverified restored session as a
+  stale-session signal, retries one clean login, synchronises searches with the
+  matching RD3 `eseguiRicerca` response, bypasses transient portal overlays via
+  the result's native click handler, and reopens the family once if the SPA
+  replaces a matched article row before price injection.
 
 ### Login stability notes (batch context)
 
@@ -692,7 +710,8 @@ if (authToken) {
 - supplier result cards with ordering information;
 - product/deep-link opening;
 - webshop login helper.
-- bottom-right Gép-Coopilot issue intake when enabled.
+- bottom-right Gép-Coopilot issue intake when both backend and frontend
+  visibility switches are enabled (currently hidden).
 
 ### Admin tabs
 
@@ -704,7 +723,7 @@ if (authToken) {
 - Gép-Coop stock
 - Run log
 - Exchange rate
-- Gép-Coopilot Hibapult with status filtering
+- Gép-Coopilot Hibapult with status filtering (implemented, currently hidden)
 
 Escape dynamic user/database text with `escHtml()` or `escAttr()` before adding
 it to template strings.
@@ -736,7 +755,8 @@ The Docker image is based on the Playwright Python `v1.60.0-noble` image.
 `docker-compose.yml` mounts both `assets/` and `.env`, allocates 256 MB shared
 memory and uses `restart: unless-stopped`.
 
-The same root `.env` is loaded by both containers. Production Copilot requires:
+The same root `.env` is loaded by both containers. If the Copilot UI is restored,
+production requires:
 
 ```text
 COPILOT_ENABLED=true
@@ -807,6 +827,10 @@ certbot renew --cert-name 178.104.208.200 --dry-run
 | git pull fails with auth error on server | GitHub token expired or not set in remote URL | `git remote set-url origin https://<user>:<token>@github.com/...` |
 | Copilot button remains hidden although `COPILOT_ENABLED=true` | Copilot router did not load, commonly due to an accented folder-name normalisation mismatch | Keep the `*-Coopilot/copilot_module.py` glob loader and verify `/copilot/config` returns `{"enabled":true}` |
 | `/copilot/config` returns 401 during UI bootstrap | Feature discovery was incorrectly tied to bearer auth | Keep this endpoint public; protect only chat/task/admin operations |
+| Copilot and Hibapult remain hidden with a healthy router | Product-level frontend visibility switches are false | Change `COPILOT_CHAT_VISIBLE` and/or `COPILOT_ADMIN_TICKETS_VISIBLE` only as an intentional release decision |
+| KingB2B reports unstable/empty results from a fresh-looking session | ASP.NET/RD3 server state expired before the saved browser-state age | Keep one clean-session retry and RD3 response synchronisation; invalidate only the KingB2B session file when diagnosing |
+| KingB2B reports `MSG_NOT_PRICED` although the family has a numeric price | SPA replaced a transient old row with the new family view | Keep the one-time family reopen in `_extract_row` and exact row/price wait |
+| Wasishop accepts a restored page but returns unrelated variant data | Search box/URL was mistaken for authentication or parsing was page-global | Require the logout marker and scope parsing to the exact article card |
 
 ## Database Migrations
 
@@ -861,13 +885,14 @@ For API/UI changes, start the local server and check:
 
 ```text
 GET /health
-GET /copilot/config returns enabled=true when enabled
+GET /copilot/config reflects the backend flag; buyer/admin Copilot UI remains
+hidden while its two frontend visibility switches are false
 login → app-selector appears (no login flash)
 enter price agent → mapping preview works
 selected-supplier query streams correctly
 switch to batch agent (tile click)
-Copilot rejects vague text, recognises a complete issue and submits a task
-admin Copilot status filter and status update work
+when intentionally re-enabled: Copilot rejects vague text, recognises a
+complete issue and submits a task; admin status filter and update work
 admin save/reload
 ```
 

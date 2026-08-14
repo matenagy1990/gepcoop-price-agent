@@ -1,6 +1,7 @@
 # Price Agent a Hetzner szerveren
 
-Utolsó éles ellenőrzés: **2026-06-25**, commit: **`8f8883f`**.
+Utolsó dokumentációfrissítés: **2026-08-14**. Az éles commit ellenőrzése:
+`git -C /opt/price_agent rev-parse --short HEAD`.
 
 Colleagues can access the app from any device at a stable internet URL.
 Budget: ~€22.59/month (Hetzner CPX42).
@@ -11,6 +12,7 @@ Budget: ~€22.59/month (Hetzner CPX42).
 
 | Component | Details |
 |---|---|
+| Hetzner project | [Price Agent project dashboard](https://console.hetzner.com/projects/14917603/dashboard) — Hetzner login and project membership required |
 | Server | Hetzner CPX42 — 8 vCPU (AMD), 16 GB RAM, 320 GB SSD |
 | Public IP | `178.104.208.200` |
 | OS | Ubuntu 26.04 LTS |
@@ -46,10 +48,15 @@ their localhost-only ports.
 
 ## Step 2 — Connect to the server
 
-On your Mac:
+On your Mac (the current production server):
 ```bash
-ssh root@65.21.10.42
+ssh -i ~/.ssh/id_ed25519 root@178.104.208.200
 ```
+
+The server has the project SSH public key in `root/.ssh/authorized_keys`, so
+routine maintenance must use key authentication instead of a shared root
+password. If Hetzner access is missing, first verify that the logged-in Hetzner
+account is a member of the linked project shown above.
 
 ---
 
@@ -123,8 +130,8 @@ pedig újratölti az Nginxet.
 | Check status | `systemctl status price-agent` |
 | View live logs | `journalctl -u price-agent -f` |
 | Restart app | `systemctl restart price-agent` |
-| Update to latest code | `cd /opt/price_agent && git pull && docker compose up -d --build` |
-| Full rebuild | `cd /opt/price_agent && git pull origin main && docker compose build && docker compose up -d && systemctl restart price-agent` |
+| Update to latest code | `cd /opt/price_agent && git pull --ff-only origin main && docker compose up -d --build` |
+| Full rebuild | `cd /opt/price_agent && git pull --ff-only origin main && docker compose build && docker compose up -d && systemctl restart price-agent` |
 | Certificate state | `certbot certificates` |
 | Renewal timer | `systemctl status snap.certbot.renew.timer` |
 | Renewal test | `certbot renew --cert-name 178.104.208.200 --dry-run` |
@@ -137,7 +144,9 @@ pedig újratölti az Nginxet.
 
 ```bash
 # On the server:
-git -C /opt/price_agent pull
+cd /opt/price_agent
+git pull --ff-only origin main
+docker compose up -d --build
 systemctl restart price-agent
 ```
 
@@ -146,11 +155,40 @@ into the image, code changes should also be followed by a rebuild/recreate on
 the server. If you changed `requirements.txt` or the Dockerfile, rebuild first:
 ```bash
 cd /opt/price_agent
-git pull origin main
+git pull --ff-only origin main
 docker compose build
 docker compose up -d
 systemctl restart price-agent
 ```
+
+Always deploy a reviewed commit already present on `origin/main`. Do not edit
+tracked application files directly on the server. Production `.env` and
+`assets/sessions/` remain server-local and must never be committed.
+
+After deployment:
+
+```bash
+git rev-parse --short HEAD
+docker compose ps
+curl -sS https://178.104.208.200/health
+curl -sS -o /dev/null -w '%{http_code}\n' https://178.104.208.200/batch-agent/
+```
+
+## Reboot and process-health checks
+
+The server was rebooted and checked on **2026-08-14** after an accumulation of
+zombie processes. A reboot cleared them. For future checks:
+
+```bash
+ps -eo stat= | awk '$1 ~ /^Z/ {count++} END {print count+0}'
+uptime
+systemctl status price-agent --no-pager
+docker compose -f /opt/price_agent/docker-compose.yml ps
+```
+
+If the zombie count grows continuously, identify the parent process before
+rebooting. A planned reboot is acceptable after confirming both applications
+restart and both HTTPS checks above succeed.
 
 ---
 
@@ -167,3 +205,5 @@ systemctl restart price-agent
 | Need to update `.env` on server | `nano /opt/price_agent/.env`, then `systemctl restart price-agent` |
 | HTTPS certificate renewal fails | Check `journalctl -u snap.certbot.renew.service` and ensure port 80 remains publicly reachable |
 | Direct `:8080` or `:8001` URL times out | Expected production behaviour; use the HTTPS URLs above |
+| KingB2B shows an empty search despite a valid mapping | Pull the release containing clean-session retry and RD3 response synchronisation; invalidate only `assets/sessions/kingb2b_session.json` if recovery still fails |
+| Wasishop appears logged in but returns wrong/empty data | Pull the release containing logout-marker authentication and exact-card parsing; invalidate only `assets/sessions/wasishop_session.json` if required |

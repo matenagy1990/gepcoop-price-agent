@@ -1429,6 +1429,10 @@ let copilotMessages = [];
 let copilotReadyPayload = null;
 let copilotOpenedOnce = false;
 let copilotEnabled = false;
+// Temporary product-level visibility switches. Keep the implementation and
+// existing tickets intact so both surfaces can be restored without data loss.
+const COPILOT_CHAT_VISIBLE = false;
+const COPILOT_ADMIN_TICKETS_VISIBLE = false;
 let copilotStep = 'description';
 let copilotEditUsed = false;
 let copilotAwaitingEdit = false;
@@ -3050,6 +3054,7 @@ async function admLoadGepcoopStock() {
 
 // ── Admin sidebar tab switching ───────────────────────────────────
 function admSwitchTab(tab) {
+  if (tab === 'copilot' && !COPILOT_ADMIN_TICKETS_VISIBLE) tab = 'users';
   _admPreferredTab = tab;
   document.querySelectorAll('.adm-nav-item').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('.adm-tab').forEach(p => p.classList.toggle('hidden', p.id !== `adm-tab-${tab}`));
@@ -3134,6 +3139,7 @@ async function loadCopilotConfig() {
   copilotEnabled = false;
   updateCopilotVisibility();
   document.getElementById('adm-nav-copilot').classList.add('hidden');
+  if (!COPILOT_CHAT_VISIBLE) return;
   try {
     const res = await fetch('/copilot/config');
     const data = await res.json();
@@ -3142,14 +3148,21 @@ async function loadCopilotConfig() {
     copilotEnabled = false;
   }
   updateCopilotVisibility();
-  document.getElementById('adm-nav-copilot').classList.toggle('hidden', !copilotEnabled || !isAdminUser);
+  document.getElementById('adm-nav-copilot').classList.toggle(
+    'hidden',
+    !COPILOT_ADMIN_TICKETS_VISIBLE || !copilotEnabled || !isAdminUser,
+  );
 }
 
 function updateCopilotVisibility() {
   const priceAgentActive = !document.getElementById('app-page').classList.contains('hidden');
-  const shouldShowLaunch = copilotEnabled && priceAgentActive;
+  const shouldShowLaunch = COPILOT_CHAT_VISIBLE && copilotEnabled && priceAgentActive;
   document.getElementById('copilot-launch').classList.toggle('hidden', !shouldShowLaunch);
-  if (!priceAgentActive) {
+  document.getElementById('adm-nav-copilot').classList.toggle(
+    'hidden',
+    !COPILOT_ADMIN_TICKETS_VISIBLE || !copilotEnabled || !isAdminUser,
+  );
+  if (!shouldShowLaunch) {
     document.getElementById('copilot-panel').classList.add('hidden');
   }
 }
@@ -3165,7 +3178,7 @@ function copilotAddMessage(sender, message) {
 }
 
 function copilotOpen() {
-  if (!copilotEnabled) return;
+  if (!COPILOT_CHAT_VISIBLE || !copilotEnabled) return;
   document.getElementById('copilot-panel').classList.remove('hidden');
   if (!copilotOpenedOnce) {
     copilotOpenedOnce = true;
@@ -3179,7 +3192,7 @@ function copilotClose() {
 }
 
 function copilotToggle() {
-  if (!copilotEnabled) return;
+  if (!COPILOT_CHAT_VISIBLE || !copilotEnabled) return;
   const panel = document.getElementById('copilot-panel');
   if (panel.classList.contains('hidden')) copilotOpen();
   else copilotClose();

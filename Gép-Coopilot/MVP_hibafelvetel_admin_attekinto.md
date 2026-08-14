@@ -1,5 +1,13 @@
 # Gép-Coopilot MVP - Hibafelvétel és admin áttekintő
 
+> **Aktuális termékstátusz — 2026-08-14:** az MVP implementációja és a korábbi
+> hibajegyek megmaradtak, de a vásárlói chat és az admin
+> **Gép-Coopilot Hibapult** menü jelenleg rejtett. A vezérlés a
+> `ui/index.html` `COPILOT_CHAT_VISIBLE` és
+> `COPILOT_ADMIN_TICKETS_VISIBLE` kapcsolóival történik. A rejtett adminfül
+> közvetlen megnyitása az `users` fülre irányít. A visszakapcsolás külön
+> termékdöntés és teljes chat/admin regressziós teszt után történhet.
+
 ## 1. Cél
 
 A Gép-Coopilot célja, hogy a Price Agent felületén belül a felhasználó gyorsan és egyszerűen tudjon hibát rögzíteni.
@@ -584,4 +592,3 @@ Megoldva
 ```
 
 Ez egyszerű, átlátható és ideális első MVP-nek.
-

@@ -1,8 +1,8 @@
 # Batch Price Agent — technikai leírás
 
 A **Tömeges árlekérdező** (batch agent) műszaki útmutatója.
-Utoljára ellenőrizve a kódbázishoz és az éles szerverhez:
-**2026-06-25** (`main`: `8f8883f`).
+Utoljára frissítve a kódbázishoz és az éles környezethez: **2026-08-14**.
+Az aktuális verziót `git rev-parse --short HEAD` paranccsal ellenőrizd.
 
 > Ez a fájl **csak a batch agentet** írja le. A Price Agent (egyedi árlekérdező)
 > teljes dokumentációja a gyökérben: `CLAUDE.md`. A két alkalmazás közös scrapereket
@@ -122,6 +122,18 @@ A `batch/runner.py` minden webshopnál ellenőrzi: van-e `fetch_prices`?
 - **Nincs** → cikkenkénti `fetch_price` hívás (régi út — biztonság hálóként marad).
 
 Jelenleg **mind a 14 scraper** kínál `fetch_prices`-t.
+
+### 2026-08 stabilitási javítások a közös scraperekben
+
+- **Wasishop:** a sessiont kijelentkezési marker igazolja; keresés közbeni
+  auth-vesztésnél egyszer újrabelép; ár/készlet csak a pontos cikkszámú
+  termékkártyából olvasható.
+- **KingB2B:** használhatatlan mentett sessionnél egyszer tiszta login történik;
+  a keresés a saját RD3 válaszára vár; overlay esetén natív családkattintás
+  használható; eltűnő átmeneti cikksor esetén a család egyszer újranyílik.
+
+Ezek ugyanabban a `browser/supplier_*.py` kódban élnek, ezért az egyedi és batch
+lekérdezésre egyaránt érvényesek.
 
 ---
 
@@ -406,7 +418,7 @@ Batch-jegyet. A `:8001` cím közvetlen megnyitása hozzáférés nélkül vissz
 
 ```bash
 cd /opt/price_agent
-git pull
+git pull --ff-only origin main
 docker compose up -d --build
 ```
 
@@ -436,6 +448,9 @@ docker compose up -d --build batch-price-agent
 | Docker build gyors (0.3 s), de a csomag verziója nem változik | Régi pip-réteg cache-elve | `docker compose build --no-cache batch-price-agent` |
 | `git pull` auth hiba a szerveren | GitHub token lejárt | `git remote set-url origin https://<user>:<token>@github.com/matenagy1990/gepcoop-price-agent.git` |
 | git pull blokkol: helyi módosítás | Manuálisan szerkesztett fájl ütközik | `git checkout <fájl> && git pull` |
+| KingB2B üres/instabil keresést ad frissnek látszó sessionnel | A szerveroldali RD3/ASP.NET session már lejárt | A közös scraper egyszer tisztán újrabelép; csak tartós hiba esetén töröld célzottan a King session fájlt |
+| KingB2B `not_priced`, miközben a portálon van ár | A SPA átmeneti sort cserélt családnézetre | A közös scraper új verziója RD3-ra szinkronizál és egyszer újranyitja a családot |
+| Wasishop hasonló variáns árát adja | Oldalszintű parse futott a pontos kártya helyett | A közös scraper új verziója csak exact-card adatot olvas |
 
 ---
 
